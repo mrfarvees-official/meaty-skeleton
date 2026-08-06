@@ -38,6 +38,11 @@ string/memcpy.o \
 string/memmove.o \
 string/memset.o \
 string/strlen.o \
+string/strchr.o \
+string/strcpy.o \
+string/strncpy.o \
+string/strcat.o \
+ctype/isdigit.o \
 
 HOSTEDOBJS=\
 $(ARCH_HOSTEDOBJS) \

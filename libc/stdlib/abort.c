@@ -1,15 +1,21 @@
-#include <stdio.h>
 #include <stdlib.h>
 
-__attribute__((__noreturn__))
-void abort(void) {
 #if defined(__is_libk)
-	// TODO: Add proper kernel panic.
-	printf("kernel: panic: abort()\n");
-#else
-	// TODO: Abnormally terminate the process as if by SIGABRT.
-	printf("abort()\n");
+#include <kernel/panic.h>
 #endif
-	while (1) { }
-	__builtin_unreachable();
+
+__attribute__((noreturn))
+void abort(void)
+{
+#if defined(__is_libk)
+    kernel_panic("abort()");
+#else
+    /*
+     * Later:
+     * raise(SIGABRT);
+     * terminate the current process.
+     */
+    for (;;) {
+    }
+#endif
 }
