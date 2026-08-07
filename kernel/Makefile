@@ -34,6 +34,7 @@ $(KERNEL_ARCH_OBJS) \
 kernel/kernel.o \
 kernel/pmm.o \
 kernel/paging.o \
+kernel/heap.o \
 
 OBJS=\
 	$(ARCHDIR)/crti.o \

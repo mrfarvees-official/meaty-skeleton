@@ -6,6 +6,7 @@
 #include <kernel/multiboot.h>
 #include <kernel/paging.h>
 #include <kernel/pmm.h>
+#include <kernel/heap.h>
 
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
@@ -15,8 +16,8 @@
 
 static void halt_forever(void)
 {
-	for(;;)
-		__asm__ volatile ("cli; hlt");
+	for (;;)
+		__asm__ volatile("cli; hlt");
 }
 
 // static void test_page_fault(void)
@@ -34,6 +35,102 @@ static void halt_forever(void)
 //      */
 //     printf("ERROR: page fault did not occur\n");
 // }
+
+static void heap_test(void)
+{
+	printf("heap test starting\n");
+
+	void *first = kmalloc(32);
+	void *second = kmalloc(64);
+	void *third = kcalloc(16, sizeof(uint32_t));
+
+	printf("first  = %p\n", first);
+	printf("second = %p\n", second);
+	printf("third  = %p\n", third);
+
+	if (first == NULL || second == NULL || third == NULL)
+	{
+		printf("heap test failed: initial allocation\n");
+		halt_forever();
+	}
+
+	/*
+	 * Verify calloc zeroed its allocation.
+	 */
+	uint32_t *values = (uint32_t *)third;
+
+	for (size_t i = 0; i < 16; ++i)
+	{
+		if (values[i] != 0)
+		{
+			printf("heap test failed: calloc not zeroed\n");
+			halt_forever();
+		}
+	}
+
+	/*
+	 * Free the middle block.
+	 */
+	kfree(second);
+
+	/*
+	 * 48 bytes should fit inside the old 64-byte allocation,
+	 * depending on your splitting policy.
+	 */
+	void *reused = kmalloc(48);
+
+	printf("reused = %p\n", reused);
+
+	if (reused == NULL)
+	{
+		printf("heap test failed: reuse allocation\n");
+		halt_forever();
+	}
+
+	/*
+	 * Test realloc.
+	 */
+	void *resized = krealloc(first, 256);
+
+	printf("resized = %p\n", resized);
+
+	if (resized == NULL)
+	{
+		printf("heap test failed: krealloc\n");
+		halt_forever();
+	}
+
+	first = resized;
+
+	kfree(first);
+	kfree(third);
+	kfree(reused);
+
+	printf("heap test passed\n");
+}
+
+static void heap_expansion_test(void)
+{
+	void *allocations[512];
+
+	printf("heap expansion test starting\n");
+
+	for (size_t i = 0; i < 512; ++i)
+	{
+		allocations[i] = kmalloc(128);
+
+		if (allocations[i] == NULL)
+		{
+			printf("heap expansion failed at %u\n", (unsigned)i);
+			halt_forever();
+		}
+	}
+
+	for (size_t i = 0; i < 512; ++i)
+		kfree(allocations[i]);
+
+	printf("heap expansion test passed\n");
+}
 
 static void validate_multiboot_magic(uint32_t magic)
 {
@@ -116,11 +213,28 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	// __asm__ volatile ("int $3");
 	// printf("int3 returned successfully\n");
 
-    paging_initialize();
+	paging_initialize();
 	printf("paging initialized\n");
 
 	// test success
 	// test_page_fault();
+
+	heap_initialize();
+	printf("heap initialized\n");
+
+	// test success
+	// heap_test();
+	// heap_expansion_test();
+
+	printf(
+		"Usable RAM: %u MiB\n",
+		(unsigned)(pmm_get_usable_memory() /
+				   (1024u * 1024u)));
+
+	printf(
+		"Free RAM: %u MiB\n",
+		(unsigned)(pmm_get_free_memory() /
+				   (1024u * 1024u)));
 
 	halt_forever();
 }

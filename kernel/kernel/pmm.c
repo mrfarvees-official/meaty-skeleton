@@ -11,6 +11,7 @@
 #define BITMAP_SIZE         (FRAME_COUNT / 8u)
 
 static uint8_t frame_bitmap[BITMAP_SIZE];
+static uint64_t total_usable_memory = 0;
 
 extern uint8_t _kernel_start;
 extern uint8_t _kernel_end;
@@ -43,10 +44,16 @@ static bool frame_is_used(size_t frame)
 void pmm_reserve_range(uintptr_t base, size_t length)
 {
     uintptr_t start = align_down(base);
-    uintptr_t end = align_up(base + length);
+    uintptr_t end;
 
-    if (end > MAX_PHYSICAL_MEMORY)
+    if (length > MAX_PHYSICAL_MEMORY || base > MAX_PHYSICAL_MEMORY - length) 
+    {
         end = MAX_PHYSICAL_MEMORY;
+    }
+    else 
+    {
+        end = align_up(base + length);
+    }
 
     for (uintptr_t address = start; address < end; address += PAGE_SIZE)
     {
@@ -74,6 +81,8 @@ void pmm_initialize(uint32_t multiboot_info_address)
     
     memset(frame_bitmap, 0xFF, sizeof(frame_bitmap));
 
+    total_usable_memory = 0;
+
     if ((mbi->flags & MULTIBOOT_INFO_MEMORY_MAP) == 0)
         return;
 
@@ -93,6 +102,10 @@ void pmm_initialize(uint32_t multiboot_info_address)
             {
                 if (region_end > MAX_PHYSICAL_MEMORY) 
                     region_end = MAX_PHYSICAL_MEMORY;
+
+                uint64_t usable_size = region_end - region_base;
+
+                total_usable_memory += usable_size;
 
                 pmm_release_range((uintptr_t)region_base, (size_t)(region_end - region_base));
             }
@@ -133,4 +146,27 @@ void pmm_free_frame(uintptr_t address)
         return;
 
     frame_mark_free(address / PAGE_SIZE);
+}
+
+size_t pmm_get_free_frame_count(void)
+{
+    size_t free_frames = 0;
+
+    for (size_t frame = 0; frame < FRAME_COUNT; ++frame)
+    {
+        if (!frame_is_used(frame))
+            ++free_frames;
+    }
+
+    return free_frames;
+}
+
+uint64_t pmm_get_free_memory(void)
+{
+    return (uint64_t)pmm_get_free_frame_count() * PAGE_SIZE;
+}
+
+uint64_t pmm_get_usable_memory(void)
+{
+    return total_usable_memory;
 }
