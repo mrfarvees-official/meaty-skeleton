@@ -9,10 +9,13 @@
 #include <kernel/heap.h>
 #include <kernel/scheduler.h>
 #include <kernel/task.h>
+#include <kernel/timer.h>
 
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
 #include "../arch/i386/interrupts.h"
+#include "../arch/i386/pic.h"
+#include "../arch/i386/pit.h"
 
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002u
 
@@ -161,6 +164,39 @@ static void worker(void *argument)
 	}
 }
 
+static void pit_test(void)
+{
+	uint64_t previous = timer_ticks();
+
+	printf("PIT test started\n");
+
+	for (;;)
+	{
+		uint64_t now = timer_ticks();
+
+		/*
+		 * At 100 Hz, timer_frequency() ticks is approximately
+		 * one second.
+		 */
+		if (now - previous >= timer_frequency())
+		{
+			previous = now;
+
+			printf(
+				"ticks=%lu uptime=%lu ms\n",
+				(unsigned long)now,
+				(unsigned long)timer_uptime_ms());
+		}
+
+		/*
+		 * Sleep until the next interrupt.
+		 *
+		 * IF must already be enabled here.
+		 */
+		__asm__ volatile("hlt");
+	}
+}
+
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
@@ -230,6 +266,9 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_initialization();
 	printf("interrupts initialized\n");
 
+	pic_initialize();
+	printf("pic initialized\n");
+
 	// test success
 	// __asm__ volatile ("int $3");
 	// printf("int3 returned successfully\n");
@@ -261,7 +300,31 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("task system initialized\n");
 
-	for (unsigned i = 1; i <= 4; ++i)
+	if (pit_initialize(PIT_DEFAULT_FREQUENCY_HZ) != 0)
+	{
+		printf("PIT initialization failed\n");
+		halt_forever();
+	}
+
+	printf(
+		"pit initialized at %u Hz\n",
+		(unsigned)pit_frequency());
+
+	/*
+	 * PIT IRQ0 is now configured and unmasked.
+	 *
+	 * Allow maskable hardware interrupts.
+	 */
+	interrupt_enable();
+	printf("hardware interrupts enabled\n");
+
+	pit_test();
+	/*
+	 * pit_test() does not return.
+	 */
+	halt_forever();
+
+	for (unsigned i = 1; i <= 1; ++i)
 	{
 		task_t *task =
 			task_create_kernel(

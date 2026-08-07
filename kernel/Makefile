@@ -37,7 +37,8 @@ kernel/memory/paging.o \
 kernel/memory/heap.o \
 kernel/task/task.o \
 kernel/scheduler/scheduler.o \
-kernel/scheduler/round_robin.o
+kernel/scheduler/round_robin.o \
+kernel/timer/timer.o
 
 OBJS=\
 	$(ARCHDIR)/crti.o \

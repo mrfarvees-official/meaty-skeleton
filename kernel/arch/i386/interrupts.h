@@ -51,4 +51,10 @@ int interrupt_register_handler(uint8_t vector, interrupt_handler_t handler);
 
 void interrupt_unregister_handler(uint8_t vector);
 
+uint32_t interrupt_save_disable(void);
+void interrupt_restore(uint32_t flags);
+
+void interrupt_disable(void);
+void interrupt_enable(void);
+
 #endif

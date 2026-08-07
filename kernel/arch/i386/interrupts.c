@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "pic.h"
 #include "interrupts.h"
 
 static interrupt_handler_t interrupt_handlers[INTERRUPT_VECTOR_COUNT];
@@ -238,10 +239,6 @@ void interrupt_dispatch(struct interrupt_frame* frame)
     if (frame == NULL)
         interrupt_halt();
 
-    /*
-     * This check matters only if vector is wider than uint8_t in your
-     * interrupt frame structure.
-     */
     if (frame->vector >= INTERRUPT_VECTOR_COUNT)
     {
         printf(
@@ -252,28 +249,113 @@ void interrupt_dispatch(struct interrupt_frame* frame)
         interrupt_halt();
     }
 
+    /*
+     * ----------------------------------------------------------
+     * CPU exceptions: vectors 0-31
+     * ----------------------------------------------------------
+     */
+    if (frame->vector < 32u)
+    {
+        interrupt_handler_t handler =
+            interrupt_handlers[frame->vector];
+
+        if (handler != NULL)
+        {
+            handler(frame);
+
+            /*
+             * Recoverable exceptions such as INT3 return here.
+             *
+             * Fatal handlers such as the default page-fault
+             * handler never return.
+             */
+            return;
+        }
+
+        default_exception_handler(frame);
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * Legacy 8259 PIC hardware IRQs: vectors 32-47
+     * ----------------------------------------------------------
+     */
+    if (pic_vector_is_irq(frame->vector))
+    {
+        uint8_t irq =
+            pic_vector_to_irq(frame->vector);
+
+        /*
+         * The classic 8259 can generate spurious IRQ7 / IRQ15.
+         *
+         * They require special acknowledgement behavior.
+         */
+        if ((irq == 7u || irq == 15u) &&
+            pic_is_spurious(irq))
+        {
+            /*
+             * Spurious IRQ7:
+             *
+             * Do not send EOI because the master PIC does not
+             * have IRQ7 marked in-service.
+             *
+             * Spurious IRQ15:
+             *
+             * The slave does not have IRQ15 in-service, but the
+             * master accepted IRQ2 (the cascade line), so only
+             * the master PIC requires EOI.
+             */
+            if (irq == 15u)
+                pic_send_master_eoi();
+
+            return;
+        }
+
+        interrupt_handler_t handler =
+            interrupt_handlers[frame->vector];
+
+        if (handler != NULL)
+        {
+            handler(frame);
+        }
+
+        /*
+         * IRQ acknowledgement belongs to the generic interrupt
+         * layer rather than individual device drivers.
+         */
+        pic_send_eoi(irq);
+
+        /*
+         * PIT milestone:
+         *
+         * Do NOT perform scheduler preemption here yet.
+         *
+         * Later, during the preemptive-scheduling milestone,
+         * this becomes one possible safe rescheduling point.
+         */
+        return;
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * Other vectors
+     * ----------------------------------------------------------
+     *
+     * Reserved for things such as:
+     *
+     *   - software interrupts
+     *   - syscalls
+     *   - APIC vectors
+     *   - MSI/MSI-X
+     */
     interrupt_handler_t handler =
         interrupt_handlers[frame->vector];
 
     if (handler != NULL)
     {
         handler(frame);
-
-        /*
-         * Required for recoverable handlers such as INT3.
-         *
-         * The page-fault handler never reaches here because it halts.
-         */
         return;
     }
-
-    if (frame->vector < 32u)
-        default_exception_handler(frame);
-
-    /*
-     * Later, IRQ and syscall dispatching should happen before the
-     * final unhandled-interrupt path.
-     */
 
     printf(
         "Unhandled interrupt vector %lu\n",
@@ -281,4 +363,60 @@ void interrupt_dispatch(struct interrupt_frame* frame)
     );
 
     interrupt_halt();
+}
+
+uint32_t interrupt_save_disable(void)
+{
+    uint32_t flags;
+
+    __asm__ volatile (
+        "pushfl\n"
+        "popl %0\n"
+        "cli"
+        : "=r"(flags)
+        :
+        : "memory");
+
+    return flags;
+}
+
+void interrupt_restore(uint32_t flags)
+{
+    /*
+     * EFLAGS.IF is bit 9.
+     */
+    if ((flags & (1u << 9)) != 0)
+    {
+        __asm__ volatile (
+            "sti"
+            :
+            :
+            : "memory");
+    }
+    else
+    {
+        __asm__ volatile (
+            "cli"
+            :
+            :
+            : "memory");
+    }
+}
+
+void interrupt_disable(void)
+{
+    __asm__ volatile (
+        "cli"
+        :
+        :
+        : "memory");
+}
+
+void interrupt_enable(void)
+{
+    __asm__ volatile (
+        "sti"
+        :
+        :
+        : "memory");
 }
