@@ -1,5 +1,5 @@
 #ifndef KERNEL_TASK_H
-#define KERNEL_TAKS_H
+#define KERNEL_TASK_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -10,7 +10,7 @@ typedef uint32_t task_id_t;
 typedef enum 
 {
     TASK_NEW = 0,
-    TASK_READ,
+    TASK_READY,
     TASK_RUNNING,
     TASK_BLOCKED,
     TASK_SLEEPING,

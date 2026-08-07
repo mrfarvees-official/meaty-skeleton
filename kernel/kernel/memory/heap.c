@@ -197,6 +197,8 @@ static heap_block_t* heap_find_free_block(size_t requested_size)
         if (block->free && block->size >= requested_size)
             return block;
     }
+
+    return NULL;
 }
 
 static void heap_split_block(heap_block_t* block, size_t requested_size)
@@ -308,7 +310,7 @@ void heap_initialize(void)
 
 void* kmalloc(size_t size)
 {
-    if (!heap_initialize)
+    if (!heap_initialized)
         return NULL;
 
     /*

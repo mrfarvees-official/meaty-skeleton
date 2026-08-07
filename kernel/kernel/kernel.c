@@ -7,6 +7,8 @@
 #include <kernel/paging.h>
 #include <kernel/pmm.h>
 #include <kernel/heap.h>
+#include <kernel/scheduler.h>
+#include <kernel/task.h>
 
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
@@ -18,6 +20,12 @@ static void halt_forever(void)
 {
 	for (;;)
 		__asm__ volatile("cli; hlt");
+}
+
+static void yield_forever(void)
+{
+	for (;;)
+		task_yield();
 }
 
 // static void test_page_fault(void)
@@ -36,110 +44,123 @@ static void halt_forever(void)
 //     printf("ERROR: page fault did not occur\n");
 // }
 
-static void heap_test(void)
-{
-	printf("heap test starting\n");
+// static void heap_test(void)
+// {
+// 	printf("heap test starting\n");
 
-	void *first = kmalloc(32);
-	void *second = kmalloc(64);
-	void *third = kcalloc(16, sizeof(uint32_t));
+// 	void *first = kmalloc(32);
+// 	void *second = kmalloc(64);
+// 	void *third = kcalloc(16, sizeof(uint32_t));
 
-	printf("first  = %p\n", first);
-	printf("second = %p\n", second);
-	printf("third  = %p\n", third);
+// 	printf("first  = %p\n", first);
+// 	printf("second = %p\n", second);
+// 	printf("third  = %p\n", third);
 
-	if (first == NULL || second == NULL || third == NULL)
-	{
-		printf("heap test failed: initial allocation\n");
-		halt_forever();
-	}
+// 	if (first == NULL || second == NULL || third == NULL)
+// 	{
+// 		printf("heap test failed: initial allocation\n");
+// 		halt_forever();
+// 	}
 
-	/*
-	 * Verify calloc zeroed its allocation.
-	 */
-	uint32_t *values = (uint32_t *)third;
+// 	/*
+// 	 * Verify calloc zeroed its allocation.
+// 	 */
+// 	uint32_t *values = (uint32_t *)third;
 
-	for (size_t i = 0; i < 16; ++i)
-	{
-		if (values[i] != 0)
-		{
-			printf("heap test failed: calloc not zeroed\n");
-			halt_forever();
-		}
-	}
+// 	for (size_t i = 0; i < 16; ++i)
+// 	{
+// 		if (values[i] != 0)
+// 		{
+// 			printf("heap test failed: calloc not zeroed\n");
+// 			halt_forever();
+// 		}
+// 	}
 
-	/*
-	 * Free the middle block.
-	 */
-	kfree(second);
+// 	/*
+// 	 * Free the middle block.
+// 	 */
+// 	kfree(second);
 
-	/*
-	 * 48 bytes should fit inside the old 64-byte allocation,
-	 * depending on your splitting policy.
-	 */
-	void *reused = kmalloc(48);
+// 	/*
+// 	 * 48 bytes should fit inside the old 64-byte allocation,
+// 	 * depending on your splitting policy.
+// 	 */
+// 	void *reused = kmalloc(48);
 
-	printf("reused = %p\n", reused);
+// 	printf("reused = %p\n", reused);
 
-	if (reused == NULL)
-	{
-		printf("heap test failed: reuse allocation\n");
-		halt_forever();
-	}
+// 	if (reused == NULL)
+// 	{
+// 		printf("heap test failed: reuse allocation\n");
+// 		halt_forever();
+// 	}
 
-	/*
-	 * Test realloc.
-	 */
-	void *resized = krealloc(first, 256);
+// 	/*
+// 	 * Test realloc.
+// 	 */
+// 	void *resized = krealloc(first, 256);
 
-	printf("resized = %p\n", resized);
+// 	printf("resized = %p\n", resized);
 
-	if (resized == NULL)
-	{
-		printf("heap test failed: krealloc\n");
-		halt_forever();
-	}
+// 	if (resized == NULL)
+// 	{
+// 		printf("heap test failed: krealloc\n");
+// 		halt_forever();
+// 	}
 
-	first = resized;
+// 	first = resized;
 
-	kfree(first);
-	kfree(third);
-	kfree(reused);
+// 	kfree(first);
+// 	kfree(third);
+// 	kfree(reused);
 
-	printf("heap test passed\n");
-}
+// 	printf("heap test passed\n");
+// }
 
-static void heap_expansion_test(void)
-{
-	void *allocations[512];
+// static void heap_expansion_test(void)
+// {
+// 	void *allocations[512];
 
-	printf("heap expansion test starting\n");
+// 	printf("heap expansion test starting\n");
 
-	for (size_t i = 0; i < 512; ++i)
-	{
-		allocations[i] = kmalloc(128);
+// 	for (size_t i = 0; i < 512; ++i)
+// 	{
+// 		allocations[i] = kmalloc(128);
 
-		if (allocations[i] == NULL)
-		{
-			printf("heap expansion failed at %u\n", (unsigned)i);
-			halt_forever();
-		}
-	}
+// 		if (allocations[i] == NULL)
+// 		{
+// 			printf("heap expansion failed at %u\n", (unsigned)i);
+// 			halt_forever();
+// 		}
+// 	}
 
-	for (size_t i = 0; i < 512; ++i)
-		kfree(allocations[i]);
+// 	for (size_t i = 0; i < 512; ++i)
+// 		kfree(allocations[i]);
 
-	printf("heap expansion test passed\n");
-}
+// 	printf("heap expansion test passed\n");
+// }
 
-static void validate_multiboot_magic(uint32_t magic)
+void validate_multiboot_magic(uint32_t magic)
 {
 	if (magic != MULTIBOOT_BOOTLOADER_MAGIC)
 	{
-		printf("Invalid multiboot magic: 0x%x\n", magic);
-		halt_forever();
+		/* Not entered by a Multiboot-compliant bootloader */
+		for (;;)
+			__asm__ volatile("cli; hlt");
 	}
 }
+
+static void worker(void *argument)
+{
+	unsigned id = (unsigned)(uintptr_t)argument;
+
+	for (unsigned i = 0; i < 4; ++i)
+	{
+		printf("task %u iteration %u\n", id, i);
+		task_yield();
+	}
+}
+
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
@@ -225,16 +246,47 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	// test success
 	// heap_test();
 	// heap_expansion_test();
+	// printf(
+	// 	"Usable RAM: %u MiB\n",
+	// 	(unsigned)(pmm_get_usable_memory() /
+	// 			   (1024u * 1024u)));
+	// printf(
+	// 	"Free RAM: %u MiB\n",
+	// 	(unsigned)(pmm_get_free_memory() /
+	// 			   (1024u * 1024u)));
 
-	printf(
-		"Usable RAM: %u MiB\n",
-		(unsigned)(pmm_get_usable_memory() /
-				   (1024u * 1024u)));
+	scheduler_initialize();
+	printf("scheduler initialized\n");
 
-	printf(
-		"Free RAM: %u MiB\n",
-		(unsigned)(pmm_get_free_memory() /
-				   (1024u * 1024u)));
+	task_initialize();
+	printf("task system initialized\n");
 
-	halt_forever();
+	for (unsigned i = 1; i <= 4; ++i)
+	{
+		task_t *task =
+			task_create_kernel(
+				worker,
+				(void *)(uintptr_t)i);
+
+		if (task == NULL)
+		{
+			printf("failed to create task %u\n", i);
+			halt_forever();
+		}
+
+		printf(
+			"created task %u: task=%p stack=%p\n",
+			i,
+			task,
+			(void *)task->stack_pointer);
+	}
+
+	printf("ALL TASKS CREATED\n");
+	printf("ABOUT TO FIRST YIELD\n");
+
+	task_yield();
+
+	printf("BOOTSTRAP RETURNED FROM FIRST YIELD\n");
+
+	yield_forever();
 }

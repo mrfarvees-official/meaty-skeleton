@@ -32,9 +32,12 @@ LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
 KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) \
 kernel/kernel.o \
-kernel/pmm.o \
-kernel/paging.o \
-kernel/heap.o \
+kernel/memory/pmm.o \
+kernel/memory/paging.o \
+kernel/memory/heap.o \
+kernel/task/task.o \
+kernel/scheduler/scheduler.o \
+kernel/scheduler/round_robin.o
 
 OBJS=\
 	$(ARCHDIR)/crti.o \
