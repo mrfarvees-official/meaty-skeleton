@@ -1,6 +1,8 @@
 #include <stdint.h>
 
 #include <kernel/timer.h>
+#include <kernel/sleep_queue.h>
+#include <kernel/scheduler.h>
 
 #include "../arch/i386/interrupts.h"
 
@@ -19,13 +21,17 @@ void timer_initialize(uint32_t frequency_hz)
 
 void timer_handle_tick(void)
 {
-    /*
-     * Called from the timer IRQ.
-     *
-     * Interrupts are already disabled because the IRQ entered
-     * through an interrupt gate.
-     */
     ++system_ticks;
+
+    /*
+     * Wake expired sleeping tasks first.
+     */
+    sleep_queue_tick(system_ticks);
+
+    /*
+     * Then update scheduling accounting.
+     */
+    scheduler_tick();
 }
 
 uint64_t timer_ticks(void)
@@ -88,7 +94,7 @@ uint64_t timer_ms_to_ticks(uint64_t milliseconds)
      */
     uint64_t seconds = milliseconds / 1000u;
 
-    uint64_t remainder_ms = milliseconds / 1000u;
+    uint64_t remainder_ms = milliseconds % 1000u;
 
     uint64_t ticks = seconds * frequency;
 

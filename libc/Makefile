@@ -42,6 +42,7 @@ string/strchr.o \
 string/strcpy.o \
 string/strncpy.o \
 string/strcat.o \
+string/strcmp.o \
 ctype/isdigit.o \
 
 HOSTEDOBJS=\

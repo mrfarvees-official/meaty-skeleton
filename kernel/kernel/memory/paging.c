@@ -3,11 +3,12 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <kernel/spinlock.h>
 #include <kernel/paging.h>
 #include <kernel/pmm.h>
 
 #define PAGE_DIRECTORY_ENTRIES 1024u
-#define PAGE_TABLE_ENTRIES     1024u
+#define PAGE_TABLE_ENTRIES 1024u
 
 /*
  * The final page-directory entry points back to the page directory.
@@ -21,8 +22,8 @@
  *     The page directory itself
  */
 #define RECURSIVE_DIRECTORY_INDEX 1023u
-#define RECURSIVE_TABLES_BASE     0xFFC00000u
-#define RECURSIVE_DIRECTORY_BASE  0xFFFFF000u
+#define RECURSIVE_TABLES_BASE 0xFFC00000u
+#define RECURSIVE_DIRECTORY_BASE 0xFFFFF000u
 
 /*
  * Bootstrap paging structures.
@@ -35,6 +36,8 @@ static uint32_t page_directory[PAGE_DIRECTORY_ENTRIES]
 
 static uint32_t first_page_table[PAGE_TABLE_ENTRIES]
     __attribute__((aligned(PAGE_SIZE)));
+
+static spinlock_t paging_lock = SPINLOCK_INITIALIZER;
 
 static bool is_page_aligned(uintptr_t address)
 {
@@ -51,77 +54,71 @@ static size_t page_table_index(uintptr_t virtual_address)
     return (size_t)((virtual_address >> 12) & 0x3FFu);
 }
 
-static uint32_t* recursive_page_directory(void)
+static uint32_t *recursive_page_directory(void)
 {
-    return (uint32_t*)RECURSIVE_DIRECTORY_BASE;
+    return (uint32_t *)RECURSIVE_DIRECTORY_BASE;
 }
 
-static uint32_t* recursive_page_table(size_t directory_index)
+static uint32_t *recursive_page_table(size_t directory_index)
 {
-    return (uint32_t*)(
-        RECURSIVE_TABLES_BASE +
-        directory_index * PAGE_SIZE
-    );
+    return (uint32_t *)(RECURSIVE_TABLES_BASE +
+                        directory_index * PAGE_SIZE);
 }
 
 static void load_page_directory(uintptr_t physical_address)
 {
-    __asm__ volatile (
+    __asm__ volatile(
         "movl %0, %%cr3"
         :
         : "r"((uint32_t)physical_address)
-        : "memory"
-    );
+        : "memory");
 }
 
 static void reload_page_directory(void)
 {
     uint32_t cr3;
 
-    __asm__ volatile (
+    __asm__ volatile(
         "movl %%cr3, %0"
-        : "=r"(cr3)
-    );
+        : "=r"(cr3));
 
-    __asm__ volatile (
+    __asm__ volatile(
         "movl %0, %%cr3"
         :
         : "r"(cr3)
-        : "memory"
-    );
+        : "memory");
 }
 
 static void enable_paging(void)
 {
     uint32_t cr0;
 
-    __asm__ volatile (
+    __asm__ volatile(
         "movl %%cr0, %0"
-        : "=r"(cr0)
-    );
+        : "=r"(cr0));
 
     cr0 |= (1u << 31);
 
-    __asm__ volatile (
+    __asm__ volatile(
         "movl %0, %%cr0"
         :
         : "r"(cr0)
-        : "memory"
-    );
+        : "memory");
 }
 
 static void invalidate_page(uintptr_t virtual_address)
 {
-    __asm__ volatile (
+    __asm__ volatile(
         "invlpg (%0)"
         :
         : "r"(virtual_address)
-        : "memory"
-    );
+        : "memory");
 }
 
 void paging_initialize(void)
 {
+    spinlock_initialize(&paging_lock);
+
     memset(page_directory, 0, sizeof(page_directory));
     memset(first_page_table, 0, sizeof(first_page_table));
 
@@ -200,31 +197,38 @@ bool paging_map_page(
     size_t table_index =
         page_table_index(virtual_address);
 
-    /*
-     * Never allow normal mappings inside the recursive paging area.
-     */
     if (directory_index == RECURSIVE_DIRECTORY_INDEX)
         return false;
 
-    uint32_t* directory = recursive_page_directory();
+    uint32_t irq_flags =
+        spin_lock_irqsave(&paging_lock);
 
-    /*
-     * Allocate a page table if this directory entry does not have one.
-     */
+    uint32_t *directory =
+        recursive_page_directory();
+
     if ((directory[directory_index] & PAGE_PRESENT) == 0)
     {
-        uintptr_t table_frame = pmm_allocate_frame();
+        /*
+         * paging_lock -> pmm_lock
+         *
+         * This ordering is intentional.
+         */
+        uintptr_t table_frame =
+            pmm_allocate_frame();
 
         if (table_frame == 0)
+        {
+            spin_unlock_irqrestore(
+                &paging_lock,
+                irq_flags);
+
             return false;
+        }
 
         uint32_t directory_flags =
             PAGE_PRESENT |
             PAGE_WRITABLE;
 
-        /*
-         * Both the PDE and PTE must have PAGE_USER for user access.
-         */
         if ((flags & PAGE_USER) != 0)
             directory_flags |= PAGE_USER;
 
@@ -232,16 +236,12 @@ bool paging_map_page(
             (uint32_t)(table_frame & PAGE_FRAME) |
             directory_flags;
 
-        /*
-         * The page table becomes accessible through recursive paging
-         * immediately after its PDE is installed.
-         */
-        uint32_t* page_table =
+        uint32_t *page_table =
             recursive_page_table(directory_index);
 
         /*
-         * Invalidate the recursive virtual address because it was
-         * previously unmapped.
+         * The recursive mapping corresponding to this PDE was
+         * previously not present.
          */
         invalidate_page((uintptr_t)page_table);
 
@@ -249,28 +249,26 @@ bool paging_map_page(
     }
     else
     {
-        /*
-         * Upgrade the directory entry when adding a user-accessible
-         * mapping to an existing page table.
-         */
         if ((flags & PAGE_USER) != 0)
             directory[directory_index] |= PAGE_USER;
 
-        /*
-         * Keep the PDE writable. The PTE still controls whether the
-         * actual mapped page is writable.
-         */
         directory[directory_index] |= PAGE_WRITABLE;
     }
 
-    uint32_t* page_table =
+    uint32_t *page_table =
         recursive_page_table(directory_index);
 
     /*
-     * Refuse to silently overwrite an existing mapping.
+     * Never overwrite an existing mapping.
      */
     if ((page_table[table_index] & PAGE_PRESENT) != 0)
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
+
         return false;
+    }
 
     page_table[table_index] =
         (uint32_t)(physical_address & PAGE_FRAME) |
@@ -278,6 +276,10 @@ bool paging_map_page(
         (flags & PAGE_MAP_FLAGS);
 
     invalidate_page(virtual_address);
+
+    spin_unlock_irqrestore(
+        &paging_lock,
+        irq_flags);
 
     return true;
 }
@@ -298,18 +300,35 @@ bool paging_unmap_page(
     if (directory_index == RECURSIVE_DIRECTORY_INDEX)
         return false;
 
-    uint32_t* directory = recursive_page_directory();
+    uint32_t irq_flags =
+        spin_lock_irqsave(&paging_lock);
+
+    uint32_t *directory =
+        recursive_page_directory();
 
     if ((directory[directory_index] & PAGE_PRESENT) == 0)
-        return false;
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
 
-    uint32_t* page_table =
+        return false;
+    }
+
+    uint32_t *page_table =
         recursive_page_table(directory_index);
 
-    uint32_t page_entry = page_table[table_index];
+    uint32_t page_entry =
+        page_table[table_index];
 
     if ((page_entry & PAGE_PRESENT) == 0)
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
+
         return false;
+    }
 
     uintptr_t physical_address =
         (uintptr_t)(page_entry & PAGE_FRAME);
@@ -318,27 +337,37 @@ bool paging_unmap_page(
 
     invalidate_page(virtual_address);
 
+    /*
+     * paging_lock -> pmm_lock
+     */
     if (release_frame)
         pmm_free_frame(physical_address);
 
-    /*
-     * This implementation intentionally keeps empty page tables.
-     *
-     * You can reclaim empty page tables later, but do not free the
-     * bootstrap first_page_table through the PMM.
-     */
+    spin_unlock_irqrestore(
+        &paging_lock,
+        irq_flags);
+
     return true;
 }
-
 bool paging_get_physical_address(
     uintptr_t virtual_address,
-    uintptr_t* physical_address)
+    uintptr_t *physical_address)
 {
     if (physical_address == NULL)
         return false;
 
+    /*
+     * Do not allow callers to inspect the recursive paging area
+     * through this normal API.
+     */
     size_t directory_index =
         page_directory_index(virtual_address);
+
+    if (directory_index == RECURSIVE_DIRECTORY_INDEX)
+        return false;
+
+    uint32_t irq_flags =
+        spin_lock_irqsave(&paging_lock);
 
     size_t table_index =
         page_table_index(virtual_address);
@@ -346,23 +375,40 @@ bool paging_get_physical_address(
     uintptr_t page_offset =
         virtual_address & (PAGE_SIZE - 1u);
 
-    uint32_t* directory = recursive_page_directory();
+    uint32_t *directory =
+        recursive_page_directory();
 
     if ((directory[directory_index] & PAGE_PRESENT) == 0)
-        return false;
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
 
-    uint32_t* page_table =
+        return false;
+    }
+
+    uint32_t *page_table =
         recursive_page_table(directory_index);
 
     uint32_t page_entry =
         page_table[table_index];
 
     if ((page_entry & PAGE_PRESENT) == 0)
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
+
         return false;
+    }
 
     *physical_address =
         (uintptr_t)(page_entry & PAGE_FRAME) +
         page_offset;
+
+    spin_unlock_irqrestore(
+        &paging_lock,
+        irq_flags);
 
     return true;
 }
@@ -372,16 +418,36 @@ bool paging_is_mapped(uintptr_t virtual_address)
     size_t directory_index =
         page_directory_index(virtual_address);
 
+    if (directory_index == RECURSIVE_DIRECTORY_INDEX)
+        return false;
+
     size_t table_index =
         page_table_index(virtual_address);
 
-    uint32_t* directory = recursive_page_directory();
+    uint32_t irq_flags =
+        spin_lock_irqsave(&paging_lock);
+
+    uint32_t *directory =
+        recursive_page_directory();
 
     if ((directory[directory_index] & PAGE_PRESENT) == 0)
-        return false;
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
 
-    uint32_t* page_table =
+        return false;
+    }
+
+    uint32_t *page_table =
         recursive_page_table(directory_index);
 
-    return (page_table[table_index] & PAGE_PRESENT) != 0;
+    bool mapped =
+        (page_table[table_index] & PAGE_PRESENT) != 0;
+
+    spin_unlock_irqrestore(
+        &paging_lock,
+        irq_flags);
+
+    return mapped;
 }

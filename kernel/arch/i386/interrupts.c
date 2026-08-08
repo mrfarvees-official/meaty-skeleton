@@ -5,58 +5,59 @@
 #include "pic.h"
 #include "interrupts.h"
 
+#include <kernel/scheduler.h>
+
 static interrupt_handler_t interrupt_handlers[INTERRUPT_VECTOR_COUNT];
 
-static const char* const exception_names[32] =
-{
-    "Divide Error",                    /* 0  */
-    "Debug",                           /* 1  */
-    "Non-maskable Interrupt",          /* 2  */
-    "Breakpoint",                      /* 3  */
-    "Overflow",                        /* 4  */
-    "BOUND Range Exceeded",            /* 5  */
-    "Invalid Opcode",                  /* 6  */
-    "Device Not Available",            /* 7  */
-    "Double Fault",                    /* 8  */
-    "Coprocessor Segment Overrun",     /* 9, obsolete */
-    "Invalid TSS",                     /* 10 */
-    "Segment Not Present",             /* 11 */
-    "Stack-Segment Fault",             /* 12 */
-    "General Protection Fault",        /* 13 */
-    "Page Fault",                      /* 14 */
-    "Reserved",                        /* 15 */
-    "x87 Floating-Point Exception",    /* 16 */
-    "Alignment Check",                 /* 17 */
-    "Machine Check",                   /* 18 */
-    "SIMD Floating-Point Exception",   /* 19 */
-    "Virtualization Exception",        /* 20 */
-    "Control Protection Exception",    /* 21 */
-    "Reserved",                        /* 22 */
-    "Reserved",                        /* 23 */
-    "Reserved",                        /* 24 */
-    "Reserved",                        /* 25 */
-    "Reserved",                        /* 26 */
-    "Reserved",                        /* 27 */
-    "Hypervisor Injection Exception",  /* 28 */
-    "VMM Communication Exception",     /* 29 */
-    "Security Exception",              /* 30 */
-    "Reserved"                         /* 31 */
+static const char *const exception_names[32] =
+    {
+        "Divide Error",                   /* 0  */
+        "Debug",                          /* 1  */
+        "Non-maskable Interrupt",         /* 2  */
+        "Breakpoint",                     /* 3  */
+        "Overflow",                       /* 4  */
+        "BOUND Range Exceeded",           /* 5  */
+        "Invalid Opcode",                 /* 6  */
+        "Device Not Available",           /* 7  */
+        "Double Fault",                   /* 8  */
+        "Coprocessor Segment Overrun",    /* 9, obsolete */
+        "Invalid TSS",                    /* 10 */
+        "Segment Not Present",            /* 11 */
+        "Stack-Segment Fault",            /* 12 */
+        "General Protection Fault",       /* 13 */
+        "Page Fault",                     /* 14 */
+        "Reserved",                       /* 15 */
+        "x87 Floating-Point Exception",   /* 16 */
+        "Alignment Check",                /* 17 */
+        "Machine Check",                  /* 18 */
+        "SIMD Floating-Point Exception",  /* 19 */
+        "Virtualization Exception",       /* 20 */
+        "Control Protection Exception",   /* 21 */
+        "Reserved",                       /* 22 */
+        "Reserved",                       /* 23 */
+        "Reserved",                       /* 24 */
+        "Reserved",                       /* 25 */
+        "Reserved",                       /* 26 */
+        "Reserved",                       /* 27 */
+        "Hypervisor Injection Exception", /* 28 */
+        "VMM Communication Exception",    /* 29 */
+        "Security Exception",             /* 30 */
+        "Reserved"                        /* 31 */
 };
 
 static __attribute__((noreturn)) void interrupt_halt(void)
 {
     for (;;)
-        __asm__ volatile ("cli; hlt");
+        __asm__ volatile("cli; hlt");
 }
 
 static uint32_t read_cr2(void)
 {
     uint32_t value;
 
-    __asm__ volatile (
+    __asm__ volatile(
         "movl %%cr2, %0"
-        : "=r"(value)
-    );
+        : "=r"(value));
 
     return value;
 }
@@ -65,22 +66,19 @@ static void print_page_fault_error(uint32_t error_code)
 {
     printf(
         "    access: %s\n",
-        (error_code & (1u << 1)) ? "write" : "read"
-    );
+        (error_code & (1u << 1)) ? "write" : "read");
 
     printf(
         "    cause: %s\n",
         (error_code & (1u << 0))
             ? "protection violation"
-            : "non-present page"
-    );
+            : "non-present page");
 
     printf(
         "    privilege: %s\n",
         (error_code & (1u << 2))
             ? "user mode"
-            : "supervisor mode"
-    );
+            : "supervisor mode");
 
     if ((error_code & (1u << 3)) != 0)
         printf("    reserved page-table bit was set\n");
@@ -89,28 +87,25 @@ static void print_page_fault_error(uint32_t error_code)
         printf("    occurred during instruction fetch\n");
 }
 
-static void print_registers(const struct interrupt_frame* frame)
+static void print_registers(const struct interrupt_frame *frame)
 {
     printf(
         "EAX=%lx EBX=%lx ECX=%lx EDX=%lx\n",
         (unsigned long)frame->eax,
         (unsigned long)frame->ebx,
         (unsigned long)frame->ecx,
-        (unsigned long)frame->edx
-    );
+        (unsigned long)frame->edx);
 
     printf(
         "ESI=%lx EDI=%lx EBP=%lx\n",
         (unsigned long)frame->esi,
         (unsigned long)frame->edi,
-        (unsigned long)frame->ebp
-    );
+        (unsigned long)frame->ebp);
 }
 
-static __attribute__((noreturn))
-void default_exception_handler(struct interrupt_frame* frame)
+static __attribute__((noreturn)) void default_exception_handler(struct interrupt_frame *frame)
 {
-    const char* name = "Unknown exception";
+    const char *name = "Unknown exception";
 
     if (frame->vector < 32u)
         name = exception_names[frame->vector];
@@ -119,28 +114,23 @@ void default_exception_handler(struct interrupt_frame* frame)
     printf(
         "Vector    : %lu (%s)\n",
         (unsigned long)frame->vector,
-        name
-    );
+        name);
 
     printf(
         "Error code: 0x%lx\n",
-        (unsigned long)frame->error_code
-    );
+        (unsigned long)frame->error_code);
 
     printf(
         "EIP       : 0x%lx\n",
-        (unsigned long)frame->eip
-    );
+        (unsigned long)frame->eip);
 
     printf(
         "CS        : 0x%lx\n",
-        (unsigned long)frame->cs
-    );
+        (unsigned long)frame->cs);
 
     printf(
         "EFLAGS    : 0x%lx\n",
-        (unsigned long)frame->eflags
-    );
+        (unsigned long)frame->eflags);
 
     print_registers(frame);
 
@@ -152,20 +142,17 @@ void default_exception_handler(struct interrupt_frame* frame)
     {
         printf(
             "User ESP  : 0x%lx\n",
-            (unsigned long)frame->user_esp
-        );
+            (unsigned long)frame->user_esp);
 
         printf(
             "User SS   : 0x%lx\n",
-            (unsigned long)frame->user_ss
-        );
+            (unsigned long)frame->user_ss);
     }
 
     interrupt_halt();
 }
 
-static __attribute__((noreturn))
-void default_page_fault_handler(struct interrupt_frame* frame)
+static __attribute__((noreturn)) void default_page_fault_handler(struct interrupt_frame *frame)
 {
     uint32_t fault_address = read_cr2();
 
@@ -173,18 +160,15 @@ void default_page_fault_handler(struct interrupt_frame* frame)
 
     printf(
         "Fault address : 0x%lx\n",
-        (unsigned long)fault_address
-    );
+        (unsigned long)fault_address);
 
     printf(
         "Instruction   : 0x%lx\n",
-        (unsigned long)frame->eip
-    );
+        (unsigned long)frame->eip);
 
     printf(
         "Error code    : 0x%lx\n",
-        (unsigned long)frame->error_code
-    );
+        (unsigned long)frame->error_code);
 
     print_page_fault_error(frame->error_code);
     print_registers(frame);
@@ -192,12 +176,11 @@ void default_page_fault_handler(struct interrupt_frame* frame)
     interrupt_halt();
 }
 
-static void breakpoint_handler(struct interrupt_frame* frame)
+static void breakpoint_handler(struct interrupt_frame *frame)
 {
     printf(
         "Breakpoint at EIP=0x%lx\n",
-        (unsigned long)frame->eip
-    );
+        (unsigned long)frame->eip);
 
     /*
      * Returning resumes execution after the INT3 instruction.
@@ -234,7 +217,7 @@ void interrupt_unregister_handler(uint8_t vector)
     interrupt_handlers[vector] = NULL;
 }
 
-void interrupt_dispatch(struct interrupt_frame* frame)
+void interrupt_dispatch(struct interrupt_frame *frame)
 {
     if (frame == NULL)
         interrupt_halt();
@@ -243,8 +226,7 @@ void interrupt_dispatch(struct interrupt_frame* frame)
     {
         printf(
             "Invalid interrupt vector %lu\n",
-            (unsigned long)frame->vector
-        );
+            (unsigned long)frame->vector);
 
         interrupt_halt();
     }
@@ -326,13 +308,13 @@ void interrupt_dispatch(struct interrupt_frame* frame)
         pic_send_eoi(irq);
 
         /*
-         * PIT milestone:
+         * IRQ handlers are finished and the PIC has been acknowledged.
          *
-         * Do NOT perform scheduler preemption here yet.
-         *
-         * Later, during the preemptive-scheduling milestone,
-         * this becomes one possible safe rescheduling point.
+         * If the timer or another IRQ requested a reschedule,
+         * it is now safe to switch tasks.
          */
+        scheduler_handle_safe_preemption_point();
+
         return;
     }
 
@@ -359,8 +341,7 @@ void interrupt_dispatch(struct interrupt_frame* frame)
 
     printf(
         "Unhandled interrupt vector %lu\n",
-        (unsigned long)frame->vector
-    );
+        (unsigned long)frame->vector);
 
     interrupt_halt();
 }
@@ -369,7 +350,7 @@ uint32_t interrupt_save_disable(void)
 {
     uint32_t flags;
 
-    __asm__ volatile (
+    __asm__ volatile(
         "pushfl\n"
         "popl %0\n"
         "cli"
@@ -387,7 +368,7 @@ void interrupt_restore(uint32_t flags)
      */
     if ((flags & (1u << 9)) != 0)
     {
-        __asm__ volatile (
+        __asm__ volatile(
             "sti"
             :
             :
@@ -395,7 +376,7 @@ void interrupt_restore(uint32_t flags)
     }
     else
     {
-        __asm__ volatile (
+        __asm__ volatile(
             "cli"
             :
             :
@@ -405,7 +386,7 @@ void interrupt_restore(uint32_t flags)
 
 void interrupt_disable(void)
 {
-    __asm__ volatile (
+    __asm__ volatile(
         "cli"
         :
         :
@@ -414,7 +395,7 @@ void interrupt_disable(void)
 
 void interrupt_enable(void)
 {
-    __asm__ volatile (
+    __asm__ volatile(
         "sti"
         :
         :

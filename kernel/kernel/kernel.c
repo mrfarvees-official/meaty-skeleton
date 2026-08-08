@@ -10,6 +10,12 @@
 #include <kernel/scheduler.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
+#include <kernel/wait_queue.h>
+#include <kernel/sleep_queue.h>
+
+#include <kernel/device/keyboard.h>
+
+#include <kernel/test.h>
 
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
@@ -31,118 +37,6 @@ static void yield_forever(void)
 		task_yield();
 }
 
-// static void test_page_fault(void)
-// {
-//     printf("Triggering intentional page fault...\n");
-
-//     volatile uint32_t* invalid_address =
-//         (volatile uint32_t*)0xD0000000u;
-
-//     *invalid_address = 0xDEADBEEFu;
-
-//     /*
-//      * This line must never execute because the page-fault handler
-//      * should halt the kernel.
-//      */
-//     printf("ERROR: page fault did not occur\n");
-// }
-
-// static void heap_test(void)
-// {
-// 	printf("heap test starting\n");
-
-// 	void *first = kmalloc(32);
-// 	void *second = kmalloc(64);
-// 	void *third = kcalloc(16, sizeof(uint32_t));
-
-// 	printf("first  = %p\n", first);
-// 	printf("second = %p\n", second);
-// 	printf("third  = %p\n", third);
-
-// 	if (first == NULL || second == NULL || third == NULL)
-// 	{
-// 		printf("heap test failed: initial allocation\n");
-// 		halt_forever();
-// 	}
-
-// 	/*
-// 	 * Verify calloc zeroed its allocation.
-// 	 */
-// 	uint32_t *values = (uint32_t *)third;
-
-// 	for (size_t i = 0; i < 16; ++i)
-// 	{
-// 		if (values[i] != 0)
-// 		{
-// 			printf("heap test failed: calloc not zeroed\n");
-// 			halt_forever();
-// 		}
-// 	}
-
-// 	/*
-// 	 * Free the middle block.
-// 	 */
-// 	kfree(second);
-
-// 	/*
-// 	 * 48 bytes should fit inside the old 64-byte allocation,
-// 	 * depending on your splitting policy.
-// 	 */
-// 	void *reused = kmalloc(48);
-
-// 	printf("reused = %p\n", reused);
-
-// 	if (reused == NULL)
-// 	{
-// 		printf("heap test failed: reuse allocation\n");
-// 		halt_forever();
-// 	}
-
-// 	/*
-// 	 * Test realloc.
-// 	 */
-// 	void *resized = krealloc(first, 256);
-
-// 	printf("resized = %p\n", resized);
-
-// 	if (resized == NULL)
-// 	{
-// 		printf("heap test failed: krealloc\n");
-// 		halt_forever();
-// 	}
-
-// 	first = resized;
-
-// 	kfree(first);
-// 	kfree(third);
-// 	kfree(reused);
-
-// 	printf("heap test passed\n");
-// }
-
-// static void heap_expansion_test(void)
-// {
-// 	void *allocations[512];
-
-// 	printf("heap expansion test starting\n");
-
-// 	for (size_t i = 0; i < 512; ++i)
-// 	{
-// 		allocations[i] = kmalloc(128);
-
-// 		if (allocations[i] == NULL)
-// 		{
-// 			printf("heap expansion failed at %u\n", (unsigned)i);
-// 			halt_forever();
-// 		}
-// 	}
-
-// 	for (size_t i = 0; i < 512; ++i)
-// 		kfree(allocations[i]);
-
-// 	printf("heap expansion test passed\n");
-// }
-
 void validate_multiboot_magic(uint32_t magic)
 {
 	if (magic != MULTIBOOT_BOOTLOADER_MAGIC)
@@ -153,109 +47,14 @@ void validate_multiboot_magic(uint32_t magic)
 	}
 }
 
-static void worker(void *argument)
-{
-	unsigned id = (unsigned)(uintptr_t)argument;
-
-	for (unsigned i = 0; i < 4; ++i)
-	{
-		printf("task %u iteration %u\n", id, i);
-		task_yield();
-	}
-}
-
-static void pit_test(void)
-{
-	uint64_t previous = timer_ticks();
-
-	printf("PIT test started\n");
-
-	for (;;)
-	{
-		uint64_t now = timer_ticks();
-
-		/*
-		 * At 100 Hz, timer_frequency() ticks is approximately
-		 * one second.
-		 */
-		if (now - previous >= timer_frequency())
-		{
-			previous = now;
-
-			printf(
-				"ticks=%lu uptime=%lu ms\n",
-				(unsigned long)now,
-				(unsigned long)timer_uptime_ms());
-		}
-
-		/*
-		 * Sleep until the next interrupt.
-		 *
-		 * IF must already be enabled here.
-		 */
-		__asm__ volatile("hlt");
-	}
-}
-
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
 
 	validate_multiboot_magic(multiboot_magic);
 
-	// test success
-	// printf("Hello, kernel World!\n");
-	// printf("String: %s\n", "kernel");
-	// printf("Character: %c\n", 'A');
-	// printf("Signed: %d\n", -123);
-	// printf("Unsigned: %u\n", 123U);
-	// printf("Octal: %o\n", 10U);
-	// printf("Hex: %x\n", 255U);
-	// printf("HEX: %X\n", 255U);
-	// printf("Pointer: %p\n", (void *)0x1234);
-	// printf("Width: |%10d|\n", 42);
-	// printf("Left: |%-10d|\n", 42);
-	// printf("Zero: |%010d|\n", -42);
-	// printf("Prefix: %#x\n", 255U);
-	// printf("Percent: 100%%\n");
-	// printf("Limited string: %.3s\n", "Hello");
-	// printf("zero:       %Lf\n", 0.0L);
-	// printf("negative:   %Lf\n", -123.456L);
-	// printf("small e:    %Le\n", 0.000012345L);
-	// printf("large e:    %Le\n", 123456789.0L);
-	// printf("g fixed:    %.5Lg\n", 12.34567L);
-	// printf("g exponent: %.5Lg\n", 1234567.0L);
-	// printf("hex:        %La\n", 12.375L);
-	// printf("uppercase:  %LA\n", 12.375L);
-	// printf("width:      |%20.4Lf|\n", 12.375L);
-	// printf("left:       |%-20.4Lf|\n", 12.375L);
-	// printf("zero pad:   |%020.4Lf|\n", -12.375L);
-	// printf("sign:       |%+.4Lf|\n", 12.375L);
-	// printf("alternate:  |%#.0Lf|\n", 12.0L);
-
-	// test success
-	// const struct multiboot_info* mbi = (const struct multiboot_info*)multiboot_info_address;
-	// printf("Multiboot magic: 0x%x\n", multiboot_magic);
-	// printf("Multiboot information at: 0x%x\n", multiboot_info_address);
-	// print_memory_map(mbi);
-
 	pmm_initialize(multiboot_info_address);
 	printf("pmm initialized\n");
-
-	// test success
-	// uintptr_t a = pmm_allocate_frame();
-	// uintptr_t b = pmm_allocate_frame();
-	// printf("frame a: 0x%x\n", a);
-	// printf("frame b: 0x%x\n", b);
-	// if (a == 0 || b == 0 || a == b)
-	// {
-	// 	printf("PMM test failed\n");
-	// 	halt_forever();
-	// }
-	// pmm_free_frame(a);
-	// uintptr_t c = pmm_allocate_frame();
-	// printf("frame c: 0x%x\n", c);
-	// printf("PMM test passed\n");
 
 	gdt_initialize();
 	printf("gdt initialized\n");
@@ -269,30 +68,11 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	pic_initialize();
 	printf("pic initialized\n");
 
-	// test success
-	// __asm__ volatile ("int $3");
-	// printf("int3 returned successfully\n");
-
 	paging_initialize();
 	printf("paging initialized\n");
 
-	// test success
-	// test_page_fault();
-
 	heap_initialize();
 	printf("heap initialized\n");
-
-	// test success
-	// heap_test();
-	// heap_expansion_test();
-	// printf(
-	// 	"Usable RAM: %u MiB\n",
-	// 	(unsigned)(pmm_get_usable_memory() /
-	// 			   (1024u * 1024u)));
-	// printf(
-	// 	"Free RAM: %u MiB\n",
-	// 	(unsigned)(pmm_get_free_memory() /
-	// 			   (1024u * 1024u)));
 
 	scheduler_initialize();
 	printf("scheduler initialized\n");
@@ -300,15 +80,22 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("task system initialized\n");
 
+	sleep_queue_initialize();
+	printf("sleep queue initialized\n");
+
 	if (pit_initialize(PIT_DEFAULT_FREQUENCY_HZ) != 0)
 	{
 		printf("PIT initialization failed\n");
 		halt_forever();
 	}
 
-	printf(
-		"pit initialized at %u Hz\n",
-		(unsigned)pit_frequency());
+	if (!keyboard_initialize())
+	{
+		printf("keyboard initialization FAILED\n");
+
+		for (;;)
+			__asm__ volatile("cli; hlt");
+	}
 
 	/*
 	 * PIT IRQ0 is now configured and unmasked.
@@ -318,38 +105,17 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	pit_test();
-	/*
-	 * pit_test() does not return.
-	 */
-	halt_forever();
-
-	for (unsigned i = 1; i <= 1; ++i)
-	{
-		task_t *task =
-			task_create_kernel(
-				worker,
-				(void *)(uintptr_t)i);
-
-		if (task == NULL)
-		{
-			printf("failed to create task %u\n", i);
-			halt_forever();
-		}
-
-		printf(
-			"created task %u: task=%p stack=%p\n",
-			i,
-			task,
-			(void *)task->stack_pointer);
-	}
-
-	printf("ALL TASKS CREATED\n");
-	printf("ABOUT TO FIRST YIELD\n");
-
-	task_yield();
-
-	printf("BOOTSTRAP RETURNED FROM FIRST YIELD\n");
+	// kernel_tests_run();
+	// pmm_stress_test();
+	// paging_stress_test();
+	// heap_stress_test();
+	// mutex_stress_test();
+	// semaphore_stress_test();
+	// task_cleanup_stress_test();
+	// keyboard_raw_test();
+	// keyboard_event_test();
+	// keyboard_blocking_test();
+	keyboard_line_test();
 
 	yield_forever();
 }

@@ -60,4 +60,6 @@ bool paging_get_physical_address(
     uintptr_t* physical_address
 );
 
+bool paging_is_mapped(uintptr_t virtual_address);
+
 #endif

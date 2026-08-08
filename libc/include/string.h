@@ -19,6 +19,7 @@ char *strchr(const char *string, int character);
 char *strcpy(char *restrict destination, const char *restrict source);
 char *strncpy(char *restrict destination, const char *restrict source, size_t count);
 char *strcat(char *restrict destination, const char *restrict source);
+int strcmp(const char *left, const char *right);
 
 #ifdef __cplusplus
 }
