@@ -451,3 +451,53 @@ bool paging_is_mapped(uintptr_t virtual_address)
 
     return mapped;
 }
+
+bool paging_identity_map_range(
+    uintptr_t physical_address,
+    size_t length,
+    uint32_t flags)
+{
+    if (length == 0)
+        return true;
+
+    if (physical_address >
+        UINTPTR_MAX - (length - 1u))
+    {
+        return false;
+    }
+
+    uintptr_t start =
+        physical_address &
+        ~(uintptr_t)(PAGE_SIZE - 1u);
+
+    uintptr_t end =
+        (physical_address + length - 1u) &
+        ~(uintptr_t)(PAGE_SIZE - 1u);
+
+    for (uintptr_t page = start;; page += PAGE_SIZE)
+    {
+        if (!paging_is_mapped(page))
+        {
+            /*
+             * Identity map:
+             *
+             * virtual == physical
+             */
+            if (!paging_map_page(
+                    page,
+                    page,
+                    flags))
+            {
+                return false;
+            }
+        }
+
+        if (page == end)
+            break;
+
+        if (page > UINTPTR_MAX - PAGE_SIZE)
+            return false;
+    }
+
+    return true;
+}

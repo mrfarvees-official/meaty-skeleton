@@ -10,6 +10,8 @@ static struct idt_pointer idtr;
 
 extern void *isr_stub_table[32];
 extern void *irq_stub_table[16];
+extern void isr_apic_timer(void);
+extern void isr_apic_reschedule(void);
 
 void idt_set_gate(uint8_t vector, void (*handler)(void), uint8_t attributes)
 {
@@ -51,5 +53,14 @@ void idt_initialize(void)
     {
         idt_set_gate(pic_irq_to_vector(irq), (void (*)(void))irq_stub_table[irq], IDT_INTERRUPT_GATE);
     }
+
+    idt_set_gate(0xF0u, isr_apic_timer, IDT_INTERRUPT_GATE);
+    idt_set_gate(0xF1u, isr_apic_reschedule, IDT_INTERRUPT_GATE);
+
+    idt_load();
+}
+
+void idt_load(void)
+{
     __asm__ volatile ("lidt %0" : : "m"(idtr));
 }

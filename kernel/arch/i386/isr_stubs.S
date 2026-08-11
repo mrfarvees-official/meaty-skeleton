@@ -50,3 +50,15 @@ ISR_NO_ERROR 28
 ISR_NO_ERROR 29
 ISR_NO_ERROR 30
 ISR_NO_ERROR 31
+
+.global isr_apic_timer
+isr_apic_timer:
+    pushl $0
+    pushl $0xF0
+    jmp isr_common
+
+.global isr_apic_reschedule
+isr_apic_reschedule:
+    pushl $0
+    pushl $0xF1
+    jmp isr_common

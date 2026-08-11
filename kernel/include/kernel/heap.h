@@ -5,13 +5,11 @@
 
 typedef struct __attribute__((aligned(16))) heap_block
 {
-    size_t size;
-
-    struct heap_block* previous;
-    struct heap_block* next;
-
-    uint32_t magic;
-    bool free;
+    size_t              size;
+    struct heap_block   *previous;
+    struct heap_block   *next;
+    uint32_t            magic;
+    bool                free;
 } heap_block_t;
 
 _Static_assert(

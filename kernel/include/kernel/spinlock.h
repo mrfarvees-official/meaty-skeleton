@@ -14,6 +14,9 @@ void spinlock_initialize(spinlock_t *lock);
 
 uint32_t spin_lock_irqsave(spinlock_t *lock);
 
+/* Release a lock while intentionally leaving interrupt state unchanged. */
+void spin_unlock(spinlock_t *lock);
+
 void spin_unlock_irqrestore(
     spinlock_t *lock,
     uint32_t flags

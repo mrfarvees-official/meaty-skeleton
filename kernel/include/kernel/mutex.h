@@ -8,29 +8,36 @@
 
 
 /*
- * Sleeping kernel mutex.
- *
- * This implementation is currently designed for the kernel's
- * single-core preemptive scheduler.
- *
- * A task that cannot acquire the mutex is placed on waiters and
- * blocked rather than spinning.
+ * SMP-safe sleeping kernel mutex.
  *
  * This mutex is NON-RECURSIVE.
+ *
+ * waiters.lock protects all mutex state:
+ *
+ *     locked
+ *     owner
+ *     waiter queue
+ *
+ * mutex_lock() may block and therefore must only
+ * be used from normal task context.
  */
 typedef struct mutex
 {
-    bool locked;
+    bool         locked;
 
     /*
-     * Task currently owning the mutex.
+     * Current owner.
      *
      * NULL when unlocked.
+     *
+     * Protected by waiters.lock.
      */
-    task_t *owner;
+    task_t       *owner;
 
     /*
-     * Tasks waiting for the mutex.
+     * Tasks waiting for ownership.
+     *
+     * waiters.lock is also the mutex state lock.
      */
     wait_queue_t waiters;
 
@@ -38,55 +45,51 @@ typedef struct mutex
 
 
 /*
- * Initialize a mutex before first use.
+ * Initialize before first use.
  */
-void mutex_initialize(mutex_t *mutex);
+void mutex_initialize(
+    mutex_t *mutex
+);
 
 
 /*
- * Acquire mutex.
+ * Acquire the mutex.
  *
- * Returns true when ownership has been acquired.
+ * May block.
  *
- * Returns false for invalid usage such as:
- *
- *     - mutex == NULL
- *     - no current task
- *     - current task already owns this mutex
- *
- * If another task owns the mutex, the current task sleeps until
- * the mutex becomes available.
+ * Returns false for invalid use or recursive
+ * acquisition by the current owner.
  */
-bool mutex_lock(mutex_t *mutex);
+bool mutex_lock(
+    mutex_t *mutex
+);
 
 
 /*
- * Try to acquire without blocking.
- *
- * Returns true if acquired.
- * Returns false if unavailable or invalid.
+ * Attempt acquisition without blocking.
  */
-bool mutex_try_lock(mutex_t *mutex);
+bool mutex_try_lock(
+    mutex_t *mutex
+);
 
 
 /*
- * Release mutex.
+ * Release the mutex.
  *
  * Only the owning task may unlock it.
- *
- * Returns true on success.
- * Returns false if the mutex is invalid, unlocked, or owned by
- * another task.
  */
-bool mutex_unlock(mutex_t *mutex);
+bool mutex_unlock(
+    mutex_t *mutex
+);
 
 
 /*
- * Query the current locked state.
+ * Return the current locked state.
  *
- * Intended mainly for debugging/tests.
+ * Primarily for debugging/tests.
  */
-bool mutex_is_locked(mutex_t *mutex);
-
+bool mutex_is_locked(
+    mutex_t *mutex
+);
 
 #endif

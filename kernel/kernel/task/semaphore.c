@@ -3,68 +3,10 @@
 #include <stdint.h>
 
 #include <kernel/semaphore.h>
+#include <kernel/scheduler.h>
+#include <kernel/spinlock.h>
 #include <kernel/task.h>
 #include <kernel/wait_queue.h>
-
-#include "../arch/i386/interrupts.h"
-
-
-/*
- * --------------------------------------------------------------------------
- * COUNTING SEMAPHORE
- * --------------------------------------------------------------------------
- *
- * This implementation is designed for the current single-core,
- * preemptive kernel.
- *
- *
- * semaphore_wait()
- *
- *     May BLOCK.
- *
- * Therefore:
- *
- *     - do not call semaphore_wait() from an interrupt handler
- *     - do not call semaphore_wait() while holding PMM/paging/heap
- *       spinlocks
- *
- *
- * semaphore_signal()
- *
- *     Does not block.
- *
- *
- * LOST-WAKEUP PROTECTION
- * ----------------------
- *
- * The important operation is:
- *
- *     check count
- *          ->
- *     enter wait queue
- *          ->
- *     become blocked
- *
- * Timer preemption must not occur between those operations.
- *
- * Therefore interrupts remain disabled while checking count and
- * entering wait_queue_block().
- *
- * wait_queue_block() also disables interrupts internally. This
- * nesting is safe because interrupt_restore() restores the saved
- * interrupt state.
- *
- *
- * SMP NOTE
- * --------
- *
- * This is sufficient for the CURRENT single-core kernel.
- *
- * A future SMP implementation will need an internal spinlock around:
- *
- *     semaphore->count
- *     semaphore->waiters
- */
 
 
 void semaphore_initialize(
@@ -89,59 +31,70 @@ bool semaphore_wait(
     if (semaphore == NULL)
         return false;
 
-    task_t *current =
-        task_current();
-
-    if (current == NULL)
+    if (task_current() == NULL)
         return false;
 
-
-    /*
-     * Protect the check -> block sequence against timer preemption.
-     */
-    uint32_t flags =
-        interrupt_save_disable();
-
-
-    /*
-     * Always re-check after waking.
-     *
-     * semaphore_signal() adds a permit and wakes one waiter.
-     *
-     * Before that waiter actually gets CPU time, another runnable
-     * task could acquire the permit.
-     *
-     * Therefore waking does not automatically mean ownership of a
-     * permit.
-     */
-    while (semaphore->count == 0)
+    for (;;)
     {
-        wait_queue_block(
-            &semaphore->waiters
+        /*
+         * The wait queue lock is also the semaphore
+         * state lock.
+         *
+         * Therefore count and waiter membership cannot
+         * race between CPUs.
+         */
+        uint32_t flags =
+            spin_lock_irqsave(
+                &semaphore->waiters.lock
+            );
+
+        /*
+         * Permit available.
+         *
+         * Consume it while holding the same lock used
+         * by semaphore_signal().
+         */
+        if (semaphore->count != 0)
+        {
+            --semaphore->count;
+
+            spin_unlock_irqrestore(
+                &semaphore->waiters.lock,
+                flags
+            );
+
+            return true;
+        }
+
+        /*
+         * No permit.
+         *
+         * wait_queue_block_locked() assumes that
+         * waiters.lock is already held.
+         *
+         * It:
+         *
+         *   - puts current onto the waiter queue
+         *   - marks current TASK_BLOCKED
+         *   - releases waiters.lock
+         *   - switches away
+         *
+         * There is therefore no check->sleep
+         * lost-wakeup window.
+         */
+        wait_queue_block_locked(
+            &semaphore->waiters,
+            flags
         );
 
         /*
-         * When execution resumes here, interrupts are still in the
-         * disabled state that existed when wait_queue_block() was
-         * entered.
+         * When this task eventually runs again, start
+         * over and compete for a permit.
          *
-         * Loop and re-check count.
+         * A wakeup does not itself grant ownership of
+         * a permit.
          */
     }
-
-
-    /*
-     * Consume one permit.
-     *
-     * Interrupts are still disabled, so this operation is atomic
-     * relative to other tasks on the current single CPU.
-     */
-    --semaphore->count;
-
-
-    interrupt_restore(flags);
-
-    return true;
 }
 
 
@@ -151,23 +104,27 @@ bool semaphore_try_wait(
     if (semaphore == NULL)
         return false;
 
-
     uint32_t flags =
-        interrupt_save_disable();
-
+        spin_lock_irqsave(
+            &semaphore->waiters.lock
+        );
 
     if (semaphore->count == 0)
     {
-        interrupt_restore(flags);
+        spin_unlock_irqrestore(
+            &semaphore->waiters.lock,
+            flags
+        );
 
         return false;
     }
 
-
     --semaphore->count;
 
-
-    interrupt_restore(flags);
+    spin_unlock_irqrestore(
+        &semaphore->waiters.lock,
+        flags
+    );
 
     return true;
 }
@@ -179,40 +136,57 @@ bool semaphore_signal(
     if (semaphore == NULL)
         return false;
 
-
-    uint32_t flags =
-        interrupt_save_disable();
-
-
     /*
-     * Avoid wrapping SIZE_MAX back to zero.
+     * Protect both count and waiter removal with the
+     * same lock.
      */
+    uint32_t flags =
+        spin_lock_irqsave(
+            &semaphore->waiters.lock
+        );
+
     if (semaphore->count == SIZE_MAX)
     {
-        interrupt_restore(flags);
+        spin_unlock_irqrestore(
+            &semaphore->waiters.lock,
+            flags
+        );
 
         return false;
     }
 
-
     /*
-     * Publish the new permit before waking a waiter.
+     * Publish the permit before making a waiter READY.
      */
     ++semaphore->count;
 
-
     /*
-     * Wake one waiter if one exists.
+     * Remove a waiter while still holding the same lock
+     * that protects count.
      *
-     * Waking merely makes the task READY.
-     * The task will re-check count when it actually runs.
+     * Do NOT call scheduler_wake() while holding this
+     * lock.
      */
-    wait_queue_wake_one(
-        &semaphore->waiters
+    task_t *task =
+        wait_queue_pop_locked(
+            &semaphore->waiters
+        );
+
+    spin_unlock_irqrestore(
+        &semaphore->waiters.lock,
+        flags
     );
 
-
-    interrupt_restore(flags);
+    /*
+     * Scheduler locking happens after the semaphore/
+     * wait-queue lock has been released.
+     */
+    if (task != NULL)
+    {
+        scheduler_wake(
+            task
+        );
+    }
 
     return true;
 }
@@ -224,16 +198,18 @@ size_t semaphore_get_count(
     if (semaphore == NULL)
         return 0;
 
-
     uint32_t flags =
-        interrupt_save_disable();
-
+        spin_lock_irqsave(
+            &semaphore->waiters.lock
+        );
 
     size_t count =
         semaphore->count;
 
-
-    interrupt_restore(flags);
+    spin_unlock_irqrestore(
+        &semaphore->waiters.lock,
+        flags
+    );
 
     return count;
 }

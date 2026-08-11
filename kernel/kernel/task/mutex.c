@@ -3,67 +3,10 @@
 #include <stdint.h>
 
 #include <kernel/mutex.h>
+#include <kernel/scheduler.h>
+#include <kernel/spinlock.h>
 #include <kernel/task.h>
 #include <kernel/wait_queue.h>
-
-#include "../arch/i386/interrupts.h"
-
-
-/*
- * --------------------------------------------------------------------------
- * MUTEX MODEL
- * --------------------------------------------------------------------------
- *
- * This mutex is intended for normal kernel TASK context.
- *
- * It may block, therefore:
- *
- *     DO NOT use mutex_lock() from an IRQ handler.
- *
- *     DO NOT call mutex_lock() while holding one of the low-level
- *     PMM/paging/heap spinlocks.
- *
- *
- * Why interrupts are briefly disabled:
- *
- * Consider:
- *
- *     Task A:
- *
- *         sees mutex locked
- *
- *                    <--- preemption here
- *
- *     Task B:
- *
- *         unlocks mutex
- *         wake_one() sees nobody waiting
- *
- *     Task A:
- *
- *         enters wait queue
- *         sleeps forever
- *
- * That is a lost wakeup.
- *
- * We prevent it by keeping interrupts disabled across:
- *
- *     inspect mutex state
- *            ->
- *     enqueue current task
- *            ->
- *     block current task
- *
- * wait_queue_block() itself also disables interrupts. Nested interrupt
- * disabling is safe because interrupt_restore() restores the original
- * saved EFLAGS state.
- *
- *
- * This is correct for the CURRENT SINGLE-CORE kernel.
- *
- * An SMP implementation will later require an internal atomic/spinlock
- * protecting mutex state and its wait queue.
- */
 
 
 void mutex_initialize(mutex_t *mutex)
@@ -91,77 +34,78 @@ bool mutex_lock(mutex_t *mutex)
     if (current == NULL)
         return false;
 
-
-    /*
-     * Disable preemption while examining the mutex and possibly
-     * entering its wait queue.
-     *
-     * This closes the lost-wakeup window.
-     */
-    uint32_t flags =
-        interrupt_save_disable();
-
-
-    /*
-     * Non-recursive mutex.
-     *
-     * Trying to lock a mutex already owned by this task would
-     * otherwise cause the task to sleep waiting for itself.
-     */
-    if (mutex->locked &&
-        mutex->owner == current)
-    {
-        interrupt_restore(flags);
-
-        return false;
-    }
-
-
-    /*
-     * Always re-check after waking.
-     *
-     * mutex_unlock() makes the mutex available and wakes one waiter,
-     * but another runnable task could acquire it before this task
-     * actually gets scheduled again.
-     */
-    while (mutex->locked)
+    for (;;)
     {
         /*
-         * interrupts are already disabled here.
+         * waiters.lock protects:
          *
-         * wait_queue_block() saves that disabled state, places this
-         * task onto the queue, changes it to TASK_BLOCKED, and switches
-         * away.
+         *   mutex->locked
+         *   mutex->owner
+         *   mutex->waiters
          *
-         * When eventually scheduled again, wait_queue_block() returns
-         * with interrupts still disabled because that was the state on
-         * entry.
+         * Using one lock closes the SMP lost-wakeup
+         * window between checking the mutex and
+         * entering the wait queue.
          */
-        wait_queue_block(
-            &mutex->waiters
+        uint32_t flags =
+            spin_lock_irqsave(
+                &mutex->waiters.lock
+            );
+
+        /*
+         * Non-recursive mutex.
+         */
+        if (mutex->locked &&
+            mutex->owner == current)
+        {
+            spin_unlock_irqrestore(
+                &mutex->waiters.lock,
+                flags
+            );
+
+            return false;
+        }
+
+        /*
+         * Mutex available.
+         *
+         * Claim ownership while still holding the
+         * mutex/wait-queue spinlock.
+         */
+        if (!mutex->locked)
+        {
+            mutex->locked = true;
+            mutex->owner = current;
+
+            spin_unlock_irqrestore(
+                &mutex->waiters.lock,
+                flags
+            );
+
+            return true;
+        }
+
+        /*
+         * Mutex owned by another task.
+         *
+         * wait_queue_block_locked() expects
+         * waiters.lock to already be held.
+         *
+         * It atomically:
+         *
+         *   - adds current to waiters
+         *   - changes RUNNING -> BLOCKED
+         *   - releases waiters.lock
+         *   - switches away
+         *
+         * When this task runs again we loop and
+         * compete for ownership normally.
+         */
+        wait_queue_block_locked(
+            &mutex->waiters,
+            flags
         );
-
-        /*
-         * We are running again.
-         *
-         * Loop and re-check mutex->locked.
-         */
     }
-
-
-    /*
-     * Mutex is available.
-     *
-     * Interrupts remain disabled, so no other task on this single CPU
-     * can acquire it between these assignments.
-     */
-    mutex->locked = true;
-    mutex->owner = current;
-
-
-    interrupt_restore(flags);
-
-    return true;
 }
 
 
@@ -176,27 +120,31 @@ bool mutex_try_lock(mutex_t *mutex)
     if (current == NULL)
         return false;
 
-
     uint32_t flags =
-        interrupt_save_disable();
-
+        spin_lock_irqsave(
+            &mutex->waiters.lock
+        );
 
     /*
-     * Already locked by somebody, including ourselves.
+     * Already owned by any task, including current.
      */
     if (mutex->locked)
     {
-        interrupt_restore(flags);
+        spin_unlock_irqrestore(
+            &mutex->waiters.lock,
+            flags
+        );
 
         return false;
     }
 
-
     mutex->locked = true;
     mutex->owner = current;
 
-
-    interrupt_restore(flags);
+    spin_unlock_irqrestore(
+        &mutex->waiters.lock,
+        flags
+    );
 
     return true;
 }
@@ -213,54 +161,67 @@ bool mutex_unlock(mutex_t *mutex)
     if (current == NULL)
         return false;
 
-
     uint32_t flags =
-        interrupt_save_disable();
-
+        spin_lock_irqsave(
+            &mutex->waiters.lock
+        );
 
     /*
-     * An unlocked mutex cannot be unlocked again.
+     * Cannot unlock an unlocked mutex.
      */
     if (!mutex->locked)
     {
-        interrupt_restore(flags);
+        spin_unlock_irqrestore(
+            &mutex->waiters.lock,
+            flags
+        );
 
         return false;
     }
 
-
     /*
-     * Only the owner may release the mutex.
+     * Only the owning task may release it.
      */
     if (mutex->owner != current)
     {
-        interrupt_restore(flags);
+        spin_unlock_irqrestore(
+            &mutex->waiters.lock,
+            flags
+        );
 
         return false;
     }
 
-
     /*
-     * Make mutex available BEFORE waking a waiter.
-     *
-     * The woken task will loop and acquire it when it gets CPU time.
+     * Make the mutex available while still holding
+     * the same lock that protects the waiter queue.
      */
     mutex->owner = NULL;
     mutex->locked = false;
 
-
     /*
-     * Wake the oldest waiter.
+     * Remove one waiter while still protected by
+     * waiters.lock.
      *
-     * wait_queue_wake_one() performs its own nested interrupt
-     * disable/restore.
+     * Do NOT call scheduler_wake() until after the
+     * spinlock has been released.
      */
-    wait_queue_wake_one(
-        &mutex->waiters
+    task_t *task =
+        wait_queue_pop_locked(
+            &mutex->waiters
+        );
+
+    spin_unlock_irqrestore(
+        &mutex->waiters.lock,
+        flags
     );
 
-
-    interrupt_restore(flags);
+    if (task != NULL)
+    {
+        scheduler_wake(
+            task
+        );
+    }
 
     return true;
 }
@@ -271,14 +232,18 @@ bool mutex_is_locked(mutex_t *mutex)
     if (mutex == NULL)
         return false;
 
-
     uint32_t flags =
-        interrupt_save_disable();
+        spin_lock_irqsave(
+            &mutex->waiters.lock
+        );
 
     bool locked =
         mutex->locked;
 
-    interrupt_restore(flags);
+    spin_unlock_irqrestore(
+        &mutex->waiters.lock,
+        flags
+    );
 
     return locked;
 }

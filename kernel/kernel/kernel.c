@@ -6,16 +6,22 @@
 #include <kernel/multiboot.h>
 #include <kernel/paging.h>
 #include <kernel/pmm.h>
+#include <kernel/process.h>
 #include <kernel/heap.h>
 #include <kernel/scheduler.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
 #include <kernel/wait_queue.h>
 #include <kernel/sleep_queue.h>
-
+#include <kernel/acpi.h>
+#include <kernel/smp.h>
+#include <kernel/cpu.h>
 #include <kernel/device/keyboard.h>
+#include <kernel/vfs.h>
+#include <kernel/ramfs.h>
 
 #include <kernel/test.h>
+#include <kernel/system_info.h>
 
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
@@ -74,14 +80,50 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	heap_initialize();
 	printf("heap initialized\n");
 
+	if (!acpi_initialize())
+	{
+		printf("ACPI initialization failed\n");
+		halt_forever();
+	}
+
+	if (!smp_detect_cpus())
+	{
+		printf("SMP CPU detection failed\n");
+		halt_forever();
+	}
+
+	cpu_local_initialize();
+	printf("BSP CPU-local state initialized\n");
+
 	scheduler_initialize();
 	printf("scheduler initialized\n");
 
 	task_initialize();
-	printf("task system initialized\n");
+	printf("BSP task system initialized\n");
+
+	process_initialize();
+	printf("process system initialized\n");
 
 	sleep_queue_initialize();
 	printf("sleep queue initialized\n");
+
+	vfs_initialize();
+	printf("VFS initialized\n");
+
+	if (!ramfs_initialize())
+	{
+		printf("RAMFS initialization failed\n");
+		halt_forever();
+	}
+	printf("RAMFS mounted as /\n");
+
+	if (!smp_start_aps())
+	{
+		printf("AP startup failed\n");
+		halt_forever();
+	}
+
+	printf("SMP online CPUs: %u\n", (unsigned)smp_online_cpu_count());
 
 	if (pit_initialize(PIT_DEFAULT_FREQUENCY_HZ) != 0)
 	{
@@ -92,9 +134,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	if (!keyboard_initialize())
 	{
 		printf("keyboard initialization FAILED\n");
-
-		for (;;)
-			__asm__ volatile("cli; hlt");
+		halt_forever();
 	}
 
 	/*
@@ -104,18 +144,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
-
-	// kernel_tests_run();
-	// pmm_stress_test();
-	// paging_stress_test();
-	// heap_stress_test();
-	// mutex_stress_test();
-	// semaphore_stress_test();
-	// task_cleanup_stress_test();
-	// keyboard_raw_test();
-	// keyboard_event_test();
-	// keyboard_blocking_test();
-	keyboard_line_test();
 
 	yield_forever();
 }

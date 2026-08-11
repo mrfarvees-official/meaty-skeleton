@@ -9,6 +9,7 @@
 #include <kernel/task.h>
 #include <kernel/scheduler.h>
 #include <kernel/timer.h>
+#include <kernel/tty.h>
 #include <kernel/wait_queue.h>
 #include <kernel/sleep_queue.h>
 
@@ -22,6 +23,22 @@ static void test_halt(void)
 {
     for (;;)
         __asm__ volatile ("cli; hlt");
+}
+
+void test_log_pass(const char *name)
+{
+    terminal_setcolor(0x0Au);
+    printf("[PASS]");
+    terminal_setcolor(0x07u);
+    printf(" %s\n", name);
+}
+
+void test_log_fail(const char *name)
+{
+    terminal_setcolor(0x0Cu);
+    printf("[FAIL ]");
+    terminal_setcolor(0x07u);
+    printf(" %s\n", name);
 }
 
 
@@ -64,7 +81,7 @@ static void test_printf(void)
     printf("sign:       |%+.4Lf|\n", 12.375L);
     printf("alternate:  |%#.0Lf|\n", 12.0L);
 
-    printf("[PASS] printf\n");
+    test_log_pass("printf");
 }
 
 
@@ -105,7 +122,7 @@ static void test_pmm(void)
     pmm_free_frame(b);
     pmm_free_frame(c);
 
-    printf("[PASS] physical memory manager\n");
+    test_log_pass("physical memory manager");
 }
 
 
@@ -174,7 +191,7 @@ static void test_heap(void)
     kfree(third);
     kfree(reused);
 
-    printf("[PASS] heap\n");
+    test_log_pass("heap");
 }
 
 
@@ -208,7 +225,7 @@ static void test_heap_expansion(void)
     for (size_t i = 0; i < 512; ++i)
         kfree(allocations[i]);
 
-    printf("[PASS] heap expansion\n");
+    test_log_pass("heap expansion");
 }
 
 
@@ -238,7 +255,7 @@ static void test_memory_statistics(void)
         )
     );
 
-    printf("[PASS] memory statistics\n");
+    test_log_pass("memory statistics");
 }
 
 
@@ -300,7 +317,7 @@ static void test_scheduler(void)
      */
     task_yield();
 
-    printf("[PASS] scheduler/tasks\n");
+    test_log_pass("scheduler/tasks");
 }
 
 
@@ -1064,17 +1081,8 @@ void kernel_tests_run(void)
 
 
     /*
-     * --------------------------------------------------------
-     * Optional destructive/non-returning tests.
-     * --------------------------------------------------------
-     *
-     * Enable only one when specifically testing that subsystem.
+     * Destructive/non-returning tests (test_page_fault() and test_pit())
+     * are intentionally excluded from the automated suite. Run either one
+     * manually when validating that subsystem.
      */
-
-    test_page_fault();
-
-    /*
-     * Never returns.
-     */
-    test_pit();
 }

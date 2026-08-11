@@ -37,72 +37,72 @@ struct wait_queue;
 
 typedef struct task
 {
-    task_id_t id;
+    task_id_t           id;
 
-    task_state_t state;
-    sched_policy_t policy;
+    task_state_t        state;
+    sched_policy_t      policy;
 
     /*
      * Saved kernel stack pointer.
      */
-    uintptr_t stack_pointer;
+    uintptr_t           stack_pointer;
 
     /*
      * Stack allocation.
      */
-    uintptr_t stack_base;
-    size_t stack_size;
+    uintptr_t           stack_base;
+    size_t              stack_size;
 
     /*
      * Address space.
      *
      * Kernel threads currently share the kernel page directory.
      */
-    uintptr_t page_directory;
+    uintptr_t           page_directory;
 
     /*
      * Generic scheduler/accounting information.
      */
-    int priority;
-    uint64_t runtime_ticks;
+    int                 priority;
+    uint64_t            runtime_ticks;
 
     /*
      * Kernel-thread entry point.
      */
-    void (*entry)(void *);
-    void *argument;
+    void                (*entry)(void *);
+    void                *argument;
 
     /*
      * Scheduler run-queue linkage.
      */
-    struct task *sched_previous;
-    struct task *sched_next;
+    struct task         *sched_previous;
+    struct task         *sched_next;
 
     /*
      * Wait-queue linkage.
      */
-    struct task *wait_previous;
-    struct task *wait_next;
+    struct task         *wait_previous;
+    struct task         *wait_next;
 
     /*
      * Sleep-queue linkage.
      */
-    struct task *sleep_previous;
-    struct task *sleep_next;
+    struct task         *sleep_previous;
+    struct task         *sleep_next;
 
-    uint64_t wake_tick;
+    uint64_t            wake_tick;
 
     /*
      * Queue this task is currently waiting on.
      */
-    struct wait_queue *waiting_on;
+    struct wait_queue   *waiting_on;
 
     /*
      * Zombie/reaper linkage.
      *
      * This is completely separate from scheduler/wait/sleep links.
      */
-    struct task *cleanup_next;
+    struct task         *cleanup_next;
 
 } task_t;
 
@@ -111,6 +111,9 @@ typedef struct task
  * Initialize bootstrap task, idle task, and zombie reaper.
  */
 void task_initialize(void);
+
+/* Initialize bootstrap and idle contexts for one already-online AP. */
+bool task_initialize_cpu(void);
 
 
 /*
@@ -173,5 +176,9 @@ size_t task_cleanup_pending_count(void);
  */
 uint64_t task_cleanup_total_reaped(void);
 
+/* Number of currently allocated kernel task contexts. */
+size_t task_live_count(void);
+
+void task_internal_finish_switch(task_t *previous);
 
 #endif

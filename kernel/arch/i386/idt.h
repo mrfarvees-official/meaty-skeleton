@@ -20,6 +20,7 @@ struct idt_pointer {
 } __attribute__((packed));
 
 void idt_initialize(void);
+void idt_load(void);
 void idt_set_gate(uint8_t vector, void (*handler)(void), uint8_t attributes);
 
 #endif

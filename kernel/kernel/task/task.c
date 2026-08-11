@@ -7,14 +7,15 @@
 #include <kernel/semaphore.h>
 #include <kernel/task.h>
 #include <kernel/scheduler.h>
+#include <kernel/smp.h>
+#include <kernel/cpu.h>
+#include <kernel/spinlock.h>
 
 #include "../arch/i386/interrupts.h"
 
-
 #define KERNEL_TASK_STACK_SIZE (16u * 1024u)
 
-#define INITIAL_EFLAGS 0x202u
-
+#define INITIAL_EFLAGS 0x002u
 
 /*
  * --------------------------------------------------------------------------
@@ -22,18 +23,13 @@
  * --------------------------------------------------------------------------
  */
 
-static task_t bootstrap_task;
-
-static task_t *current_task = NULL;
+static task_t bootstrap_tasks[SMP_MAX_CPUS];
 
 static task_id_t next_task_id = 1;
+static size_t live_task_count = 0;
 
-
-/*
- * Idle is never inserted into a normal scheduler queue.
- */
-static task_t *idle_task = NULL;
-
+static spinlock_t task_id_lock = SPINLOCK_INITIALIZER;
+static spinlock_t cleanup_lock = SPINLOCK_INITIALIZER;
 
 /*
  * Dedicated task which destroys zombies.
@@ -42,23 +38,20 @@ static task_t *idle_task = NULL;
  */
 static task_t *reaper_task = NULL;
 
-
 /*
  * --------------------------------------------------------------------------
  * ZOMBIE CLEANUP QUEUE
  * --------------------------------------------------------------------------
  *
- * cleanup_head/cleanup_tail contain TASK_ZOMBIE tasks whose stacks and
- * task_t structures must be freed.
+ * cleanup_head / cleanup_tail / cleanup_pending /
+ * cleanup_total_reaped are protected by cleanup_lock.
  *
- * The queue is protected by interrupt disabling.
- *
- * That is sufficient for the current single-core kernel.
+ * The lock is SMP-safe and also disables local interrupts
+ * while held through spin_lock_irqsave().
  */
 
 static task_t *cleanup_head = NULL;
 static task_t *cleanup_tail = NULL;
-
 
 /*
  * Number of zombies that have been queued but not completely destroyed.
@@ -67,12 +60,10 @@ static task_t *cleanup_tail = NULL;
  */
 static size_t cleanup_pending = 0;
 
-
 /*
  * Lifetime count of successfully reaped tasks.
  */
 static uint64_t cleanup_total_reaped = 0;
-
 
 /*
  * One semaphore permit is produced for every zombie inserted into the
@@ -81,7 +72,6 @@ static uint64_t cleanup_total_reaped = 0;
  * The reaper blocks here when there is no work.
  */
 static semaphore_t cleanup_semaphore;
-
 
 /*
  * --------------------------------------------------------------------------
@@ -92,15 +82,17 @@ static semaphore_t cleanup_semaphore;
 static void task_bootstrap(void)
     __attribute__((noreturn));
 
+static void task_first_entry(void)
+    __attribute__((noreturn));
+
 static void idle_thread(void *argument);
 
 static void task_reaper_thread(void *argument);
 
-
 /*
  * Add a zombie to the cleanup queue.
  *
- * Caller MUST already have interrupts disabled.
+ * Caller MUST hold cleanup_lock.
  */
 static void cleanup_queue_push(task_t *task)
 {
@@ -120,11 +112,10 @@ static void cleanup_queue_push(task_t *task)
     ++cleanup_pending;
 }
 
-
 /*
  * Remove one zombie from the cleanup queue.
  *
- * Caller MUST already have interrupts disabled.
+ * Caller MUST hold cleanup_lock.
  */
 static task_t *cleanup_queue_pop(void)
 {
@@ -155,6 +146,76 @@ static task_t *cleanup_queue_pop(void)
     return task;
 }
 
+static task_t *task_bootstrap_for_cpu(size_t cpu_index)
+{
+    if (cpu_index >= SMP_MAX_CPUS)
+        return NULL;
+
+    return &bootstrap_tasks[cpu_index];
+}
+
+static bool task_is_bootstrap_task(const task_t *task)
+{
+    if (task == NULL)
+        return false;
+
+    size_t count = smp_cpu_count();
+
+    for (size_t i = 0; i < count; ++i)
+        if (&bootstrap_tasks[i] == task)
+            return true;
+
+    return false;
+}
+
+void task_internal_finish_switch(task_t *previous)
+{
+    if (previous == NULL)
+        return;
+
+    /*
+     * Normal context switch.
+     * Only exited tasks require deferred cleanup.
+     */
+    if (previous->state != TASK_ZOMBIE)
+        return;
+
+    /*
+     * We are already executing on another task's stack.
+     * It is now safe to expose this task to the reaper.
+     */
+    uint32_t flags =
+        spin_lock_irqsave(
+            &cleanup_lock);
+
+    cleanup_queue_push(
+        previous);
+
+    spin_unlock_irqrestore(
+        &cleanup_lock,
+        flags);
+
+    semaphore_signal(
+        &cleanup_semaphore);
+}
+
+static bool task_is_idle_task(const task_t *task)
+{
+    if (task == NULL)
+        return false;
+
+    size_t count = smp_cpu_count();
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        cpu_local_t *cpu = cpu_get(i);
+
+        if (cpu != NULL && cpu->idle_task == task)
+            return true;
+    }
+
+    return false;
+}
 
 /*
  * Halt forever if a special task incorrectly attempts to terminate.
@@ -166,7 +227,6 @@ static void task_halt_forever(void)
     for (;;)
         __asm__ volatile("cli; hlt");
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -180,15 +240,15 @@ static void idle_thread(void *argument)
 
     for (;;)
     {
-        /*
-         * Sleep until an interrupt occurs.
-         */
-        __asm__ volatile("hlt");
+        __asm__ volatile(
+            "sti; hlt"
+            :
+            :
+            : "memory");
 
         scheduler_yield();
     }
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -216,18 +276,14 @@ static void task_reaper_thread(void *argument)
             continue;
         }
 
-
         /*
          * Remove exactly one zombie.
          */
-        uint32_t flags =
-            interrupt_save_disable();
+        uint32_t flags = spin_lock_irqsave(&cleanup_lock);
 
-        task_t *task =
-            cleanup_queue_pop();
+        task_t *task = cleanup_queue_pop();
 
-        interrupt_restore(flags);
-
+        spin_unlock_irqrestore(&cleanup_lock, flags);
 
         if (task == NULL)
         {
@@ -240,7 +296,6 @@ static void task_reaper_thread(void *argument)
             continue;
         }
 
-
         /*
          * Absolute safety checks.
          *
@@ -251,9 +306,13 @@ static void task_reaper_thread(void *argument)
          *     - not be idle
          *     - be a zombie
          */
+
+        if (cpu_current() == NULL)
+            task_halt_forever();
+
         if (task == task_current() ||
-            task == &bootstrap_task ||
-            task == idle_task ||
+            task_is_bootstrap_task(task) ||
+            task_is_idle_task(task) ||
             task == reaper_task ||
             task->state != TASK_ZOMBIE)
         {
@@ -266,7 +325,6 @@ static void task_reaper_thread(void *argument)
             task_halt_forever();
         }
 
-
         /*
          * We are running on reaper_task's stack here.
          *
@@ -274,15 +332,12 @@ static void task_reaper_thread(void *argument)
          */
         if (task->stack_base != 0)
         {
-            kfree(
-                (void *)task->stack_base
-            );
+            kfree((void *)task->stack_base);
 
             task->stack_base = 0;
             task->stack_size = 0;
             task->stack_pointer = 0;
         }
-
 
         /*
          * The task object itself is the final thing we free.
@@ -291,6 +346,9 @@ static void task_reaper_thread(void *argument)
          */
         kfree(task);
 
+        flags = spin_lock_irqsave(&task_id_lock);
+        --live_task_count;
+        spin_unlock_irqrestore(&task_id_lock, flags);
 
         /*
          * Record completion.
@@ -298,14 +356,12 @@ static void task_reaper_thread(void *argument)
          * Protect 64-bit cleanup_total_reaped because this is i386
          * and 64-bit loads/stores are not inherently atomic.
          */
-        flags =
-            interrupt_save_disable();
+        flags = spin_lock_irqsave(&cleanup_lock);
 
         --cleanup_pending;
         ++cleanup_total_reaped;
 
-        interrupt_restore(flags);
-
+        spin_unlock_irqrestore(&cleanup_lock, flags);
 
         /*
          * Give normal scheduler activity another opportunity.
@@ -317,7 +373,6 @@ static void task_reaper_thread(void *argument)
     }
 }
 
-
 /*
  * --------------------------------------------------------------------------
  * CURRENT TASK
@@ -326,15 +381,23 @@ static void task_reaper_thread(void *argument)
 
 void task_internal_set_current(task_t *task)
 {
-    current_task = task;
-}
+    cpu_local_t *cpu = cpu_current();
 
+    if (cpu == NULL)
+        return;
+
+    cpu->current_task = task;
+}
 
 task_t *task_current(void)
 {
-    return current_task;
-}
+    cpu_local_t *cpu = cpu_current();
 
+    if (cpu == NULL)
+        return NULL;
+
+    return cpu->current_task;
+}
 
 /*
  * --------------------------------------------------------------------------
@@ -342,28 +405,27 @@ task_t *task_current(void)
  * --------------------------------------------------------------------------
  */
 
-static bool initialize_new_stack(task_t *task)
+static bool initialize_new_stack(
+    task_t *task)
 {
+    if (task == NULL)
+        return false;
+
     uintptr_t stack_end =
         task->stack_base +
         task->stack_size;
 
-
     /*
-     * Keep the initial stack 16-byte aligned.
+     * Keep initial ESP 16-byte aligned.
      */
     stack_end &=
         ~(uintptr_t)0xFu;
 
-
     uintptr_t *stack =
         (uintptr_t *)stack_end;
 
-
     /*
-     * MUST match arch_context_switch().
-     *
-     * arch_context_switch restores:
+     * arch_context_switch() restores:
      *
      *     pop edi
      *     pop esi
@@ -372,18 +434,13 @@ static bool initialize_new_stack(task_t *task)
      *     popf
      *     ret
      *
-     * Stack from low to high:
-     *
-     *     edi
-     *     esi
-     *     ebx
-     *     ebp
-     *     eflags
-     *     return address
+     * A brand-new task must enter task_first_entry(),
+     * not task_bootstrap() directly, because the former
+     * completes the scheduler lock handoff.
      */
 
     *--stack =
-        (uintptr_t)task_bootstrap;
+        (uintptr_t)task_first_entry;
 
     *--stack =
         INITIAL_EFLAGS;
@@ -393,29 +450,21 @@ static bool initialize_new_stack(task_t *task)
     *--stack = 0; /* esi */
     *--stack = 0; /* edi */
 
-
     task->stack_pointer =
         (uintptr_t)stack;
 
-
     return true;
 }
-
-
 /*
  * --------------------------------------------------------------------------
  * TASK ALLOCATION
  * --------------------------------------------------------------------------
  */
 
-static task_t *allocate_kernel_task(
-    void (*entry)(void *),
-    void *argument,
-    sched_policy_t policy)
+static task_t *allocate_kernel_task(void (*entry)(void *), void *argument, sched_policy_t policy)
 {
     if (entry == NULL)
         return NULL;
-
 
     if (policy < 0 ||
         policy >= SCHED_POLICY_COUNT)
@@ -423,23 +472,14 @@ static task_t *allocate_kernel_task(
         return NULL;
     }
 
-
-    task_t *task =
-        kmalloc(sizeof(task_t));
+    task_t *task = kmalloc(sizeof(task_t));
 
     if (task == NULL)
         return NULL;
 
+    memset(task, 0, sizeof(task_t));
 
-    memset(
-        task,
-        0,
-        sizeof(task_t)
-    );
-
-
-    void *stack =
-        kmalloc(KERNEL_TASK_STACK_SIZE);
+    void *stack = kmalloc(KERNEL_TASK_STACK_SIZE);
 
     if (stack == NULL)
     {
@@ -448,33 +488,23 @@ static task_t *allocate_kernel_task(
         return NULL;
     }
 
-
     /*
-     * Protect next_task_id against timer preemption.
-     *
-     * kmalloc() itself is synchronized, but ID allocation is separate
-     * shared task-system state.
+     * Protect next_task_id against concurrent allocation
+     * from multiple CPUs.
      */
-    uint32_t flags =
-        interrupt_save_disable();
+    uint32_t flags = spin_lock_irqsave(&task_id_lock);
 
-    task->id =
-        next_task_id++;
+    task->id = next_task_id++;
 
-    interrupt_restore(flags);
+    spin_unlock_irqrestore(&task_id_lock, flags);
 
+    task->state = TASK_NEW;
 
-    task->state =
-        TASK_NEW;
+    task->policy = policy;
 
-    task->policy =
-        policy;
+    task->stack_base = (uintptr_t)stack;
 
-    task->stack_base =
-        (uintptr_t)stack;
-
-    task->stack_size =
-        KERNEL_TASK_STACK_SIZE;
+    task->stack_size = KERNEL_TASK_STACK_SIZE;
 
     task->page_directory = 0;
 
@@ -482,19 +512,15 @@ static task_t *allocate_kernel_task(
 
     task->runtime_ticks = 0;
 
-    task->entry =
-        entry;
+    task->entry = entry;
 
-    task->argument =
-        argument;
-
+    task->argument = argument;
 
     /*
      * Scheduler linkage.
      */
     task->sched_previous = NULL;
     task->sched_next = NULL;
-
 
     /*
      * Wait-queue linkage.
@@ -503,7 +529,6 @@ static task_t *allocate_kernel_task(
     task->wait_next = NULL;
     task->waiting_on = NULL;
 
-
     /*
      * Sleep-queue linkage.
      */
@@ -511,12 +536,10 @@ static task_t *allocate_kernel_task(
     task->sleep_next = NULL;
     task->wake_tick = 0;
 
-
     /*
      * Cleanup linkage.
      */
     task->cleanup_next = NULL;
-
 
     if (!initialize_new_stack(task))
     {
@@ -526,10 +549,12 @@ static task_t *allocate_kernel_task(
         return NULL;
     }
 
+    flags = spin_lock_irqsave(&task_id_lock);
+    ++live_task_count;
+    spin_unlock_irqrestore(&task_id_lock, flags);
 
     return task;
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -546,20 +571,15 @@ task_t *task_create_kernel_with_policy(
         allocate_kernel_task(
             entry,
             argument,
-            policy
-        );
-
+            policy);
 
     if (task == NULL)
         return NULL;
 
-
     scheduler_make_ready(task);
-
 
     return task;
 }
-
 
 task_t *task_create_kernel(
     void (*entry)(void *),
@@ -568,10 +588,8 @@ task_t *task_create_kernel(
     return task_create_kernel_with_policy(
         entry,
         argument,
-        SCHED_POLICY_NORMAL
-    );
+        SCHED_POLICY_NORMAL);
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -581,53 +599,45 @@ task_t *task_create_kernel(
 
 void task_initialize(void)
 {
-    memset(
-        &bootstrap_task,
-        0,
-        sizeof(bootstrap_task)
-    );
+    cpu_local_t *cpu = cpu_current();
 
+    if (cpu == NULL)
+        task_halt_forever();
 
-    /*
-     * Bootstrap task represents the kernel execution context that
-     * already exists before normal tasks are created.
-     */
-    bootstrap_task.id = 0;
+    task_t *bootstrap = task_bootstrap_for_cpu(cpu->index);
 
-    bootstrap_task.state =
-        TASK_RUNNING;
+    if (bootstrap == NULL)
+        task_halt_forever();
 
-    bootstrap_task.policy =
-        SCHED_POLICY_NORMAL;
+    memset(bootstrap, 0, sizeof(*bootstrap));
 
-    bootstrap_task.priority = 0;
+    bootstrap->id = 0;
+    bootstrap->state = TASK_RUNNING;
+    bootstrap->policy = SCHED_POLICY_NORMAL;
 
-    bootstrap_task.runtime_ticks = 0;
+    bootstrap->priority = 0;
+    bootstrap->runtime_ticks = 0;
 
-    bootstrap_task.stack_pointer = 0;
+    bootstrap->stack_pointer = 0;
+    bootstrap->stack_base = 0;
+    bootstrap->stack_size = 0;
 
-    bootstrap_task.stack_base = 0;
+    bootstrap->sched_previous = NULL;
+    bootstrap->sched_next = NULL;
 
-    bootstrap_task.stack_size = 0;
+    bootstrap->wait_previous = NULL;
+    bootstrap->wait_next = NULL;
+    bootstrap->waiting_on = NULL;
 
+    bootstrap->sleep_previous = NULL;
+    bootstrap->sleep_next = NULL;
+    bootstrap->wake_tick = 0;
 
-    bootstrap_task.sched_previous = NULL;
-    bootstrap_task.sched_next = NULL;
+    bootstrap->cleanup_next = NULL;
 
-    bootstrap_task.wait_previous = NULL;
-    bootstrap_task.wait_next = NULL;
-    bootstrap_task.waiting_on = NULL;
+    cpu->current_task = bootstrap;
 
-    bootstrap_task.sleep_previous = NULL;
-    bootstrap_task.sleep_next = NULL;
-    bootstrap_task.wake_tick = 0;
-
-    bootstrap_task.cleanup_next = NULL;
-
-
-    current_task =
-        &bootstrap_task;
-
+    live_task_count = 1;
 
     /*
      * Initialize zombie-cleanup state before creating the reaper.
@@ -640,9 +650,7 @@ void task_initialize(void)
 
     semaphore_initialize(
         &cleanup_semaphore,
-        0
-    );
-
+        0);
 
     /*
      * --------------------------------------------------------------
@@ -650,28 +658,18 @@ void task_initialize(void)
      * --------------------------------------------------------------
      */
 
-    idle_task =
-        allocate_kernel_task(
-            idle_thread,
-            NULL,
-            SCHED_POLICY_BACKGROUND
-        );
+    task_t *idle = allocate_kernel_task(idle_thread, NULL, SCHED_POLICY_BACKGROUND);
 
-
-    if (idle_task == NULL)
+    if (idle == NULL)
         task_halt_forever();
 
-
     /*
-     * Idle is scheduler fallback only.
+     * Idle is not inserted into a normal run queue.
+     * It is a private fallback context for this CPU.
      */
-    idle_task->state =
-        TASK_READY;
+    idle->state = TASK_READY;
 
-    scheduler_set_idle_task(
-        idle_task
-    );
-
+    scheduler_set_idle_task(idle);
 
     /*
      * --------------------------------------------------------------
@@ -687,23 +685,97 @@ void task_initialize(void)
      * continuously runnable, the reaper could starve forever.
      */
 
-    reaper_task =
-        allocate_kernel_task(
-            task_reaper_thread,
-            NULL,
-            SCHED_POLICY_NORMAL
-        );
-
+    reaper_task = allocate_kernel_task(task_reaper_thread, NULL, SCHED_POLICY_NORMAL);
 
     if (reaper_task == NULL)
         task_halt_forever();
 
-
-    scheduler_make_ready(
-        reaper_task
-    );
+    scheduler_make_ready(reaper_task);
 }
 
+bool task_initialize_cpu(void)
+{
+    cpu_local_t *cpu =
+        cpu_current();
+
+    if (cpu == NULL)
+        return false;
+
+    task_t *bootstrap =
+        task_bootstrap_for_cpu(cpu->index);
+
+    if (bootstrap == NULL)
+        return false;
+
+    memset(
+        bootstrap,
+        0,
+        sizeof(*bootstrap));
+
+    /*
+     * Give AP bootstrap contexts unique IDs.
+     *
+     * BSP keeps ID 0.
+     */
+    uint32_t flags =
+        spin_lock_irqsave(
+            &task_id_lock);
+
+    bootstrap->id =
+        next_task_id++;
+
+    spin_unlock_irqrestore(
+        &task_id_lock,
+        flags);
+
+    bootstrap->state =
+        TASK_RUNNING;
+
+    bootstrap->policy =
+        SCHED_POLICY_NORMAL;
+
+    bootstrap->priority = 0;
+    bootstrap->runtime_ticks = 0;
+
+    bootstrap->stack_pointer = 0;
+    bootstrap->stack_base = 0;
+    bootstrap->stack_size = 0;
+
+    bootstrap->sched_previous = NULL;
+    bootstrap->sched_next = NULL;
+
+    bootstrap->wait_previous = NULL;
+    bootstrap->wait_next = NULL;
+    bootstrap->waiting_on = NULL;
+
+    bootstrap->sleep_previous = NULL;
+    bootstrap->sleep_next = NULL;
+    bootstrap->wake_tick = 0;
+
+    bootstrap->cleanup_next = NULL;
+
+    cpu->current_task = bootstrap;
+
+    flags = spin_lock_irqsave(&task_id_lock);
+    ++live_task_count;
+    spin_unlock_irqrestore(&task_id_lock, flags);
+
+    /*
+     * Every CPU needs its own idle task.
+     */
+    task_t *idle = allocate_kernel_task(idle_thread, NULL, SCHED_POLICY_BACKGROUND);
+
+    if (idle == NULL)
+        return false;
+
+    idle->state = TASK_READY;
+
+    cpu->idle_task = idle;
+
+    cpu->reschedule_pending = false;
+
+    return true;
+}
 
 /*
  * --------------------------------------------------------------------------
@@ -716,18 +788,10 @@ static void task_bootstrap(void)
     task_t *task =
         task_current();
 
-
-    if (task == NULL ||
-        task->entry == NULL)
-    {
+    if (task == NULL || task->entry == NULL)
         task_exit();
-    }
 
-
-    task->entry(
-        task->argument
-    );
-
+    task->entry(task->argument);
 
     /*
      * Returning from a kernel thread means exit.
@@ -735,6 +799,18 @@ static void task_bootstrap(void)
     task_exit();
 }
 
+static void task_first_entry(void)
+{
+    /*
+     * Brand-new tasks do not return through the bottom
+     * of scheduler_schedule().
+     *
+     * Complete the scheduler lock handoff here.
+     */
+    scheduler_finish_switch();
+
+    task_bootstrap();
+}
 
 /*
  * --------------------------------------------------------------------------
@@ -747,127 +823,82 @@ void task_yield(void)
     scheduler_yield();
 }
 
-
 /*
  * --------------------------------------------------------------------------
  * EXIT
  * --------------------------------------------------------------------------
  */
-
 void task_exit(void)
 {
     task_t *task =
         task_current();
 
-
-    /*
-     * Special kernel execution contexts must never be destroyed.
-     */
     if (task == NULL ||
-        task == &bootstrap_task ||
-        task == idle_task ||
+        task_is_bootstrap_task(task) ||
+        task_is_idle_task(task) ||
         task == reaper_task)
     {
         task_halt_forever();
     }
 
-
     /*
-     * Keep the entire:
+     * Disable local interrupts while transitioning this
+     * CPU away from the dying task.
      *
-     *     mark zombie
-     *       ->
-     *     enqueue cleanup
-     *       ->
-     *     notify reaper
-     *       ->
-     *     schedule away
-     *
-     * transition protected from timer preemption.
+     * Do NOT place the task into cleanup_queue here:
+     * this CPU is still executing on its stack.
      */
     uint32_t flags =
         interrupt_save_disable();
 
-
     task->state =
         TASK_ZOMBIE;
 
-
-    cleanup_queue_push(task);
-
-
-    /*
-     * One semaphore permit per zombie.
-     *
-     * semaphore_signal() nests interrupt disabling safely.
-     */
-    semaphore_signal(
-        &cleanup_semaphore
-    );
-
-
-    /*
-     * TASK_ZOMBIE is not TASK_RUNNING, therefore scheduler_schedule()
-     * will NOT return this task to a runnable queue.
-     *
-     * The scheduler switches to another task while this stack still
-     * exists.
-     *
-     * Later the reaper frees this stack.
-     */
     scheduler_schedule();
 
-
     /*
-     * Correct execution can NEVER resume here.
-     *
-     * Do not restore flags because this task must never execute again.
+     * A zombie can never legitimately return here.
      */
     (void)flags;
 
-
     task_halt_forever();
 }
-
 
 /*
  * --------------------------------------------------------------------------
  * CLEANUP DIAGNOSTICS
  * --------------------------------------------------------------------------
  */
-
 size_t task_cleanup_pending_count(void)
 {
-    uint32_t flags =
-        interrupt_save_disable();
+    uint32_t flags = spin_lock_irqsave(&cleanup_lock);
 
+    size_t pending = cleanup_pending;
 
-    size_t pending =
-        cleanup_pending;
-
-
-    interrupt_restore(flags);
-
+    spin_unlock_irqrestore(&cleanup_lock, flags);
 
     return pending;
 }
-
 
 uint64_t task_cleanup_total_reaped(void)
 {
     /*
      * 64-bit read on i386 requires protection from concurrent update.
      */
-    uint32_t flags =
-        interrupt_save_disable();
+    uint32_t flags = spin_lock_irqsave(&cleanup_lock);
 
+    uint64_t total = cleanup_total_reaped;
 
-    uint64_t total =
-        cleanup_total_reaped;
-
-
-    interrupt_restore(flags);
-
+    spin_unlock_irqrestore(&cleanup_lock, flags);
 
     return total;
+}
+
+size_t task_live_count(void)
+{
+    uint32_t flags = spin_lock_irqsave(&task_id_lock);
+    size_t count = live_task_count;
+    spin_unlock_irqrestore(&task_id_lock, flags);
+
+    return count;
 }

@@ -33,6 +33,7 @@ KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) \
 kernel/kernel.o \
 kernel/test/test.o \
+kernel/test/suite.o \
 kernel/test/pmm_stress.o \
 kernel/test/paging_stress.o \
 kernel/test/heap_stress.o \
@@ -43,10 +44,14 @@ kernel/test/keyboard.o \
 kernel/test/keyboard_event.o \
 kernel/test/keyboard_blocking.o \
 kernel/test/keyboard_line.o \
+kernel/test/cpu_detection.o \
+kernel/test/smp_multitasking_stress.o \
+kernel/test/ramfs.o \
 kernel/memory/pmm.o \
 kernel/memory/paging.o \
 kernel/memory/heap.o \
 kernel/memory/spinlock.o \
+kernel/process/process.o \
 kernel/task/task.o \
 kernel/task/mutex.o \
 kernel/task/semaphore.o \
@@ -56,6 +61,12 @@ kernel/scheduler/scheduler.o \
 kernel/scheduler/round_robin.o \
 kernel/device/keyboard.o \
 kernel/input/keyboard_line.o \
+kernel/multitasking/acpi.o \
+kernel/multitasking/smp.o \
+kernel/multitasking/cpu.o \
+kernel/fs/vfs.o \
+kernel/fs/ramfs.o \
+kernel/system/system_info.o \
 kernel/timer/timer.o
 
 OBJS=\

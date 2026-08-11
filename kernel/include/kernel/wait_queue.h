@@ -2,8 +2,10 @@
 #define KERNEL_WAIT_QUEUE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <kernel/task.h>
+#include <kernel/spinlock.h>
 
 /*
  * FIFO queue of blocked tasks.
@@ -21,12 +23,12 @@
  */
 typedef struct wait_queue
 {
-    task_t* head;
-    task_t* tail;
+    task_t      *head;
+    task_t      *tail;
+    size_t      count;
+    spinlock_t  lock;
 
-    size_t count;
 } wait_queue_t;
-
 
 /*
  * Initialize an empty wait queue.
@@ -34,9 +36,7 @@ typedef struct wait_queue
  * Must be called before the queue is used.
  */
 void wait_queue_initialize(
-    wait_queue_t* queue
-);
-
+    wait_queue_t *queue);
 
 /*
  * Block the currently-running task on this queue.
@@ -46,9 +46,7 @@ void wait_queue_initialize(
  * again.
  */
 void wait_queue_block(
-    wait_queue_t* queue
-);
-
+    wait_queue_t *queue);
 
 /*
  * Wake the oldest task waiting on the queue.
@@ -63,10 +61,8 @@ void wait_queue_block(
  *
  * if nobody was waiting.
  */
-task_t* wait_queue_wake_one(
-    wait_queue_t* queue
-);
-
+task_t *wait_queue_wake_one(
+    wait_queue_t *queue);
 
 /*
  * Wake every task currently waiting.
@@ -74,16 +70,33 @@ task_t* wait_queue_wake_one(
  * Returns the number of tasks awakened.
  */
 size_t wait_queue_wake_all(
-    wait_queue_t* queue
-);
-
+    wait_queue_t *queue);
 
 /*
  * Number of tasks currently waiting.
  */
 size_t wait_queue_count(
-    const wait_queue_t* queue
+    wait_queue_t *queue);
+
+/*
+ * Caller MUST already hold queue->lock.
+ *
+ * Blocks the current task and releases queue->lock as part
+ * of the scheduler blocking handoff.
+ */
+void wait_queue_block_locked(
+    wait_queue_t *queue,
+    uint32_t lock_flags
 );
 
+/*
+ * Caller MUST already hold queue->lock.
+ *
+ * Removes one waiter from the queue but does NOT call
+ * scheduler_wake().
+ */
+task_t *wait_queue_pop_locked(
+    wait_queue_t *queue
+);
 
 #endif

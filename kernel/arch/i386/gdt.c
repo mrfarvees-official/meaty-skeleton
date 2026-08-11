@@ -112,5 +112,10 @@ void gdt_initialize(void)
     gdtr.limit = (uint16_t)(sizeof(gdt) - 1);
     gdtr.base = (uint32_t)(uintptr_t)gdt;
 
+    gdt_load();
+}
+
+void gdt_load(void)
+{
     gdt_flush(&gdtr);
 }

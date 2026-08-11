@@ -336,6 +336,8 @@ void interrupt_dispatch(struct interrupt_frame *frame)
     if (handler != NULL)
     {
         handler(frame);
+
+        scheduler_handle_safe_preemption_point();
         return;
     }
 

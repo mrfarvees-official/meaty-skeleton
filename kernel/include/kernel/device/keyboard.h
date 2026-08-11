@@ -184,13 +184,10 @@ typedef struct keyboard_modifiers
 
 typedef struct keyboard_event
 {
-    keyboard_key_t key;
-
-    bool pressed;
-    bool extended;
-
-    uint8_t raw_scancode;
-
+    keyboard_key_t       key;
+    bool                 pressed;
+    bool                 extended;
+    uint8_t              raw_scancode;
     keyboard_modifiers_t modifiers;
 
     /*
@@ -198,7 +195,7 @@ typedef struct keyboard_event
      *
      * Only key-press events may produce characters.
      */
-    char character;
+    char                 character;
 
 } keyboard_event_t;
 

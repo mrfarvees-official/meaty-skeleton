@@ -2,11 +2,14 @@
 #define KERNEL_SCHEDULER_H
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <kernel/spinlock.h>
 
 #include <kernel/task.h>
 #include <kernel/scheduler/algorithm.h>
 
 void scheduler_initialize(void);
+void scheduler_finish_switch(void);
 
 /*
  * Bind an algorithm to a policy.
@@ -39,6 +42,7 @@ void scheduler_yield(void);
  * These become the foundation for disk/network/audio/mutex/etc.
  */
 void scheduler_block_current(task_state_t blocked_state);
+void scheduler_block_current_wait(task_state_t block_state, spinlock_t *wait_lock, uint32_t wait_flags);
 void scheduler_wake(task_t* task);
 
 /*

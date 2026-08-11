@@ -31,6 +31,7 @@
 #define GDT_TSS_SELECTOR 0x28
 
 void gdt_initialize(void);
+void gdt_load(void);
 
 /*
  * Implemented in gdt_flush.S.

@@ -47,9 +47,17 @@ void spin_unlock_irqrestore(
     spinlock_t *lock,
     uint32_t flags)
 {
+    spin_unlock(lock);
+
+    interrupt_restore(flags);
+}
+
+void spin_unlock(spinlock_t *lock)
+{
+    if (lock == NULL)
+        return;
+
     __asm__ volatile("" ::: "memory");
 
     lock->locked = 0u;
-
-    interrupt_restore(flags);
 }

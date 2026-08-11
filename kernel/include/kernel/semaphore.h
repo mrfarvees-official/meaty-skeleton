@@ -6,39 +6,31 @@
 
 #include <kernel/wait_queue.h>
 
-
-/*
- * Counting semaphore.
- *
- * count:
- *
- *     Number of currently available permits.
- *
- * waiters:
- *
- *     Tasks blocked because count was zero.
- *
- *
- * Example:
- *
- *     semaphore_initialize(&semaphore, 3);
- *
- * allows up to three successful semaphore_wait() operations
- * before another caller must wait for semaphore_signal().
- */
 typedef struct semaphore
 {
-    size_t count;
+    /*
+     * Protected by waiters.lock.
+     */
+    size_t      count;
 
+    /*
+     * waiters.lock is also the semaphore's state lock.
+     *
+     * This makes:
+     *
+     *     check count
+     *     enqueue waiter
+     *     become blocked
+     *
+     * one SMP-safe operation.
+     */
     wait_queue_t waiters;
 
 } semaphore_t;
 
 
 /*
- * Initialize a semaphore.
- *
- * initial_count is the number of permits initially available.
+ * Initialize a counting semaphore.
  */
 void semaphore_initialize(
     semaphore_t *semaphore,
@@ -49,16 +41,8 @@ void semaphore_initialize(
 /*
  * Acquire one permit.
  *
- * If count > 0:
- *
- *     decrement count and return.
- *
- * If count == 0:
- *
- *     block the current task until a permit becomes available.
- *
- * Returns true when a permit has been acquired.
- * Returns false for invalid usage.
+ * May block.
+ * Must not be called from interrupt context.
  */
 bool semaphore_wait(
     semaphore_t *semaphore
@@ -67,9 +51,6 @@ bool semaphore_wait(
 
 /*
  * Attempt to acquire one permit without blocking.
- *
- * Returns true if a permit was acquired.
- * Returns false if count == 0 or the semaphore is invalid.
  */
 bool semaphore_try_wait(
     semaphore_t *semaphore
@@ -77,11 +58,9 @@ bool semaphore_try_wait(
 
 
 /*
- * Return one permit to the semaphore.
+ * Return one permit.
  *
- * Wakes one waiting task when waiters exist.
- *
- * Returns false only for invalid input or count overflow.
+ * Does not block.
  */
 bool semaphore_signal(
     semaphore_t *semaphore
@@ -89,13 +68,10 @@ bool semaphore_signal(
 
 
 /*
- * Return the current available permit count.
- *
- * Primarily useful for debugging/tests.
+ * Return the currently available permit count.
  */
 size_t semaphore_get_count(
     semaphore_t *semaphore
 );
-
 
 #endif

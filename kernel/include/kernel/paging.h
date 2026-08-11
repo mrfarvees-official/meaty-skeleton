@@ -62,4 +62,10 @@ bool paging_get_physical_address(
 
 bool paging_is_mapped(uintptr_t virtual_address);
 
+bool paging_identity_map_range(
+    uintptr_t physical_address,
+    size_t length,
+    uint32_t flags
+);
+
 #endif
