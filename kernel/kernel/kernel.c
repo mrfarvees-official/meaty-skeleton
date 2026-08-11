@@ -19,6 +19,9 @@
 #include <kernel/device/keyboard.h>
 #include <kernel/vfs.h>
 #include <kernel/ramfs.h>
+#include <kernel/ata.h>
+#include <kernel/block_device.h>
+#include <kernel/partition.h>
 
 #include <kernel/test.h>
 #include <kernel/system_info.h>
@@ -51,6 +54,29 @@ void validate_multiboot_magic(uint32_t magic)
 		for (;;)
 			__asm__ volatile("cli; hlt");
 	}
+}
+
+static void ata_debug_sector(uint32_t lba)
+{
+    uint8_t sector[512];
+
+    if (block_read(
+            ata_primary_master(),
+            lba,
+            1,
+            sector) != 0)
+    {
+        printf("ATA: LBA %u read failed\n", lba);
+        return;
+    }
+
+    printf(
+        "ATA LBA %u: first=%02x %02x last=%02x %02x\n",
+        lba,
+        sector[0],
+        sector[1],
+        sector[510],
+        sector[511]);
 }
 
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
@@ -117,6 +143,15 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	}
 	printf("RAMFS mounted as /\n");
 
+	if (!ata_initialize())
+	{
+		printf("ATA initialization failed\n");
+	} 
+	else
+	{
+		printf("ATA initialized\n");
+	}
+
 	if (!smp_start_aps())
 	{
 		printf("AP startup failed\n");
@@ -144,6 +179,10 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
+
+	system_info_print();
+	// partition_test();
+	// ext2_magic_test();
 
 	yield_forever();
 }

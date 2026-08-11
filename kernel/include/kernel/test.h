@@ -26,5 +26,8 @@ void keyboard_line_test(void);
 void cpu_detection_test(void);
 void smp_multitasking_stress_test(void);
 void ramfs_test(void);
+void ata_test(void);
+void partition_test(void);
+void ext2_magic_test(void);
 
 #endif

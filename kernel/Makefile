@@ -47,6 +47,8 @@ kernel/test/keyboard_line.o \
 kernel/test/cpu_detection.o \
 kernel/test/smp_multitasking_stress.o \
 kernel/test/ramfs.o \
+kernel/test/ata.o \
+kernel/test/partition.o \
 kernel/memory/pmm.o \
 kernel/memory/paging.o \
 kernel/memory/heap.o \
@@ -66,6 +68,9 @@ kernel/multitasking/smp.o \
 kernel/multitasking/cpu.o \
 kernel/fs/vfs.o \
 kernel/fs/ramfs.o \
+kernel/fs/ata.o \
+kernel/fs/block_device.o \
+kernel/fs/partition.o \
 kernel/system/system_info.o \
 kernel/timer/timer.o
 
