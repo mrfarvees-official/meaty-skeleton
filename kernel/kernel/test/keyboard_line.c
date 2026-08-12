@@ -4,7 +4,7 @@
 #include <string.h>
 
 #include <kernel/test.h>
-#include <kernel/device/keyboard.h>
+#include <kernel/keyboard.h>
 #include <kernel/tty.h>
 
 

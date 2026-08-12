@@ -1,7 +1,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include <kernel/device/keyboard.h>
+#include <kernel/keyboard.h>
 #include <kernel/tty.h>
 
 

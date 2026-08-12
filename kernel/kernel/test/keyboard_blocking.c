@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <kernel/device/keyboard.h>
+#include <kernel/keyboard.h>
 
 
 #define BLOCKING_EVENT_TEST_COUNT     10u

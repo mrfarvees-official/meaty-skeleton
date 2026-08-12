@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <kernel/device/keyboard.h>
+#include <kernel/keyboard.h>
 #include <kernel/semaphore.h>
 
 #include "../arch/i386/interrupts.h"

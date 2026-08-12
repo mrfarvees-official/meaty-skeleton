@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 #include <kernel/test.h>
-#include <kernel/device/keyboard.h>
+#include <kernel/keyboard.h>
 #include <kernel/task.h>
 
 

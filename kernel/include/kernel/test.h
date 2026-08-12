@@ -29,5 +29,6 @@ void ramfs_test(void);
 void ata_test(void);
 void partition_test(void);
 void ext2_magic_test(void);
+void partition_scan_test(void);
 
 #endif

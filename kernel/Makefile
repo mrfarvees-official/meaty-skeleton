@@ -71,6 +71,7 @@ kernel/fs/ramfs.o \
 kernel/fs/ata.o \
 kernel/fs/block_device.o \
 kernel/fs/partition.o \
+kernel/fs/ext2.o \
 kernel/system/system_info.o \
 kernel/timer/timer.o
 

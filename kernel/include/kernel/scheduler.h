@@ -6,7 +6,7 @@
 #include <kernel/spinlock.h>
 
 #include <kernel/task.h>
-#include <kernel/scheduler/algorithm.h>
+#include <kernel/algorithm.h>
 
 void scheduler_initialize(void);
 void scheduler_finish_switch(void);

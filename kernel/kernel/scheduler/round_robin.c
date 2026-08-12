@@ -4,7 +4,7 @@
 
 #include <kernel/heap.h>
 #include <kernel/task.h>
-#include <kernel/scheduler/algorithm.h>
+#include <kernel/algorithm.h>
 
 #define RR_DEFAULT_QUANTUM_TICKS 5u
 

@@ -16,7 +16,7 @@
 #include <kernel/acpi.h>
 #include <kernel/smp.h>
 #include <kernel/cpu.h>
-#include <kernel/device/keyboard.h>
+#include <kernel/keyboard.h>
 #include <kernel/vfs.h>
 #include <kernel/ramfs.h>
 #include <kernel/ata.h>
@@ -58,25 +58,25 @@ void validate_multiboot_magic(uint32_t magic)
 
 static void ata_debug_sector(uint32_t lba)
 {
-    uint8_t sector[512];
+	uint8_t sector[512];
 
-    if (block_read(
-            ata_primary_master(),
-            lba,
-            1,
-            sector) != 0)
-    {
-        printf("ATA: LBA %u read failed\n", lba);
-        return;
-    }
+	if (block_read(
+			ata_primary_master(),
+			lba,
+			1,
+			sector) != 0)
+	{
+		printf("ATA: LBA %u read failed\n", lba);
+		return;
+	}
 
-    printf(
-        "ATA LBA %u: first=%02x %02x last=%02x %02x\n",
-        lba,
-        sector[0],
-        sector[1],
-        sector[510],
-        sector[511]);
+	printf(
+		"ATA LBA %u: first=%02x %02x last=%02x %02x\n",
+		lba,
+		sector[0],
+		sector[1],
+		sector[510],
+		sector[511]);
 }
 
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
@@ -146,7 +146,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	if (!ata_initialize())
 	{
 		printf("ATA initialization failed\n");
-	} 
+	}
 	else
 	{
 		printf("ATA initialized\n");
@@ -180,9 +180,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	system_info_print();
-	// partition_test();
-	// ext2_magic_test();
+	partition_scan_test();
 
 	yield_forever();
 }
