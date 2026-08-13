@@ -17,6 +17,7 @@
 #include <kernel/smp.h>
 #include <kernel/cpu.h>
 #include <kernel/keyboard.h>
+#include <kernel/pci.h>
 #include <kernel/vfs.h>
 #include <kernel/ramfs.h>
 #include <kernel/ata.h>
@@ -121,6 +122,23 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	// }
 	// printf("RAMFS mounted as /\n");
 
+	pci_device_t ahci_controller;
+
+	if (pci_find_ahci_controller(&ahci_controller))
+	{
+		printf(
+			"AHCI: PCI %u:%u.%u vendor=%x device=%x\n",
+			(unsigned)ahci_controller.bus,
+			(unsigned)ahci_controller.device,
+			(unsigned)ahci_controller.function,
+			(unsigned)ahci_controller.vendor_id,
+			(unsigned)ahci_controller.device_id);
+	}
+	else
+	{
+		printf("AHCI: no controller detected\n");
+	}
+
 	if (!ata_initialize())
 	{
 		printf("ATA initialization failed\n");
@@ -164,87 +182,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		}
 
 		printf("EXT2: mounted as /\n");
-
-		file_t *file = NULL;
-		// if (vfs_open("/hello.txt", VFS_OPEN_READ, &file) != 0)
-		// {
-		// 	printf("VFS: failed opening /hello.txt\n");
-		// 	halt_forever();
-		// }
-		// char buffer[128];
-		// size_t bytes_read = 0;
-		// if (vfs_read(file, buffer, sizeof(buffer) - 1, &bytes_read) != 0)
-		// {
-		// 	printf("VFS: failed reading /hello.txt\n");
-		// 	vfs_close(file);
-		// 	halt_forever();
-		// }
-		// buffer[bytes_read] = '\0';
-		// printf("VFS: /hello.txt = %s\n", buffer);
-		// vfs_close(file);
-
-		// file = NULL;
-		// if (vfs_open("/big.txt", VFS_OPEN_READ, &file) != 0)
-		// {
-		// 	printf("VFS: failed opening /big.txt\n");
-		// 	halt_forever();
-		// }
-		// char big_buffer[4096];
-		// size_t total_big_read = 0;
-		// for (;;)
-		// {
-		// 	size_t chunk_read = 0;
-
-		// 	if (vfs_read(file, big_buffer, sizeof(big_buffer), &chunk_read) != 0)
-		// 	{
-		// 		printf("VFS: failed reading /big.txt\n");
-		// 		vfs_close(file);
-		// 		halt_forever();
-		// 	}
-
-		// 	if (chunk_read == 0)
-		// 		break;
-
-		// 	total_big_read += chunk_read;
-		// }
-		// printf("VFS: /big.txt bytes read = %u\n", (unsigned)total_big_read);
-		// vfs_close(file);
-
-		file = NULL;
-
-		if (vfs_open("/double.txt", VFS_OPEN_READ, &file) != 0)
-		{
-			printf("VFS: failed opening /double.txt\n");
-			halt_forever();
-		}
-
-		char double_buffer[4096];
-		size_t total_double_read = 0;
-
-		for (;;)
-		{
-			size_t chunk_read = 0;
-
-			if (vfs_read(
-					file,
-					double_buffer,
-					sizeof(double_buffer),
-					&chunk_read) != 0)
-			{
-				printf("VFS: failed reading /double.txt\n");
-				vfs_close(file);
-				halt_forever();
-			}
-
-			if (chunk_read == 0)
-				break;
-
-			total_double_read += chunk_read;
-		}
-
-		printf("VFS: /double.txt bytes read = %u\n", (unsigned)total_double_read);
-
-		vfs_close(file);
 	}
 
 	if (!smp_start_aps())
@@ -274,6 +211,92 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
+
+	file_t *file = NULL;
+	// if (vfs_open("/hello.txt", VFS_OPEN_READ, &file) != 0)
+	// {
+	// 	printf("VFS: failed opening /hello.txt\n");
+	// 	halt_forever();
+	// }
+	// char buffer[128];
+	// size_t bytes_read = 0;
+	// if (vfs_read(file, buffer, sizeof(buffer) - 1, &bytes_read) != 0)
+	// {
+	// 	printf("VFS: failed reading /hello.txt\n");
+	// 	vfs_close(file);
+	// 	halt_forever();
+	// }
+	// buffer[bytes_read] = '\0';
+	// printf("VFS: /hello.txt = %s\n", buffer);
+	// vfs_close(file);
+
+	// file = NULL;
+	// if (vfs_open("/big.txt", VFS_OPEN_READ, &file) != 0)
+	// {
+	// 	printf("VFS: failed opening /big.txt\n");
+	// 	halt_forever();
+	// }
+	// char big_buffer[4096];
+	// size_t total_big_read = 0;
+	// for (;;)
+	// {
+	// 	size_t chunk_read = 0;
+
+	// 	if (vfs_read(file, big_buffer, sizeof(big_buffer), &chunk_read) != 0)
+	// 	{
+	// 		printf("VFS: failed reading /big.txt\n");
+	// 		vfs_close(file);
+	// 		halt_forever();
+	// 	}
+
+	// 	if (chunk_read == 0)
+	// 		break;
+
+	// 	total_big_read += chunk_read;
+	// }
+	// printf("VFS: /big.txt bytes read = %u\n", (unsigned)total_big_read);
+	// vfs_close(file);
+
+	file = NULL;
+
+	if (vfs_open("/double.txt", VFS_OPEN_READ, &file) != 0)
+	{
+		printf("VFS: failed opening /double.txt\n");
+		halt_forever();
+	}
+
+	char double_buffer[4096];
+	size_t total_double_read = 0;
+	uint64_t read_start_ms = timer_uptime_ms();
+	for (;;)
+	{
+		size_t chunk_read = 0;
+
+		if (vfs_read(
+				file,
+				double_buffer,
+				sizeof(double_buffer),
+				&chunk_read) != 0)
+		{
+			printf("VFS: failed reading /double.txt\n");
+			vfs_close(file);
+			halt_forever();
+		}
+
+		if (chunk_read == 0)
+			break;
+
+		total_double_read += chunk_read;
+	}
+	uint64_t read_end_ms = timer_uptime_ms();
+	uint64_t read_elapsed_ms =
+		read_end_ms - read_start_ms;
+	printf("VFS: /double.txt bytes read = %u\n", (unsigned)total_double_read);
+	printf(
+		"VFS: /double.txt read time = %u ms\n",
+		(unsigned)read_elapsed_ms);
+
+	vfs_close(file);
 
 	yield_forever();
 }

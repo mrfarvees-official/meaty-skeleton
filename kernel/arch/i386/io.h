@@ -25,6 +25,28 @@ static inline uint8_t inb(uint16_t port)
     return value;
 }
 
+static inline void outl(uint16_t port, uint32_t value)
+{
+    __asm__ volatile (
+        "outl %0, %1"
+        :
+        : "a"(value), "Nd"(port)
+        : "memory");
+}
+
+static inline uint32_t inl(uint16_t port)
+{
+    uint32_t value; 
+
+    __asm__ volatile (
+        "inl %1, %0"
+        : "=a"(value)
+        : "Nd"(port)
+        : "memory");
+
+    return value;
+}
+
 static inline uint8_t ata_inb(uint16_t port)
 {
     uint8_t value;
