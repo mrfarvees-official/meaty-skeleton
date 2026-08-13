@@ -6,7 +6,7 @@
 #include <kernel/heap.h>
 #include <kernel/vfs.h>
 
-typedef struct
+struct ext2_block_cache
 {
     bool single_valid;
     uint32_t single_block_number;
@@ -19,11 +19,25 @@ typedef struct
     bool double_leaf_valid;
     uint32_t double_leaf_block_number;
     uint32_t double_leaf_entries[4096 / sizeof(uint32_t)];
-} ext2_block_cache_t;
+};
 
 static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **result);
 static int ext2_vnode_read(vnode_t *node, size_t offset, void *buffer, size_t size, size_t *bytes_read);
-static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *inode, uint32_t logical_block, uint32_t *physical_block, ext2_block_cache_t *cache);
+static bool ext2_get_data_block(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *inode,
+    uint32_t logical_block,
+    uint32_t *physical_block,
+    ext2_block_cache_t *cache);
+static bool ext2_read_file_cached(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *inode, size_t offset,
+    void *buffer,
+    size_t buffer_size,
+    size_t *bytes_read,
+    ext2_block_cache_t *cache);
 
 static const vnode_ops_t ext2_directory_ops;
 static const vnode_ops_t ext2_file_ops;
@@ -86,7 +100,11 @@ static bool ext2_read_block(block_device_t *device, uint32_t block_size, uint32_
     return block_read(device, lba, sectors_per_block, buffer) == 0;
 }
 
-bool ext2_read_group_descriptor(block_device_t *device, const ext2_superblock_t *superblock, uint32_t group, ext2_block_group_descriptor_t *descriptor)
+bool ext2_read_group_descriptor(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    uint32_t group,
+    ext2_block_group_descriptor_t *descriptor)
 {
     if (device == NULL || superblock == NULL || descriptor == NULL)
         return false;
@@ -230,7 +248,12 @@ bool ext2_list_directory(block_device_t *device, const ext2_superblock_t *superb
     return true;
 }
 
-bool ext2_lookup(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *directory, const char *name, uint32_t *inode_number)
+bool ext2_lookup(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *directory,
+    const char *name,
+    uint32_t *inode_number)
 {
     if (device == NULL || superblock == NULL || directory == NULL || name == NULL || inode_number == NULL)
         return false;
@@ -291,7 +314,56 @@ bool ext2_lookup(block_device_t *device, const ext2_superblock_t *superblock, co
     return false;
 }
 
-bool ext2_read_file(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *inode, size_t offset, void *buffer, size_t buffer_size, size_t *bytes_read)
+bool ext2_read_file(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *inode,
+    size_t offset,
+    void *buffer,
+    size_t buffer_size,
+    size_t *bytes_read)
+{
+    if (device == NULL ||
+        superblock == NULL ||
+        inode == NULL ||
+        buffer == NULL ||
+        bytes_read == NULL)
+    {
+        return false;
+    }
+
+    ext2_block_cache_t *cache =
+        kmalloc(sizeof(ext2_block_cache_t));
+
+    if (cache == NULL)
+        return false;
+
+    memset(cache, 0, sizeof(ext2_block_cache_t));
+
+    bool result = ext2_read_file_cached(
+        device,
+        superblock,
+        inode,
+        offset,
+        buffer,
+        buffer_size,
+        bytes_read,
+        cache);
+
+    kfree(cache);
+
+    return result;
+}
+
+static bool ext2_read_file_cached(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *inode,
+    size_t offset,
+    void *buffer,
+    size_t buffer_size,
+    size_t *bytes_read,
+    ext2_block_cache_t *cache)
 {
     if (device == NULL || superblock == NULL || inode == NULL || buffer == NULL || bytes_read == NULL)
         return false;
@@ -318,9 +390,6 @@ bool ext2_read_file(block_device_t *device, const ext2_superblock_t *superblock,
 
     uint8_t block[4096];
 
-    ext2_block_cache_t cache;
-    memset(&cache, 0, sizeof(cache));
-
     size_t total = 0;
 
     while (total < wanted)
@@ -331,7 +400,7 @@ bool ext2_read_file(block_device_t *device, const ext2_superblock_t *superblock,
 
         uint32_t block_number;
 
-        if (!ext2_get_data_block(device, superblock, inode, logical_block, &block_number, &cache))
+        if (!ext2_get_data_block(device, superblock, inode, logical_block, &block_number, cache))
             return false;
 
         if (block_number == 0)
@@ -392,6 +461,7 @@ static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **res
     data->fs = fs;
     data->inode_number = inode_number;
     data->inode = inode;
+    data->block_cache = NULL;
 
     node->inode = inode_number;
     node->size = inode.size_low;
@@ -432,7 +502,17 @@ static int ext2_vnode_read(vnode_t *node, size_t offset, void *buffer, size_t si
 
     ext2_fs_t *fs = data->fs;
 
-    if (!ext2_read_file(fs->device, &fs->superblock, &data->inode, offset, buffer, size, bytes_read))
+    if (data->block_cache == NULL)
+    {
+        data->block_cache = kmalloc(sizeof(ext2_block_cache_t));
+
+        if (data->block_cache == NULL)
+            return -1;
+
+        memset(data->block_cache, 0, sizeof(ext2_block_cache_t));
+    }
+
+    if (!ext2_read_file_cached(fs->device, &fs->superblock, &data->inode, offset, buffer, size, bytes_read, data->block_cache))
         return -1;
 
     return 0;
@@ -464,6 +544,7 @@ bool ext2_mount(block_device_t *device, ext2_fs_t *fs)
     root_data->fs = fs;
     root_data->inode_number = EXT2_ROOT_INODE;
     root_data->inode = root_inode;
+    root_data->block_cache = NULL;
 
     fs->root_vnode.type = VNODE_DIRECTORY;
     fs->root_vnode.inode = EXT2_ROOT_INODE;

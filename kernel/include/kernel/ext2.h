@@ -115,11 +115,14 @@ typedef struct
     vnode_t           root_vnode;
 } ext2_fs_t;
 
+typedef struct ext2_block_cache ext2_block_cache_t;
+
 typedef struct 
 {
-    ext2_fs_t    *fs;
-    uint32_t     inode_number;
-    ext2_inode_t inode;
+    ext2_fs_t           *fs;
+    uint32_t            inode_number;
+    ext2_inode_t        inode;
+    ext2_block_cache_t  *block_cache;
 } ext2_vnode_data_t;
 
 bool ext2_read_superblock(block_device_t *device, ext2_superblock_t *superblock);
