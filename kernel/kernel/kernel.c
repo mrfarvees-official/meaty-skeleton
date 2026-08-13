@@ -285,7 +285,17 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		halt_forever();
 	}
 
-	char double_buffer[4096];
+#define DOUBLE_READ_BUFFER_SIZE (64u * 1024u)
+
+	uint8_t *double_buffer =
+		kmalloc(DOUBLE_READ_BUFFER_SIZE);
+
+	if (double_buffer == NULL)
+	{
+		printf("VFS: failed allocating read buffer\n");
+		vfs_close(file);
+		halt_forever();
+	}
 	size_t total_double_read = 0;
 	uint64_t read_start_ms = timer_uptime_ms();
 	for (;;)

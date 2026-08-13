@@ -6,6 +6,7 @@
 #include <kernel/heap.h>
 #include <kernel/vfs.h>
 
+#define EXT2_MAX_READ_RUN_BLOCKS 16u
 struct ext2_block_cache
 {
     bool single_valid;
@@ -427,16 +428,65 @@ static bool ext2_read_file_cached(
         if (offset_in_block == 0 &&
             remaining >= block_size)
         {
-            if (!ext2_read_block(
+            uint32_t max_blocks =
+                (uint32_t)(remaining / block_size);
+
+            if (max_blocks > EXT2_MAX_READ_RUN_BLOCKS)
+                max_blocks = EXT2_MAX_READ_RUN_BLOCKS;
+
+            uint32_t run_blocks = 1;
+
+            while (run_blocks < max_blocks)
+            {
+                uint32_t next_block_number;
+
+                if (!ext2_get_data_block(
+                        device,
+                        superblock,
+                        inode,
+                        logical_block + run_blocks,
+                        &next_block_number,
+                        cache))
+                {
+                    return false;
+                }
+
+                if (next_block_number == 0)
+                    break;
+
+                if (next_block_number !=
+                    block_number + run_blocks)
+                {
+                    break;
+                }
+
+                run_blocks++;
+            }
+
+            uint32_t sectors_per_block =
+                block_size / device->sector_size;
+
+            uint64_t lba =
+                (uint64_t)block_number *
+                sectors_per_block;
+
+            uint32_t sector_count =
+                run_blocks *
+                sectors_per_block;
+
+            if (block_read(
                     device,
-                    block_size,
-                    block_number,
-                    (uint8_t *)buffer + total))
+                    lba,
+                    sector_count,
+                    (uint8_t *)buffer + total) != 0)
             {
                 return false;
             }
 
-            total += block_size;
+            total +=
+                (size_t)run_blocks *
+                block_size;
+
             continue;
         }
 
