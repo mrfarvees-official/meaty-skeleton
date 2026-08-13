@@ -216,3 +216,55 @@ bool pci_find_ahci_controller(pci_device_t *result)
 
     return false;
 }
+
+void pci_config_write32(
+    uint8_t bus,
+    uint8_t device,
+    uint8_t function,
+    uint8_t offset,
+    uint32_t value)
+{
+    uint32_t address =
+        pci_make_address(
+            bus,
+            device,
+            function,
+            offset);
+
+    outl(PCI_CONFIG_ADDRESS, address);
+    outl(PCI_CONFIG_DATA, value);
+}
+
+void pci_config_write16(
+    uint8_t bus,
+    uint8_t device,
+    uint8_t function,
+    uint8_t offset,
+    uint16_t value)
+{
+    uint8_t aligned_offset =
+        offset & 0xFCu;
+
+    uint32_t current =
+        pci_config_read32(
+            bus,
+            device,
+            function,
+            aligned_offset);
+
+    uint32_t shift =
+        (uint32_t)(offset & 2u) * 8u;
+
+    current &=
+        ~(0xFFFFu << shift);
+
+    current |=
+        (uint32_t)value << shift;
+
+    pci_config_write32(
+        bus,
+        device,
+        function,
+        aligned_offset,
+        current);
+}

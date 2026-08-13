@@ -22,5 +22,7 @@ qemu-system-$(./target-triplet-to-arch.sh "$HOST") \
     -m 128M \
     -smp 2 \
     -boot order=d \
-    -drive file="$DISK",format=raw,if=ide,index=0,media=disk \
+    -device ich9-ahci,id=ahci \
+    -drive id=sata_disk,file="$DISK",format=raw,if=none \
+    -device ide-hd,drive=sata_disk,bus=ahci.0 \
     -drive file=myos.iso,format=raw,if=ide,index=2,media=cdrom,readonly=on

@@ -17,13 +17,14 @@
 #include <kernel/smp.h>
 #include <kernel/cpu.h>
 #include <kernel/keyboard.h>
-#include <kernel/pci.h>
 #include <kernel/vfs.h>
 #include <kernel/ramfs.h>
 #include <kernel/ata.h>
 #include <kernel/block_device.h>
 #include <kernel/partition.h>
 #include <kernel/ext2.h>
+#include <kernel/pci.h>
+#include <kernel/ahci.h>
 
 #include <kernel/test.h>
 #include <kernel/system_info.h>
@@ -133,6 +134,11 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 			(unsigned)ahci_controller.function,
 			(unsigned)ahci_controller.vendor_id,
 			(unsigned)ahci_controller.device_id);
+
+		if (!ahci_probe(&ahci_controller))
+		{
+			printf("AHCI: probe failed\n");
+		}
 	}
 	else
 	{
