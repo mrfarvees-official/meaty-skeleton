@@ -1497,3 +1497,11 @@ static void ahci_test_gpt_read(void)
         buffer[6],
         buffer[7]);
 }
+
+block_device_t *ahci_primary_disk(void)
+{
+    if (!ahci_disk_present)
+        return NULL;
+
+    return &ahci_disk;
+}
