@@ -9,6 +9,7 @@
 #include <kernel/block_device.h>
 #include <kernel/pci.h>
 #include <kernel/pmm.h>
+#include <kernel/heap.h>
 
 #define PCI_COMMAND_REGISTER 0x04u
 #define PCI_BAR5 0x24u
@@ -210,6 +211,24 @@ static ahci_port_t *ahci_disk_port = NULL;
 
 static block_device_t ahci_disk;
 static bool ahci_disk_present = false;
+
+/*
+ * One 64 KiB read-ahead window.
+ *
+ * The heap allocation may span physically non-contiguous pages.
+ * That is fine because ahci_build_read_prdt() describes each
+ * mapped page fragment separately.
+ */
+#define AHCI_READ_CACHE_SECTORS \
+    AHCI_MAX_SECTORS_PER_COMMAND
+
+#define AHCI_READ_CACHE_SIZE \
+    (AHCI_READ_CACHE_SECTORS * AHCI_SECTOR_SIZE)
+
+static uint8_t *ahci_read_cache = NULL;
+static bool ahci_read_cache_valid = false;
+static uint64_t ahci_read_cache_lba = 0;
+static uint32_t ahci_read_cache_sector_count = 0;
 
 static uintptr_t ahci_port_memory_physical = 0;
 static void *ahci_port_memory_virtual = NULL;
@@ -1045,6 +1064,37 @@ static bool ahci_read_dma(
     return false;
 }
 
+static bool ahci_read_cache_contains(
+    uint64_t lba,
+    uint32_t count)
+{
+    if (!ahci_read_cache_valid ||
+        ahci_read_cache == NULL ||
+        count == 0)
+    {
+        return false;
+    }
+
+    if (lba < ahci_read_cache_lba)
+        return false;
+
+    uint64_t offset =
+        lba - ahci_read_cache_lba;
+
+    if (offset >=
+        ahci_read_cache_sector_count)
+    {
+        return false;
+    }
+
+    uint32_t offset_sectors =
+        (uint32_t)offset;
+
+    return count <=
+           ahci_read_cache_sector_count -
+               offset_sectors;
+}
+
 static int ahci_block_read(
     block_device_t *device,
     uint64_t lba,
@@ -1070,6 +1120,99 @@ static int ahci_block_read(
         return -1;
     }
 
+    /*
+     * Small reads use the read-ahead cache.
+     *
+     * This is the important case for the current ext2 driver:
+     * one 4 KiB filesystem block = 8 disk sectors.
+     */
+    if (count <= AHCI_READ_CACHE_SECTORS &&
+        ahci_read_cache != NULL)
+    {
+        /*
+         * Fast path: requested sectors are already inside
+         * the current 64 KiB window.
+         */
+        if (!ahci_read_cache_contains(
+                lba,
+                count))
+        {
+            /*
+             * Cache miss.
+             *
+             * Instead of reading only what the caller requested,
+             * read up to 128 sectors starting at this LBA.
+             */
+            uint64_t sectors_available =
+                device->sector_count - lba;
+
+            uint32_t read_ahead_count =
+                sectors_available >
+                        AHCI_READ_CACHE_SECTORS
+                    ? AHCI_READ_CACHE_SECTORS
+                    : (uint32_t)sectors_available;
+
+            /*
+             * Mark invalid before DMA so a failed command never
+             * leaves stale data advertised as valid.
+             */
+            ahci_read_cache_valid =
+                false;
+
+            ahci_read_cache_sector_count =
+                0;
+
+            if (!ahci_read_dma(
+                    lba,
+                    read_ahead_count,
+                    ahci_read_cache))
+            {
+                return -1;
+            }
+
+            ahci_read_cache_lba =
+                lba;
+
+            ahci_read_cache_sector_count =
+                read_ahead_count;
+
+            ahci_read_cache_valid =
+                true;
+        }
+
+        /*
+         * The requested range must now be inside the cache.
+         */
+        if (!ahci_read_cache_contains(
+                lba,
+                count))
+        {
+            return -1;
+        }
+
+        uint64_t sector_offset =
+            lba - ahci_read_cache_lba;
+
+        size_t byte_offset =
+            (size_t)sector_offset *
+            AHCI_SECTOR_SIZE;
+
+        size_t byte_count =
+            (size_t)count *
+            AHCI_SECTOR_SIZE;
+
+        memcpy(
+            buffer,
+            ahci_read_cache + byte_offset,
+            byte_count);
+
+        return 0;
+    }
+
+    /*
+     * Large requests bypass read-ahead and use the existing
+     * multi-sector DMA path directly.
+     */
     uint64_t current_lba =
         lba;
 
@@ -1079,14 +1222,6 @@ static int ahci_block_read(
     uint8_t *destination =
         (uint8_t *)buffer;
 
-    /*
-     * One block-device request may be larger than our current
-     * per-command 64 KiB limit.
-     *
-     * Split only at the AHCI command-size boundary.
-     *
-     * Each chunk is still one multi-sector READ DMA EXT command.
-     */
     while (remaining > 0)
     {
         uint32_t chunk =
@@ -1409,6 +1544,41 @@ static bool ahci_initialize_disk(void)
 
     ahci_disk.private_data =
         NULL;
+
+    /*
+     * Allocate one persistent 64 KiB read-ahead buffer.
+     *
+     * kmalloc() maps ordinary kernel heap pages. They do not have
+     * to be physically contiguous because our PRDT builder translates
+     * each page fragment independently.
+     */
+    if (ahci_read_cache == NULL)
+    {
+        ahci_read_cache =
+            kmalloc(AHCI_READ_CACHE_SIZE);
+
+        if (ahci_read_cache == NULL)
+        {
+            printf(
+                "AHCI: failed allocating read cache\n");
+
+            return false;
+        }
+    }
+
+    ahci_read_cache_valid =
+        false;
+
+    ahci_read_cache_lba =
+        0;
+
+    ahci_read_cache_sector_count =
+        0;
+
+    printf(
+        "AHCI: read-ahead cache: %u KiB\n",
+        (unsigned)(AHCI_READ_CACHE_SIZE /
+                   1024u));
 
     ahci_disk_present =
         true;

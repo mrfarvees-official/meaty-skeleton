@@ -5,18 +5,135 @@ set -e
 
 DISK=disk.img
 
-if [ ! -f "$DISK" ]; then
-    echo "Creating $DISK..."
-    qemu-img create -f raw "$DISK" 64M
+#
+# Benchmark disk setup.
+#
+# true:
+#   recreate disk.img
+#   create ext2 filesystem
+#   create benchmark file
+#   copy it into the filesystem as /double.txt
+#
+# false:
+#   leave disk.img untouched and just boot QEMU
+#
+RECREATE_BENCH_DISK=false
+
+#
+# Disk and benchmark sizes.
+#
+DISK_SIZE=256M
+BENCH_FILE_SIZE=100M
+BENCH_FILE=double.txt
+
+create_benchmark_disk()
+{
+    echo "Recreating $DISK..."
+
+    rm -f "$DISK"
+
+    qemu-img create \
+        -f raw \
+        "$DISK" \
+        "$DISK_SIZE"
+
     echo "Creating GPT partition table..."
+
     printf 'label: gpt\nstart=2048,type=linux\n' | \
         sfdisk "$DISK"
+
+    LOOP=""
+
+    cleanup()
+    {
+        if [ -n "$LOOP" ]; then
+            sudo umount "${LOOP}p1" 2>/dev/null || true
+            sudo losetup -d "$LOOP" 2>/dev/null || true
+        fi
+
+        sudo rmdir /mnt/meaty-bench 2>/dev/null || true
+    }
+
+    trap cleanup EXIT INT TERM
+
+    echo "Attaching disk..."
+
+    LOOP=$(sudo losetup \
+        --find \
+        --show \
+        --partscan \
+        "$DISK")
+
     echo "Creating ext2 filesystem..."
-    LOOP=$(sudo losetup --find --show --partscan "$DISK")
-    sudo mkfs.ext2 "${LOOP}p1"
+
+    sudo mkfs.ext2 \
+        -F \
+        "${LOOP}p1"
+
+    echo "Creating benchmark file: $BENCH_FILE_SIZE..."
+
+    rm -f "$BENCH_FILE"
+
+    truncate \
+        -s "$BENCH_FILE_SIZE" \
+        "$BENCH_FILE"
+
+    echo "Mounting filesystem..."
+
+    sudo mkdir -p /mnt/meaty-bench
+
+    sudo mount \
+        "${LOOP}p1" \
+        /mnt/meaty-bench
+
+    echo "Copying benchmark file as /double.txt..."
+
+    sudo cp \
+        "$BENCH_FILE" \
+        /mnt/meaty-bench/double.txt
+
+    sync
+
+    echo "Benchmark file:"
+    ls -lh "$BENCH_FILE"
+
+    sudo ls -lh \
+        /mnt/meaty-bench/double.txt
+
+    echo "Unmounting filesystem..."
+
+    sudo umount /mnt/meaty-bench
     sudo losetup -d "$LOOP"
-    echo "Disk initialized."
-fi
+
+    LOOP=""
+
+    sudo rmdir /mnt/meaty-bench 2>/dev/null || true
+
+    trap - EXIT INT TERM
+
+    echo "Benchmark disk ready."
+}
+
+case "$RECREATE_BENCH_DISK" in
+    true)
+        create_benchmark_disk
+        ;;
+
+    false)
+        if [ ! -f "$DISK" ]; then
+            echo "Error: $DISK does not exist."
+            echo "Set RECREATE_BENCH_DISK=true first."
+            exit 1
+        fi
+        ;;
+
+    *)
+        echo "Error: RECREATE_BENCH_DISK must be true or false."
+        exit 1
+        ;;
+esac
+
+echo "Starting QEMU..."
 
 qemu-system-$(./target-triplet-to-arch.sh "$HOST") \
     -m 128M \
