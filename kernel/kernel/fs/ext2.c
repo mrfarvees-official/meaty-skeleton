@@ -406,15 +406,62 @@ static bool ext2_read_file_cached(
         if (block_number == 0)
             break;
 
-        if (!ext2_read_block(device, block_size, block_number, block))
+        size_t remaining =
+            wanted - total;
+
+        /*
+         * Fast path:
+         *
+         * If the file position is block-aligned and the caller wants
+         * at least one complete ext2 block, DMA/read directly into the
+         * caller's buffer.
+         *
+         * This avoids:
+         *
+         *     disk -> temporary block[4096] -> caller
+         *
+         * and instead does:
+         *
+         *     disk -> caller
+         */
+        if (offset_in_block == 0 &&
+            remaining >= block_size)
+        {
+            if (!ext2_read_block(
+                    device,
+                    block_size,
+                    block_number,
+                    (uint8_t *)buffer + total))
+            {
+                return false;
+            }
+
+            total += block_size;
+            continue;
+        }
+
+        /*
+         * Slow path for partial first/last blocks.
+         */
+        if (!ext2_read_block(
+                device,
+                block_size,
+                block_number,
+                block))
+        {
             return false;
+        }
 
-        size_t chunk = block_size - offset_in_block;
+        size_t chunk =
+            block_size - offset_in_block;
 
-        if (chunk > wanted - total)
-            chunk = wanted - total;
+        if (chunk > remaining)
+            chunk = remaining;
 
-        memcpy((uint8_t *)buffer + total, block + offset_in_block, chunk);
+        memcpy(
+            (uint8_t *)buffer + total,
+            block + offset_in_block,
+            chunk);
 
         total += chunk;
     }
