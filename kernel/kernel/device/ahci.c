@@ -33,6 +33,20 @@
 
 #define AHCI_ENGINE_TIMEOUT 1000000u
 
+#define AHCI_FIS_TYPE_REG_H2D 0x27u
+
+#define ATA_CMD_READ_DMA_EXT 0x25u
+
+#define AHCI_PORT_IS_TFES (1u << 30)
+
+#define ATA_STATUS_ERR (1u << 0)
+#define ATA_STATUS_DRQ (1u << 3)
+#define ATA_STATUS_BSY (1u << 7)
+
+#define AHCI_COMMAND_TIMEOUT 10000000u
+
+#define AHCI_SECTOR_SIZE 512u
+
 typedef volatile struct
 {
     uint32_t clb;
@@ -76,14 +90,93 @@ typedef volatile struct
     ahci_port_t ports[32];
 } ahci_hba_t;
 
+typedef struct __attribute__((packed))
+{
+    /*
+     * DWORD 0:
+     *
+     * bits 0..4  = CFL, command FIS length in DWORDs
+     * bit  5     = ATAPI
+     * bit  6     = W, 1 = host-to-device write
+     * bit  7     = prefetchable
+     * ...
+     */
+    uint16_t flags;
+
+    uint16_t prdt_length;
+
+    volatile uint32_t prd_byte_count;
+
+    uint32_t command_table_base;
+    uint32_t command_table_base_upper;
+
+    uint32_t reserved[4];
+} ahci_command_header_t;
+
+typedef struct __attribute__((packed))
+{
+    uint32_t data_base;
+    uint32_t data_base_upper;
+    uint32_t reserved;
+
+    /*
+     * bits 0..21 = byte count minus one
+     * bit 31     = interrupt on completion
+     */
+    uint32_t byte_count_and_flags;
+} ahci_prdt_entry_t;
+
+typedef struct __attribute__((packed))
+{
+    uint8_t command_fis[64];
+    uint8_t atapi_command[16];
+    uint8_t reserved[48];
+
+    ahci_prdt_entry_t prdt[1];
+} ahci_command_table_t;
+
+typedef struct __attribute__((packed))
+{
+    uint8_t fis_type;
+
+    uint8_t pmport_and_c;
+
+    uint8_t command;
+    uint8_t feature_low;
+
+    uint8_t lba0;
+    uint8_t lba1;
+    uint8_t lba2;
+
+    uint8_t device;
+
+    uint8_t lba3;
+    uint8_t lba4;
+    uint8_t lba5;
+
+    uint8_t feature_high;
+
+    uint8_t count_low;
+    uint8_t count_high;
+
+    uint8_t icc;
+    uint8_t control;
+
+    uint8_t reserved[4];
+} ahci_fis_reg_h2d_t;
+
 static bool ahci_prepare_port(
     ahci_port_t *port,
     uint32_t port_index);
-    
+static void ahci_test_gpt_read(void);
+
 static ahci_port_t *ahci_disk_port = NULL;
 
 static uintptr_t ahci_port_memory_physical = 0;
 static void *ahci_port_memory_virtual = NULL;
+
+static uintptr_t ahci_command_table_physical = 0;
+static ahci_command_table_t *ahci_command_table = NULL;
 
 static bool ahci_port_device_present(
     ahci_port_t *port)
@@ -355,6 +448,11 @@ bool ahci_probe(const pci_device_t *device)
 
     ahci_probe_ports(hba);
 
+    if (ahci_disk_port != NULL)
+    {
+        ahci_test_gpt_read();
+    }
+
     return true;
 }
 
@@ -428,6 +526,35 @@ static bool ahci_prepare_port(
     uintptr_t received_fis_physical =
         frame + AHCI_COMMAND_LIST_SIZE;
 
+    uintptr_t command_table_frame =
+        pmm_allocate_frame();
+
+    if (command_table_frame == 0)
+    {
+        printf(
+            "AHCI: failed allocating command table\n");
+
+        return false;
+    }
+
+    if (!paging_identity_map_range(
+            command_table_frame,
+            PAGE_SIZE,
+            PAGE_WRITABLE))
+    {
+        pmm_free_frame(command_table_frame);
+
+        printf(
+            "AHCI: failed mapping command table\n");
+
+        return false;
+    }
+
+    memset(
+        (void *)command_table_frame,
+        0,
+        PAGE_SIZE);
+
     /*
      * We're running a 32-bit kernel and these PMM frames are below
      * 4 GiB, so the upper address registers are zero.
@@ -441,6 +568,25 @@ static bool ahci_prepare_port(
         (uint32_t)received_fis_physical;
 
     port->fbu = 0;
+
+    /*
+     * Configure command-list slot 0.
+     */
+    ahci_command_header_t *command_list =
+        (ahci_command_header_t *)memory;
+
+    ahci_command_header_t *header =
+        &command_list[0];
+
+    memset(
+        header,
+        0,
+        sizeof(*header));
+
+    header->command_table_base =
+        (uint32_t)command_table_frame;
+
+    header->command_table_base_upper = 0;
 
     /*
      * Clear pending status before starting the engine.
@@ -470,6 +616,8 @@ static bool ahci_prepare_port(
 
     ahci_port_memory_physical = frame;
     ahci_port_memory_virtual = memory;
+    ahci_command_table_physical = command_table_frame;
+    ahci_command_table = (ahci_command_table_t *)command_table_frame;
 
     printf(
         "AHCI: command list phys=0x%x\n",
@@ -483,5 +631,334 @@ static bool ahci_prepare_port(
         "AHCI: port %u command engine started\n",
         (unsigned)port_index);
 
+    printf(
+        "AHCI: command table phys=0x%x\n",
+        (unsigned)command_table_frame);
+
     return true;
+}
+
+static bool ahci_wait_device_ready(
+    ahci_port_t *port)
+{
+    if (port == NULL)
+        return false;
+
+    for (uint32_t timeout = 0;
+         timeout < AHCI_COMMAND_TIMEOUT;
+         timeout++)
+    {
+        uint8_t status =
+            (uint8_t)(port->tfd & 0xFFu);
+
+        if ((status &
+             (ATA_STATUS_BSY |
+              ATA_STATUS_DRQ)) == 0)
+        {
+            return true;
+        }
+    }
+
+    printf(
+        "AHCI: timeout waiting for device ready\n");
+
+    return false;
+}
+
+static bool ahci_read_sector_dma(
+    uint64_t lba,
+    void *buffer)
+{
+    if (ahci_disk_port == NULL ||
+        ahci_command_table == NULL ||
+        buffer == NULL)
+    {
+        return false;
+    }
+
+    /*
+     * For this first milestone the DMA buffer must be
+     * page-backed and identity mapped.
+     *
+     * Translate its CPU virtual address to a physical address.
+     */
+    uintptr_t buffer_physical;
+
+    if (!paging_get_physical_address(
+            (uintptr_t)buffer,
+            &buffer_physical))
+    {
+        printf(
+            "AHCI: failed translating DMA buffer\n");
+
+        return false;
+    }
+
+    ahci_port_t *port =
+        ahci_disk_port;
+
+    /*
+     * Slot zero must not already be active.
+     */
+    if ((port->ci & 1u) != 0 ||
+        (port->sact & 1u) != 0)
+    {
+        printf(
+            "AHCI: command slot 0 busy\n");
+
+        return false;
+    }
+
+    if (!ahci_wait_device_ready(port))
+        return false;
+
+    /*
+     * Clear old interrupt/error state.
+     *
+     * PxIS is write-one-to-clear.
+     */
+    port->is = 0xFFFFFFFFu;
+
+    /*
+     * Clear the command table from the previous command.
+     */
+    memset(
+        ahci_command_table,
+        0,
+        PAGE_SIZE);
+
+    ahci_command_header_t *command_list =
+        (ahci_command_header_t *)
+            ahci_port_memory_virtual;
+
+    ahci_command_header_t *header =
+        &command_list[0];
+
+    /*
+     * Preserve CTBA/CTBAU while resetting the command-specific
+     * fields.
+     */
+    uint32_t command_table_base =
+        header->command_table_base;
+
+    uint32_t command_table_base_upper =
+        header->command_table_base_upper;
+
+    memset(
+        header,
+        0,
+        sizeof(*header));
+
+    header->command_table_base =
+        command_table_base;
+
+    header->command_table_base_upper =
+        command_table_base_upper;
+
+    /*
+     * Register H2D FIS is 20 bytes = 5 DWORDs.
+     *
+     * W remains zero because this is a disk -> RAM read.
+     */
+    header->flags = 5u;
+
+    header->prdt_length = 1;
+
+    /*
+     * One PRDT entry describes our 512-byte destination.
+     */
+    ahci_prdt_entry_t *prdt =
+        &ahci_command_table->prdt[0];
+
+    prdt->data_base =
+        (uint32_t)buffer_physical;
+
+    prdt->data_base_upper = 0;
+
+    prdt->reserved = 0;
+
+    /*
+     * AHCI stores byte-count-minus-one.
+     *
+     * 512 bytes -> 511.
+     */
+    prdt->byte_count_and_flags =
+        AHCI_SECTOR_SIZE - 1u;
+
+    /*
+     * Construct Register Host-to-Device FIS.
+     */
+    ahci_fis_reg_h2d_t *fis =
+        (ahci_fis_reg_h2d_t *)
+            ahci_command_table->command_fis;
+
+    memset(
+        fis,
+        0,
+        sizeof(*fis));
+
+    fis->fis_type =
+        AHCI_FIS_TYPE_REG_H2D;
+
+    /*
+     * Bit 7 = C:
+     * this is a command FIS.
+     */
+    fis->pmport_and_c =
+        1u << 7;
+
+    fis->command =
+        ATA_CMD_READ_DMA_EXT;
+
+    /*
+     * 48-bit LBA.
+     */
+    fis->lba0 =
+        (uint8_t)(lba >> 0);
+
+    fis->lba1 =
+        (uint8_t)(lba >> 8);
+
+    fis->lba2 =
+        (uint8_t)(lba >> 16);
+
+    fis->lba3 =
+        (uint8_t)(lba >> 24);
+
+    fis->lba4 =
+        (uint8_t)(lba >> 32);
+
+    fis->lba5 =
+        (uint8_t)(lba >> 40);
+
+    /*
+     * Set LBA mode.
+     */
+    fis->device =
+        1u << 6;
+
+    /*
+     * Exactly one sector.
+     */
+    fis->count_low = 1;
+    fis->count_high = 0;
+
+    /*
+     * Issue slot zero.
+     */
+    port->ci = 1u;
+
+    /*
+     * Poll until the HBA clears slot zero.
+     */
+    for (uint32_t timeout = 0;
+         timeout < AHCI_COMMAND_TIMEOUT;
+         timeout++)
+    {
+        /*
+         * Task-file error from the HBA.
+         */
+        if ((port->is &
+             AHCI_PORT_IS_TFES) != 0)
+        {
+            printf(
+                "AHCI: task file error "
+                "IS=0x%x TFD=0x%x\n",
+                (unsigned)port->is,
+                (unsigned)port->tfd);
+
+            return false;
+        }
+
+        if ((port->ci & 1u) == 0)
+        {
+            uint8_t status =
+                (uint8_t)(port->tfd & 0xFFu);
+
+            if ((status &
+                 ATA_STATUS_ERR) != 0)
+            {
+                printf(
+                    "AHCI: ATA error after DMA read "
+                    "TFD=0x%x\n",
+                    (unsigned)port->tfd);
+
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    printf(
+        "AHCI: DMA read timeout "
+        "CI=0x%x IS=0x%x TFD=0x%x\n",
+        (unsigned)port->ci,
+        (unsigned)port->is,
+        (unsigned)port->tfd);
+
+    return false;
+}
+
+static void ahci_test_gpt_read(void)
+{
+    if (ahci_disk_port == NULL)
+        return;
+
+    uintptr_t frame =
+        pmm_allocate_frame();
+
+    if (frame == 0)
+    {
+        printf(
+            "AHCI: failed allocating test buffer\n");
+
+        return;
+    }
+
+    if (!paging_identity_map_range(
+            frame,
+            PAGE_SIZE,
+            PAGE_WRITABLE))
+    {
+        pmm_free_frame(frame);
+
+        printf(
+            "AHCI: failed mapping test buffer\n");
+
+        return;
+    }
+
+    uint8_t *buffer =
+        (uint8_t *)frame;
+
+    memset(
+        buffer,
+        0,
+        PAGE_SIZE);
+
+    if (!ahci_read_sector_dma(
+            1,
+            buffer))
+    {
+        printf(
+            "AHCI: DMA read LBA 1 failed\n");
+
+        return;
+    }
+
+    printf(
+        "AHCI: DMA read LBA 1 succeeded\n");
+
+    printf(
+        "AHCI: GPT signature = "
+        "%c%c%c%c%c%c%c%c\n",
+        buffer[0],
+        buffer[1],
+        buffer[2],
+        buffer[3],
+        buffer[4],
+        buffer[5],
+        buffer[6],
+        buffer[7]);
 }
