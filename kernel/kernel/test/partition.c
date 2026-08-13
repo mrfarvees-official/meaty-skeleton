@@ -108,7 +108,102 @@ void partition_scan_test(void)
     printf("EXT2: inodes/group=%u\n", (unsigned)sb.inodes_per_group);
     printf("EXT2: inode size=%u\n", (unsigned)sb.inode_size);
 
+    ext2_block_group_descriptor_t bgd;
+    if (!ext2_read_group_descriptor(&partitions[0].block, &sb, 0, &bgd))
+    {
+        printf("EXT2: failed reading group descriptor\n");
+        return;
+    }
+    printf("EXT2: group 0\n");
+    printf("EXT2: block bitmap=%u\n", (unsigned)bgd.block_bitmap);
+    printf("EXT2: inode bitmap=%u\n", (unsigned)bgd.inode_bitmap);
+    printf("EXT2: inode table=%u\n", (unsigned)bgd.inode_table);
+
+    ext2_inode_t root_inode;
+    if (!ext2_read_inode(&partitions[0].block, &sb, EXT2_ROOT_INODE, &root_inode))
+    {
+        printf("EXT2: failed reading root inode\n");
+        return;
+    }
+    printf("EXT2: root inode\n");
+    printf("EXT2: root mode=%04x\n", (unsigned)root_inode.mode);
+    printf("EXT2: root size=%u\n", (unsigned)root_inode.size_low);
+    printf("EXT2: root block0=%u\n", (unsigned)root_inode.block[0]);
+    printf("EXT2: root links=%u\n", (unsigned)root_inode.link_count);
+    if ((root_inode.mode & EXT2_S_IFMT) != EXT2_S_IFDIR)
+    {
+        printf("EXT2: root inode is NOT directory\n");
+        return;
+    }
+    printf("EXT2: root inode is directory\n");
+
     printf("Partition scan: found %u partitions\n", (unsigned)count);
+
+    if (!ext2_list_directory(&partitions[0].block, &sb, &root_inode))
+    {
+        printf("EXT2: failed to listing root directory\n");
+        return;
+    }
+    printf("EXT2: root directory listed\n");
+
+    uint32_t inode_number;
+    if (!ext2_lookup(&partitions[0].block, &sb, &root_inode, "lost+found", &inode_number))
+    {
+        printf("EXT2: lost+found not found\n");
+        return;
+    }
+    printf("EXT2: lost+found inode=%u\n", (unsigned)inode_number);
+    ext2_inode_t found_inode;
+    if (!ext2_read_inode(&partitions[0].block, &sb, inode_number, &found_inode))
+    {
+        printf("EXT2: failed reading found inode\n");
+        return;
+    }
+    printf("EXT2: found mode=%04x size=%u\n", (unsigned)found_inode.mode, (unsigned)found_inode.size_low);
+
+    uint32_t hello_inode_number;
+    if (!ext2_lookup(
+            &partitions[0].block,
+            &sb,
+            &root_inode,
+            "hello.txt",
+            &hello_inode_number))
+    {
+        printf("EXT2: hello.txt not found\n");
+        return;
+    }
+    printf(
+        "EXT2: hello.txt inode=%u\n",
+        (unsigned)hello_inode_number);
+    ext2_inode_t hello_inode;
+    if (!ext2_read_inode(
+            &partitions[0].block,
+            &sb,
+            hello_inode_number,
+            &hello_inode))
+    {
+        printf("EXT2: failed reading hello.txt inode\n");
+        return;
+    }
+
+    char buffer[128];
+    size_t bytes_read;
+    if (!ext2_read_file(
+            &partitions[0].block,
+            &sb,
+            &hello_inode,
+            0,
+            buffer,
+            sizeof(buffer) - 1,
+            &bytes_read))
+    {
+        printf("EXT2: failed reading hello.txt\n");
+        return;
+    }
+    buffer[bytes_read] = '\0';
+    printf(
+        "EXT2: hello.txt: %s\n",
+        buffer);
 
     for (size_t i = 0; i < count; i++)
     {

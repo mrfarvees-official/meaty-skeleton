@@ -22,6 +22,7 @@
 #include <kernel/ata.h>
 #include <kernel/block_device.h>
 #include <kernel/partition.h>
+#include <kernel/ext2.h>
 
 #include <kernel/test.h>
 #include <kernel/system_info.h>
@@ -54,29 +55,6 @@ void validate_multiboot_magic(uint32_t magic)
 		for (;;)
 			__asm__ volatile("cli; hlt");
 	}
-}
-
-static void ata_debug_sector(uint32_t lba)
-{
-	uint8_t sector[512];
-
-	if (block_read(
-			ata_primary_master(),
-			lba,
-			1,
-			sector) != 0)
-	{
-		printf("ATA: LBA %u read failed\n", lba);
-		return;
-	}
-
-	printf(
-		"ATA LBA %u: first=%02x %02x last=%02x %02x\n",
-		lba,
-		sector[0],
-		sector[1],
-		sector[510],
-		sector[511]);
 }
 
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
@@ -136,12 +114,12 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	vfs_initialize();
 	printf("VFS initialized\n");
 
-	if (!ramfs_initialize())
-	{
-		printf("RAMFS initialization failed\n");
-		halt_forever();
-	}
-	printf("RAMFS mounted as /\n");
+	// if (!ramfs_initialize())
+	// {
+	// 	printf("RAMFS initialization failed\n");
+	// 	halt_forever();
+	// }
+	// printf("RAMFS mounted as /\n");
 
 	if (!ata_initialize())
 	{
@@ -150,6 +128,60 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	else
 	{
 		printf("ATA initialized\n");
+
+		block_device_t *disk = ata_primary_master();
+
+		if (disk == NULL)
+		{
+			printf("Storage: no ATA disk\n");
+			halt_forever();
+		}
+
+		static partition_device_t partitions[8];
+
+		size_t partition_count = partition_scan(disk, partitions, 8);
+
+		printf("Storage: found %u partitions\n", (unsigned)partition_count);
+
+		if (partition_count == 0)
+		{
+			printf("Storage: no usable partitions\n");
+			halt_forever();
+		}
+
+		static ext2_fs_t ext2_fs;
+
+		if (!ext2_mount(&partitions[0].block, &ext2_fs))
+		{
+			printf("EXT2: mount failed\n");
+			halt_forever();
+		}
+
+		if (!vfs_set_root(&ext2_fs.root_vnode))
+		{
+			printf("EXT2: failed to set VFS root\n");
+			halt_forever();
+		}
+
+		printf("EXT2: mounted as /\n");
+
+		file_t *file = NULL;
+		if (vfs_open("/hello.txt", VFS_OPEN_READ, &file) != 0)
+		{
+			printf("VFS: failed opening /hello.txt\n");
+			halt_forever();
+		}
+		char buffer[128];
+		size_t bytes_read =0;
+		if (vfs_read(file, buffer, sizeof(buffer) - 1, &bytes_read) != 0)
+		{
+			printf("VFS: failed reading /hello.txt\n");
+			vfs_close(file);
+			halt_forever();
+		}
+		buffer[bytes_read] = '\0';
+		printf("VFS: /hello.txt = %s\n", buffer);
+		vfs_close(file);
 	}
 
 	if (!smp_start_aps())
@@ -180,7 +212,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	partition_scan_test();
+	// partition_scan_test();
 
 	yield_forever();
 }
