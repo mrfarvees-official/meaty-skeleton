@@ -6,6 +6,7 @@
 
 #include <kernel/ahci.h>
 #include <kernel/paging.h>
+#include <kernel/block_device.h>
 #include <kernel/pci.h>
 #include <kernel/pmm.h>
 
@@ -48,6 +49,38 @@
 #define AHCI_COMMAND_TIMEOUT 10000000u
 
 #define AHCI_SECTOR_SIZE 512u
+
+/*
+ * One command table occupies one 4 KiB page.
+ *
+ * Fixed command-table area:
+ *
+ *   command FIS   64 bytes
+ *   ATAPI command 16 bytes
+ *   reserved      48 bytes
+ *                 --------
+ *                 128 bytes
+ *
+ * Remaining:
+ *
+ *   4096 - 128 = 3968 bytes
+ *
+ * Each PRDT entry is 16 bytes:
+ *
+ *   3968 / 16 = 248 entries
+ */
+#define AHCI_MAX_PRDT_ENTRIES 248u
+
+/*
+ * Keep the first block-device implementation intentionally bounded.
+ *
+ * 128 sectors * 512 bytes = 64 KiB per READ DMA EXT command.
+ *
+ * Even if the destination begins at the last byte of a page,
+ * 64 KiB spans at most 17 virtual pages, so this is comfortably
+ * below AHCI_MAX_PRDT_ENTRIES.
+ */
+#define AHCI_MAX_SECTORS_PER_COMMAND 128u
 
 typedef volatile struct
 {
@@ -134,7 +167,7 @@ typedef struct __attribute__((packed))
     uint8_t atapi_command[16];
     uint8_t reserved[48];
 
-    ahci_prdt_entry_t prdt[1];
+    ahci_prdt_entry_t prdt[AHCI_MAX_PRDT_ENTRIES];
 } ahci_command_table_t;
 
 typedef struct __attribute__((packed))
@@ -171,9 +204,12 @@ static bool ahci_prepare_port(
     ahci_port_t *port,
     uint32_t port_index);
 static void ahci_test_gpt_read(void);
-static void ahci_test_identify(void);
+static bool ahci_initialize_disk(void);
 
 static ahci_port_t *ahci_disk_port = NULL;
+
+static block_device_t ahci_disk;
+static bool ahci_disk_present = false;
 
 static uintptr_t ahci_port_memory_physical = 0;
 static void *ahci_port_memory_virtual = NULL;
@@ -454,7 +490,13 @@ bool ahci_probe(const pci_device_t *device)
     if (ahci_disk_port != NULL)
     {
         ahci_test_gpt_read();
-        ahci_test_identify();
+        if (!ahci_initialize_disk())
+        {
+            printf(
+                "AHCI: disk initialization failed\n");
+
+            return false;
+        }
     }
 
     return true;
@@ -669,8 +711,108 @@ static bool ahci_wait_device_ready(
     return false;
 }
 
-static bool ahci_read_sector_dma(
+static bool ahci_build_read_prdt(
+    void *buffer,
+    size_t byte_count,
+    uint16_t *prdt_count)
+{
+    if (buffer == NULL ||
+        byte_count == 0 ||
+        prdt_count == NULL ||
+        ahci_command_table == NULL)
+    {
+        return false;
+    }
+
+    uintptr_t virtual_address =
+        (uintptr_t)buffer;
+
+    size_t remaining =
+        byte_count;
+
+    uint16_t entry_index = 0;
+
+    while (remaining > 0)
+    {
+        if (entry_index >= AHCI_MAX_PRDT_ENTRIES)
+        {
+            printf(
+                "AHCI: too many PRDT entries\n");
+
+            return false;
+        }
+
+        uintptr_t physical_address;
+
+        if (!paging_get_physical_address(
+                virtual_address,
+                &physical_address))
+        {
+            printf(
+                "AHCI: failed translating DMA buffer "
+                "at virtual=0x%x\n",
+                (unsigned)virtual_address);
+
+            return false;
+        }
+
+        /*
+         * A virtual page maps to one physical frame.
+         *
+         * We may therefore safely describe bytes only up to the
+         * end of this virtual page with this physical address.
+         */
+        size_t page_offset =
+            virtual_address &
+            (PAGE_SIZE - 1u);
+
+        size_t page_bytes =
+            PAGE_SIZE - page_offset;
+
+        size_t fragment_bytes =
+            remaining < page_bytes
+                ? remaining
+                : page_bytes;
+
+        ahci_prdt_entry_t *entry =
+            &ahci_command_table->prdt[entry_index];
+
+        entry->data_base =
+            (uint32_t)physical_address;
+
+        /*
+         * Current 32-bit kernel physical memory is below 4 GiB.
+         */
+        entry->data_base_upper = 0;
+
+        entry->reserved = 0;
+
+        /*
+         * AHCI PRDT DBC contains byte-count-minus-one.
+         *
+         * IOC remains zero because this driver is polling.
+         */
+        entry->byte_count_and_flags =
+            (uint32_t)(fragment_bytes - 1u);
+
+        virtual_address +=
+            fragment_bytes;
+
+        remaining -=
+            fragment_bytes;
+
+        entry_index++;
+    }
+
+    *prdt_count =
+        entry_index;
+
+    return true;
+}
+
+static bool ahci_read_dma(
     uint64_t lba,
+    uint32_t sector_count,
     void *buffer)
 {
     if (ahci_disk_port == NULL ||
@@ -680,23 +822,31 @@ static bool ahci_read_sector_dma(
         return false;
     }
 
-    /*
-     * For this first milestone the DMA buffer must be
-     * page-backed and identity mapped.
-     *
-     * Translate its CPU virtual address to a physical address.
-     */
-    uintptr_t buffer_physical;
-
-    if (!paging_get_physical_address(
-            (uintptr_t)buffer,
-            &buffer_physical))
+    if (sector_count == 0 ||
+        sector_count >
+            AHCI_MAX_SECTORS_PER_COMMAND)
     {
-        printf(
-            "AHCI: failed translating DMA buffer\n");
-
         return false;
     }
+
+    /*
+     * READ DMA EXT uses a 48-bit LBA.
+     */
+    const uint64_t lba48_limit =
+        (1ULL << 48);
+
+    if (lba >= lba48_limit)
+        return false;
+
+    if ((uint64_t)sector_count >
+        lba48_limit - lba)
+    {
+        return false;
+    }
+
+    size_t byte_count =
+        (size_t)sector_count *
+        AHCI_SECTOR_SIZE;
 
     ahci_port_t *port =
         ahci_disk_port;
@@ -717,19 +867,29 @@ static bool ahci_read_sector_dma(
         return false;
 
     /*
-     * Clear old interrupt/error state.
-     *
-     * PxIS is write-one-to-clear.
+     * Clear stale interrupt/error state.
      */
-    port->is = 0xFFFFFFFFu;
+    port->is =
+        0xFFFFFFFFu;
 
     /*
-     * Clear the command table from the previous command.
+     * The command-table page contains the FIS and all PRDT
+     * entries for this command.
      */
     memset(
         ahci_command_table,
         0,
         PAGE_SIZE);
+
+    uint16_t prdt_count = 0;
+
+    if (!ahci_build_read_prdt(
+            buffer,
+            byte_count,
+            &prdt_count))
+    {
+        return false;
+    }
 
     ahci_command_header_t *command_list =
         (ahci_command_header_t *)
@@ -739,8 +899,8 @@ static bool ahci_read_sector_dma(
         &command_list[0];
 
     /*
-     * Preserve CTBA/CTBAU while resetting the command-specific
-     * fields.
+     * Preserve command-table physical address while resetting
+     * command-specific header fields.
      */
     uint32_t command_table_base =
         header->command_table_base;
@@ -762,36 +922,14 @@ static bool ahci_read_sector_dma(
     /*
      * Register H2D FIS is 20 bytes = 5 DWORDs.
      *
-     * W remains zero because this is a disk -> RAM read.
+     * W remains zero: disk -> memory.
      */
-    header->flags = 5u;
+    header->flags =
+        5u;
 
-    header->prdt_length = 1;
+    header->prdt_length =
+        prdt_count;
 
-    /*
-     * One PRDT entry describes our 512-byte destination.
-     */
-    ahci_prdt_entry_t *prdt =
-        &ahci_command_table->prdt[0];
-
-    prdt->data_base =
-        (uint32_t)buffer_physical;
-
-    prdt->data_base_upper = 0;
-
-    prdt->reserved = 0;
-
-    /*
-     * AHCI stores byte-count-minus-one.
-     *
-     * 512 bytes -> 511.
-     */
-    prdt->byte_count_and_flags =
-        AHCI_SECTOR_SIZE - 1u;
-
-    /*
-     * Construct Register Host-to-Device FIS.
-     */
     ahci_fis_reg_h2d_t *fis =
         (ahci_fis_reg_h2d_t *)
             ahci_command_table->command_fis;
@@ -805,8 +943,7 @@ static bool ahci_read_sector_dma(
         AHCI_FIS_TYPE_REG_H2D;
 
     /*
-     * Bit 7 = C:
-     * this is a command FIS.
+     * C = 1: this FIS contains a command.
      */
     fis->pmport_and_c =
         1u << 7;
@@ -836,32 +973,35 @@ static bool ahci_read_sector_dma(
         (uint8_t)(lba >> 40);
 
     /*
-     * Set LBA mode.
+     * LBA addressing mode.
      */
     fis->device =
         1u << 6;
 
     /*
-     * Exactly one sector.
+     * READ DMA EXT has a 16-bit sector-count field.
+     *
+     * This milestone limits commands to 128 sectors, so zero
+     * never needs the ATA 65536-sector special meaning.
      */
-    fis->count_low = 1;
-    fis->count_high = 0;
+    fis->count_low =
+        (uint8_t)(sector_count &
+                  0xFFu);
+
+    fis->count_high =
+        (uint8_t)((sector_count >> 8) &
+                  0xFFu);
 
     /*
-     * Issue slot zero.
+     * Issue command-list slot zero.
      */
-    port->ci = 1u;
+    port->ci =
+        1u;
 
-    /*
-     * Poll until the HBA clears slot zero.
-     */
     for (uint32_t timeout = 0;
          timeout < AHCI_COMMAND_TIMEOUT;
          timeout++)
     {
-        /*
-         * Task-file error from the HBA.
-         */
         if ((port->is &
              AHCI_PORT_IS_TFES) != 0)
         {
@@ -877,7 +1017,8 @@ static bool ahci_read_sector_dma(
         if ((port->ci & 1u) == 0)
         {
             uint8_t status =
-                (uint8_t)(port->tfd & 0xFFu);
+                (uint8_t)(port->tfd &
+                          0xFFu);
 
             if ((status &
                  ATA_STATUS_ERR) != 0)
@@ -902,6 +1043,78 @@ static bool ahci_read_sector_dma(
         (unsigned)port->tfd);
 
     return false;
+}
+
+static int ahci_block_read(
+    block_device_t *device,
+    uint64_t lba,
+    uint32_t count,
+    void *buffer)
+{
+    if (device == NULL ||
+        buffer == NULL ||
+        count == 0)
+    {
+        return -1;
+    }
+
+    if (lba >=
+        device->sector_count)
+    {
+        return -1;
+    }
+
+    if ((uint64_t)count >
+        device->sector_count - lba)
+    {
+        return -1;
+    }
+
+    uint64_t current_lba =
+        lba;
+
+    uint32_t remaining =
+        count;
+
+    uint8_t *destination =
+        (uint8_t *)buffer;
+
+    /*
+     * One block-device request may be larger than our current
+     * per-command 64 KiB limit.
+     *
+     * Split only at the AHCI command-size boundary.
+     *
+     * Each chunk is still one multi-sector READ DMA EXT command.
+     */
+    while (remaining > 0)
+    {
+        uint32_t chunk =
+            remaining >
+                    AHCI_MAX_SECTORS_PER_COMMAND
+                ? AHCI_MAX_SECTORS_PER_COMMAND
+                : remaining;
+
+        if (!ahci_read_dma(
+                current_lba,
+                chunk,
+                destination))
+        {
+            return -1;
+        }
+
+        current_lba +=
+            chunk;
+
+        destination +=
+            (size_t)chunk *
+            AHCI_SECTOR_SIZE;
+
+        remaining -=
+            chunk;
+    }
+
+    return 0;
 }
 
 static bool ahci_identify_device(
@@ -1106,9 +1319,8 @@ static uint64_t ahci_identify_sector_count(
     /*
      * Fall back to the legacy 28-bit sector count.
      */
-    return
-        ((uint32_t)identify[61] << 16) |
-        (uint32_t)identify[60];
+    return ((uint32_t)identify[61] << 16) |
+           (uint32_t)identify[60];
 }
 
 static void ahci_identify_model(
@@ -1138,7 +1350,7 @@ static void ahci_identify_model(
     }
 }
 
-static void ahci_test_identify(void)
+static bool ahci_initialize_disk(void)
 {
     uint16_t identify[256];
 
@@ -1147,10 +1359,28 @@ static void ahci_test_identify(void)
         0,
         sizeof(identify));
 
-    if (!ahci_identify_device(identify))
+    ahci_disk_present =
+        false;
+
+    if (!ahci_identify_device(
+            identify))
     {
-        printf("AHCI: IDENTIFY failed\n");
-        return;
+        printf(
+            "AHCI: IDENTIFY failed\n");
+
+        return false;
+    }
+
+    uint64_t sector_count =
+        ahci_identify_sector_count(
+            identify);
+
+    if (sector_count == 0)
+    {
+        printf(
+            "AHCI: invalid sector count\n");
+
+        return false;
     }
 
     char model[41];
@@ -1159,9 +1389,33 @@ static void ahci_test_identify(void)
         identify,
         model);
 
-    uint64_t sector_count =
-        ahci_identify_sector_count(
-            identify);
+    ahci_disk.name =
+        "ahci0";
+
+    ahci_disk.sector_size =
+        AHCI_SECTOR_SIZE;
+
+    ahci_disk.sector_count =
+        sector_count;
+
+    ahci_disk.read =
+        ahci_block_read;
+
+    /*
+     * Read-only for now.
+     */
+    ahci_disk.write =
+        NULL;
+
+    ahci_disk.private_data =
+        NULL;
+
+    ahci_disk_present =
+        true;
+
+    printf(
+        "AHCI: block device %s ready\n",
+        ahci_disk.name);
 
     printf(
         "AHCI: model: %s\n",
@@ -1173,10 +1427,11 @@ static void ahci_test_identify(void)
 
     printf(
         "AHCI: capacity: %u MiB\n",
-        (unsigned)(
-            sector_count *
-            AHCI_SECTOR_SIZE /
-            (1024u * 1024u)));
+        (unsigned)(sector_count *
+                   AHCI_SECTOR_SIZE /
+                   (1024u * 1024u)));
+
+    return true;
 }
 
 static void ahci_test_gpt_read(void)
@@ -1216,7 +1471,8 @@ static void ahci_test_gpt_read(void)
         0,
         PAGE_SIZE);
 
-    if (!ahci_read_sector_dma(
+    if (!ahci_read_dma(
+            1,
             1,
             buffer))
     {
