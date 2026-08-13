@@ -2,10 +2,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stddef.h>
+#include <string.h>
 
 #include <kernel/ahci.h>
 #include <kernel/paging.h>
 #include <kernel/pci.h>
+#include <kernel/pmm.h>
 
 #define PCI_COMMAND_REGISTER 0x04u
 #define PCI_BAR5 0x24u
@@ -20,6 +22,16 @@
 
 #define AHCI_SIG_ATA 0x00000101u
 #define AHCI_SIG_ATAPI 0xEB140101u
+
+#define AHCI_PORT_CMD_ST (1u << 0)
+#define AHCI_PORT_CMD_FRE (1u << 4)
+#define AHCI_PORT_CMD_FR (1u << 14)
+#define AHCI_PORT_CMD_CR (1u << 15)
+
+#define AHCI_COMMAND_LIST_SIZE 1024u
+#define AHCI_RECEIVED_FIS_SIZE 256u
+
+#define AHCI_ENGINE_TIMEOUT 1000000u
 
 typedef volatile struct
 {
@@ -64,6 +76,15 @@ typedef volatile struct
     ahci_port_t ports[32];
 } ahci_hba_t;
 
+static bool ahci_prepare_port(
+    ahci_port_t *port,
+    uint32_t port_index);
+    
+static ahci_port_t *ahci_disk_port = NULL;
+
+static uintptr_t ahci_port_memory_physical = 0;
+static void *ahci_port_memory_virtual = NULL;
+
 static bool ahci_port_device_present(
     ahci_port_t *port)
 {
@@ -92,6 +113,82 @@ static bool ahci_port_device_present(
 
     return det == AHCI_PORT_DET_PRESENT &&
            ipm == AHCI_PORT_IPM_ACTIVE;
+}
+
+static bool ahci_stop_command_engine(
+    ahci_port_t *port)
+{
+    if (port == NULL)
+        return false;
+
+    /*
+     * Stop accepting new commands.
+     */
+    port->cmd &= ~AHCI_PORT_CMD_ST;
+
+    /*
+     * Wait for the command-list engine to stop.
+     */
+    for (uint32_t timeout = 0;
+         timeout < AHCI_ENGINE_TIMEOUT;
+         timeout++)
+    {
+        if ((port->cmd & AHCI_PORT_CMD_CR) == 0)
+            break;
+
+        if (timeout == AHCI_ENGINE_TIMEOUT - 1u)
+        {
+            printf(
+                "AHCI: timeout waiting for command engine\n");
+
+            return false;
+        }
+    }
+
+    /*
+     * Stop FIS reception.
+     */
+    port->cmd &= ~AHCI_PORT_CMD_FRE;
+
+    /*
+     * Wait for the FIS receive engine to stop.
+     */
+    for (uint32_t timeout = 0;
+         timeout < AHCI_ENGINE_TIMEOUT;
+         timeout++)
+    {
+        if ((port->cmd & AHCI_PORT_CMD_FR) == 0)
+            return true;
+    }
+
+    printf(
+        "AHCI: timeout waiting for FIS receive engine\n");
+
+    return false;
+}
+
+static bool ahci_start_command_engine(
+    ahci_port_t *port)
+{
+    if (port == NULL)
+        return false;
+
+    /*
+     * The engines must be stopped before restarting.
+     */
+    if ((port->cmd &
+         (AHCI_PORT_CMD_CR | AHCI_PORT_CMD_FR)) != 0)
+    {
+        return false;
+    }
+
+    /*
+     * FIS reception must be enabled before command processing.
+     */
+    port->cmd |= AHCI_PORT_CMD_FRE;
+    port->cmd |= AHCI_PORT_CMD_ST;
+
+    return true;
 }
 
 static void ahci_probe_ports(
@@ -136,6 +233,18 @@ static void ahci_probe_ports(
             printf(
                 "AHCI: SATA disk found on port %u\n",
                 (unsigned)port_index);
+
+            if (ahci_disk_port == NULL)
+            {
+                if (!ahci_prepare_port(
+                        port,
+                        port_index))
+                {
+                    printf(
+                        "AHCI: failed preparing SATA port %u\n",
+                        (unsigned)port_index);
+                }
+            }
         }
         else if (sig == AHCI_SIG_ATAPI)
         {
@@ -245,6 +354,134 @@ bool ahci_probe(const pci_device_t *device)
         (unsigned)hba->vs);
 
     ahci_probe_ports(hba);
+
+    return true;
+}
+
+static bool ahci_prepare_port(
+    ahci_port_t *port,
+    uint32_t port_index)
+{
+    if (port == NULL)
+        return false;
+
+    if (!ahci_stop_command_engine(port))
+    {
+        printf(
+            "AHCI: failed stopping port %u\n",
+            (unsigned)port_index);
+
+        return false;
+    }
+
+    printf(
+        "AHCI: port %u command engine stopped\n",
+        (unsigned)port_index);
+
+    /*
+     * One physical page is enough for:
+     *
+     *   0x000 - 0x3FF : command list (1024 bytes)
+     *   0x400 - 0x4FF : received FIS (256 bytes)
+     */
+    uintptr_t frame =
+        pmm_allocate_frame();
+
+    if (frame == 0)
+    {
+        printf(
+            "AHCI: failed allocating port memory\n");
+
+        return false;
+    }
+
+    /*
+     * The controller accesses physical memory directly.
+     *
+     * We identity-map this physical frame so the CPU can also
+     * initialize and use it.
+     */
+    if (!paging_identity_map_range(
+            frame,
+            PAGE_SIZE,
+            PAGE_WRITABLE))
+    {
+        pmm_free_frame(frame);
+
+        printf(
+            "AHCI: failed mapping port memory\n");
+
+        return false;
+    }
+
+    void *memory =
+        (void *)frame;
+
+    memset(
+        memory,
+        0,
+        PAGE_SIZE);
+
+    uintptr_t command_list_physical =
+        frame;
+
+    uintptr_t received_fis_physical =
+        frame + AHCI_COMMAND_LIST_SIZE;
+
+    /*
+     * We're running a 32-bit kernel and these PMM frames are below
+     * 4 GiB, so the upper address registers are zero.
+     */
+    port->clb =
+        (uint32_t)command_list_physical;
+
+    port->clbu = 0;
+
+    port->fb =
+        (uint32_t)received_fis_physical;
+
+    port->fbu = 0;
+
+    /*
+     * Clear pending status before starting the engine.
+     *
+     * PxIS and PxSERR use write-1-to-clear semantics.
+     */
+    port->is = 0xFFFFFFFFu;
+    port->serr = 0xFFFFFFFFu;
+
+    /*
+     * Keep interrupts disabled for now.
+     *
+     * Our first commands will be polling based.
+     */
+    port->ie = 0;
+
+    if (!ahci_start_command_engine(port))
+    {
+        printf(
+            "AHCI: failed starting port %u\n",
+            (unsigned)port_index);
+
+        return false;
+    }
+
+    ahci_disk_port = port;
+
+    ahci_port_memory_physical = frame;
+    ahci_port_memory_virtual = memory;
+
+    printf(
+        "AHCI: command list phys=0x%x\n",
+        (unsigned)command_list_physical);
+
+    printf(
+        "AHCI: received FIS phys=0x%x\n",
+        (unsigned)received_fis_physical);
+
+    printf(
+        "AHCI: port %u command engine started\n",
+        (unsigned)port_index);
 
     return true;
 }
