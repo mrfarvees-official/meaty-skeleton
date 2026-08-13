@@ -172,7 +172,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 			halt_forever();
 		}
 		char buffer[128];
-		size_t bytes_read =0;
+		size_t bytes_read = 0;
 		if (vfs_read(file, buffer, sizeof(buffer) - 1, &bytes_read) != 0)
 		{
 			printf("VFS: failed reading /hello.txt\n");
@@ -181,6 +181,33 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		}
 		buffer[bytes_read] = '\0';
 		printf("VFS: /hello.txt = %s\n", buffer);
+		vfs_close(file);
+
+		file = NULL;
+		if (vfs_open("/big.txt", VFS_OPEN_READ, &file) != 0)
+		{
+			printf("VFS: failed opening /big.txt\n");
+			halt_forever();
+		}
+		char big_buffer[4096];
+		size_t total_big_read = 0;
+		for (;;)
+		{
+			size_t chunk_read = 0;
+
+			if (vfs_read(file, big_buffer, sizeof(big_buffer), &chunk_read) != 0)
+			{
+				printf("VFS: failed reading /big.txt\n");
+				vfs_close(file);
+				halt_forever();
+			}
+
+			if (chunk_read == 0)
+				break;
+
+			total_big_read += chunk_read;
+		}
+		printf("VFS: /big.txt bytes read = %u\n", (unsigned)total_big_read);
 		vfs_close(file);
 	}
 
@@ -211,8 +238,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
-
-	// partition_scan_test();
 
 	yield_forever();
 }

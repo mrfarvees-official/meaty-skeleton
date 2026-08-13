@@ -8,23 +8,22 @@
 
 static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **result);
 static int ext2_vnode_read(vnode_t *node, size_t offset, void *buffer, size_t size, size_t *bytes_read);
+static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *inode, uint32_t logical_block, uint32_t *physical_block);
 
 static const vnode_ops_t ext2_directory_ops;
 static const vnode_ops_t ext2_file_ops;
 
-static const vnode_ops_t ext2_directory_ops = 
-{
-    .lookup = ext2_vnode_lookup,
-    .read = NULL,
-    .write = NULL
-};
+static const vnode_ops_t ext2_directory_ops =
+    {
+        .lookup = ext2_vnode_lookup,
+        .read = NULL,
+        .write = NULL};
 
 static const vnode_ops_t ext2_file_ops =
-{
-    .lookup = NULL,
-    .read = ext2_vnode_read,
-    .write = NULL
-};
+    {
+        .lookup = NULL,
+        .read = ext2_vnode_read,
+        .write = NULL};
 
 bool ext2_read_superblock(block_device_t *device, ext2_superblock_t *superblock)
 {
@@ -38,9 +37,9 @@ bool ext2_read_superblock(block_device_t *device, ext2_superblock_t *superblock)
 
     /*
      * ext2 superblock begins at byte offset 1024
-     * 
+     *
      * With 512-byte sectors:
-     * 
+     *
      * LBA 2 and LBA 3
      */
     if (block_read(device, 2, 2, buffer) != 0)
@@ -82,7 +81,7 @@ bool ext2_read_group_descriptor(block_device_t *device, const ext2_superblock_t 
 
     if (descriptors_per_block == 0)
         return false;
-    
+
     uint32_t bgdt_first_block = superblock->first_data_block + 1;
     uint32_t descriptor_block = bgdt_first_block + group / descriptors_per_block;
     uint32_t descriptor_index = group % descriptors_per_block;
@@ -98,7 +97,7 @@ bool ext2_read_group_descriptor(block_device_t *device, const ext2_superblock_t 
     if (!ext2_read_block(device, block_size, descriptor_block, block))
         return false;
 
-    const ext2_block_group_descriptor_t *entries = (const ext2_block_group_descriptor_t*)block;
+    const ext2_block_group_descriptor_t *entries = (const ext2_block_group_descriptor_t *)block;
 
     *descriptor = entries[descriptor_index];
 
@@ -124,7 +123,7 @@ bool ext2_read_inode(block_device_t *device, const ext2_superblock_t *superblock
         return false;
 
     uint64_t byte_offset = (uint64_t)index_in_group * superblock->inode_size;
-    uint32_t block_number = descriptor.inode_table + (uint32_t)(byte_offset/ block_size);
+    uint32_t block_number = descriptor.inode_table + (uint32_t)(byte_offset / block_size);
     uint32_t offset_in_block = (uint32_t)(byte_offset % block_size);
 
     /*
@@ -172,12 +171,12 @@ bool ext2_list_directory(block_device_t *device, const ext2_superblock_t *superb
 
     if (!ext2_read_block(device, block_size, block_number, block))
         return false;
-    
+
     size_t offset = 0;
-    
+
     while (offset < block_size)
     {
-        ext2_directory_entry_t *entry = (ext2_directory_entry_t*)(block + offset);
+        ext2_directory_entry_t *entry = (ext2_directory_entry_t *)(block + offset);
 
         /*
          * Corruption / infinite-loop protection.
@@ -187,7 +186,7 @@ bool ext2_list_directory(block_device_t *device, const ext2_superblock_t *superb
 
         if (offset + entry->record_length > block_size)
             return false;
-        
+
         if (entry->name_length > entry->record_length - 8)
             return false;
 
@@ -248,7 +247,7 @@ bool ext2_lookup(block_device_t *device, const ext2_superblock_t *superblock, co
 
         while (offset < block_size)
         {
-            ext2_directory_entry_t *entry = (ext2_directory_entry_t*)(block + offset);
+            ext2_directory_entry_t *entry = (ext2_directory_entry_t *)(block + offset);
 
             if (entry->record_length < 8)
                 return false;
@@ -312,15 +311,12 @@ bool ext2_read_file(block_device_t *device, const ext2_superblock_t *superblock,
         uint32_t logical_block = (uint32_t)(file_offset / block_size);
         uint32_t offset_in_block = (uint32_t)(file_offset % block_size);
 
-        /*
-         * Direct block only for now.
-         */
-        if (logical_block >= 12)
-            break;
-        
-        uint32_t block_number = inode->block[logical_block];
+        uint32_t block_number;
 
-        if (block_number ==  0)
+        if (!ext2_get_data_block(device, superblock, inode, logical_block, &block_number))
+            return false;
+
+        if (block_number == 0)
             break;
 
         if (!ext2_read_block(device, block_size, block_number, block))
@@ -331,7 +327,7 @@ bool ext2_read_file(block_device_t *device, const ext2_superblock_t *superblock,
         if (chunk > wanted - total)
             chunk = wanted - total;
 
-        memcpy((uint8_t*)buffer + total, block + offset_in_block, chunk);
+        memcpy((uint8_t *)buffer + total, block + offset_in_block, chunk);
 
         total += chunk;
     }
@@ -345,8 +341,8 @@ static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **res
 {
     if (directory == NULL || name == NULL || result == NULL)
         return -1;
-    
-    ext2_vnode_data_t *dir_data = (ext2_vnode_data_t*)directory->private_data;
+
+    ext2_vnode_data_t *dir_data = (ext2_vnode_data_t *)directory->private_data;
 
     if (dir_data == NULL || dir_data->fs == NULL)
         return -1;
@@ -402,7 +398,7 @@ static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **res
     }
 
     *result = node;
-    
+
     return 0;
 }
 
@@ -411,9 +407,9 @@ static int ext2_vnode_read(vnode_t *node, size_t offset, void *buffer, size_t si
     if (node == NULL || buffer == NULL || bytes_read == NULL)
         return -1;
 
-    ext2_vnode_data_t *data = (ext2_vnode_data_t*)node->private_data;
+    ext2_vnode_data_t *data = (ext2_vnode_data_t *)node->private_data;
 
-    if (data == NULL|| data->fs == NULL)
+    if (data == NULL || data->fs == NULL)
         return -1;
 
     ext2_fs_t *fs = data->fs;
@@ -446,7 +442,7 @@ bool ext2_mount(block_device_t *device, ext2_fs_t *fs)
 
     if (root_data == NULL)
         return false;
-    
+
     root_data->fs = fs;
     root_data->inode_number = EXT2_ROOT_INODE;
     root_data->inode = root_inode;
@@ -457,6 +453,63 @@ bool ext2_mount(block_device_t *device, ext2_fs_t *fs)
     fs->root_vnode.private_data = root_data;
     fs->root_vnode.ops = &ext2_directory_ops;
     fs->root_vnode.ref_count = 0;
+
+    return true;
+}
+
+static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *inode, uint32_t logical_block, uint32_t *physical_block)
+{
+    if (device == NULL || superblock == NULL || inode == NULL || physical_block == NULL)
+        return false;
+
+    /*
+     * The first 12 data blocks are stored directly
+     * in the inode.
+     */
+    if (logical_block < 12)
+    {
+        *physical_block = inode->block[logical_block];
+        return true;
+    }
+
+    uint32_t block_size = 1024u << superblock->log_block_size;
+
+    if (block_size > 4096)
+        return false;
+
+    /*
+     * A singly-indirect block contains an array of
+     * uint32_t filesystem block numbers.
+     */
+    uint32_t indirect_entries_per_block = block_size / sizeof(uint32_t);
+
+    uint32_t indirect_index = logical_block - 12;
+
+    /*
+     * Double- and triple-indirect blocks are not
+     * supported yet.
+     */
+    if (indirect_index >= indirect_entries_per_block)
+        return false;
+
+    /*
+     * No singly-indirect block has been allocated.
+     *
+     * Return physical block 0 so the caller can treat
+     * it the same way as an unused direct block.
+     */
+    if (inode->block[12] == 0)
+    {
+        *physical_block = 0;
+        return true;
+    }
+
+    uint32_t indirect_blocks[4096 / sizeof(uint32_t)];
+
+    if (!ext2_read_block(device, block_size, inode->block[12], indirect_blocks))
+        return false;
+
+    *physical_block = indirect_blocks[indirect_index];
 
     return true;
 }
