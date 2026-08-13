@@ -285,8 +285,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		halt_forever();
 	}
 
-#define DOUBLE_READ_BUFFER_SIZE (64u * 1024u)
-
 	uint8_t *double_buffer =
 		kmalloc(DOUBLE_READ_BUFFER_SIZE);
 
@@ -305,7 +303,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		if (vfs_read(
 				file,
 				double_buffer,
-				sizeof(double_buffer),
+				sizeof(DOUBLE_READ_BUFFER_SIZE),
 				&chunk_read) != 0)
 		{
 			printf("VFS: failed reading /double.txt\n");
@@ -327,6 +325,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		(unsigned)read_elapsed_ms);
 
 	vfs_close(file);
+	kfree(double_buffer);
 
 	yield_forever();
 }

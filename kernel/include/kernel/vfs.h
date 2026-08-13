@@ -8,6 +8,8 @@
 typedef struct vnode vnode_t;
 typedef struct file file_t;
 
+#define DOUBLE_READ_BUFFER_SIZE (64u * 1024u)
+
 typedef enum vnode_type
 {
     VNODE_REGULAR = 0,
