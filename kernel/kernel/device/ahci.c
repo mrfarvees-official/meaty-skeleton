@@ -37,6 +37,8 @@
 
 #define ATA_CMD_READ_DMA_EXT 0x25u
 
+#define ATA_CMD_IDENTIFY_DEVICE 0xECu
+
 #define AHCI_PORT_IS_TFES (1u << 30)
 
 #define ATA_STATUS_ERR (1u << 0)
@@ -169,6 +171,7 @@ static bool ahci_prepare_port(
     ahci_port_t *port,
     uint32_t port_index);
 static void ahci_test_gpt_read(void);
+static void ahci_test_identify(void);
 
 static ahci_port_t *ahci_disk_port = NULL;
 
@@ -451,6 +454,7 @@ bool ahci_probe(const pci_device_t *device)
     if (ahci_disk_port != NULL)
     {
         ahci_test_gpt_read();
+        ahci_test_identify();
     }
 
     return true;
@@ -898,6 +902,281 @@ static bool ahci_read_sector_dma(
         (unsigned)port->tfd);
 
     return false;
+}
+
+static bool ahci_identify_device(
+    uint16_t identify[256])
+{
+    if (ahci_disk_port == NULL ||
+        ahci_command_table == NULL ||
+        identify == NULL)
+    {
+        return false;
+    }
+
+    uintptr_t buffer_frame =
+        pmm_allocate_frame();
+
+    if (buffer_frame == 0)
+    {
+        printf("AHCI: IDENTIFY buffer allocation failed\n");
+        return false;
+    }
+
+    if (!paging_identity_map_range(
+            buffer_frame,
+            PAGE_SIZE,
+            PAGE_WRITABLE))
+    {
+        pmm_free_frame(buffer_frame);
+
+        printf("AHCI: IDENTIFY buffer mapping failed\n");
+        return false;
+    }
+
+    memset(
+        (void *)buffer_frame,
+        0,
+        PAGE_SIZE);
+
+    ahci_port_t *port =
+        ahci_disk_port;
+
+    if ((port->ci & 1u) != 0 ||
+        (port->sact & 1u) != 0)
+    {
+        printf("AHCI: slot 0 busy during IDENTIFY\n");
+        return false;
+    }
+
+    if (!ahci_wait_device_ready(port))
+        return false;
+
+    port->is = 0xFFFFFFFFu;
+
+    memset(
+        ahci_command_table,
+        0,
+        PAGE_SIZE);
+
+    ahci_command_header_t *command_list =
+        (ahci_command_header_t *)
+            ahci_port_memory_virtual;
+
+    ahci_command_header_t *header =
+        &command_list[0];
+
+    uint32_t ctba =
+        header->command_table_base;
+
+    uint32_t ctbau =
+        header->command_table_base_upper;
+
+    memset(
+        header,
+        0,
+        sizeof(*header));
+
+    header->command_table_base = ctba;
+    header->command_table_base_upper = ctbau;
+
+    /*
+     * Register H2D FIS:
+     * 20 bytes = 5 DWORDs.
+     */
+    header->flags = 5u;
+
+    /*
+     * One 512-byte receive buffer.
+     */
+    header->prdt_length = 1;
+
+    ahci_prdt_entry_t *prdt =
+        &ahci_command_table->prdt[0];
+
+    prdt->data_base =
+        (uint32_t)buffer_frame;
+
+    prdt->data_base_upper = 0;
+
+    prdt->reserved = 0;
+
+    prdt->byte_count_and_flags =
+        AHCI_SECTOR_SIZE - 1u;
+
+    ahci_fis_reg_h2d_t *fis =
+        (ahci_fis_reg_h2d_t *)
+            ahci_command_table->command_fis;
+
+    memset(
+        fis,
+        0,
+        sizeof(*fis));
+
+    fis->fis_type =
+        AHCI_FIS_TYPE_REG_H2D;
+
+    /*
+     * C bit:
+     * this is a command FIS.
+     */
+    fis->pmport_and_c =
+        1u << 7;
+
+    fis->command =
+        ATA_CMD_IDENTIFY_DEVICE;
+
+    /*
+     * IDENTIFY DEVICE does not use an LBA or sector count.
+     */
+
+    port->ci = 1u;
+
+    for (uint32_t timeout = 0;
+         timeout < AHCI_COMMAND_TIMEOUT;
+         timeout++)
+    {
+        if ((port->is &
+             AHCI_PORT_IS_TFES) != 0)
+        {
+            printf(
+                "AHCI: IDENTIFY task-file error "
+                "IS=0x%x TFD=0x%x\n",
+                (unsigned)port->is,
+                (unsigned)port->tfd);
+
+            return false;
+        }
+
+        if ((port->ci & 1u) == 0)
+        {
+            uint8_t status =
+                (uint8_t)(port->tfd & 0xFFu);
+
+            if ((status & ATA_STATUS_ERR) != 0)
+            {
+                printf(
+                    "AHCI: IDENTIFY ATA error "
+                    "TFD=0x%x\n",
+                    (unsigned)port->tfd);
+
+                return false;
+            }
+
+            memcpy(
+                identify,
+                (void *)buffer_frame,
+                AHCI_SECTOR_SIZE);
+
+            return true;
+        }
+    }
+
+    printf(
+        "AHCI: IDENTIFY timeout "
+        "CI=0x%x IS=0x%x TFD=0x%x\n",
+        (unsigned)port->ci,
+        (unsigned)port->is,
+        (unsigned)port->tfd);
+
+    return false;
+}
+
+static uint64_t ahci_identify_sector_count(
+    const uint16_t identify[256])
+{
+    /*
+     * Word 83 bit 10 indicates 48-bit LBA support.
+     */
+    bool supports_lba48 =
+        (identify[83] & (1u << 10)) != 0;
+
+    if (supports_lba48)
+    {
+        uint64_t sectors =
+            ((uint64_t)identify[100]) |
+            ((uint64_t)identify[101] << 16) |
+            ((uint64_t)identify[102] << 32) |
+            ((uint64_t)identify[103] << 48);
+
+        if (sectors != 0)
+            return sectors;
+    }
+
+    /*
+     * Fall back to the legacy 28-bit sector count.
+     */
+    return
+        ((uint32_t)identify[61] << 16) |
+        (uint32_t)identify[60];
+}
+
+static void ahci_identify_model(
+    const uint16_t identify[256],
+    char model[41])
+{
+    for (size_t i = 0; i < 20; i++)
+    {
+        uint16_t word =
+            identify[27 + i];
+
+        model[i * 2] =
+            (char)(word >> 8);
+
+        model[i * 2 + 1] =
+            (char)(word & 0xFF);
+    }
+
+    model[40] = '\0';
+
+    for (int i = 39; i >= 0; i--)
+    {
+        if (model[i] == ' ')
+            model[i] = '\0';
+        else
+            break;
+    }
+}
+
+static void ahci_test_identify(void)
+{
+    uint16_t identify[256];
+
+    memset(
+        identify,
+        0,
+        sizeof(identify));
+
+    if (!ahci_identify_device(identify))
+    {
+        printf("AHCI: IDENTIFY failed\n");
+        return;
+    }
+
+    char model[41];
+
+    ahci_identify_model(
+        identify,
+        model);
+
+    uint64_t sector_count =
+        ahci_identify_sector_count(
+            identify);
+
+    printf(
+        "AHCI: model: %s\n",
+        model);
+
+    printf(
+        "AHCI: sectors: %u\n",
+        (unsigned)sector_count);
+
+    printf(
+        "AHCI: capacity: %u MiB\n",
+        (unsigned)(
+            sector_count *
+            AHCI_SECTOR_SIZE /
+            (1024u * 1024u)));
 }
 
 static void ahci_test_gpt_read(void)
