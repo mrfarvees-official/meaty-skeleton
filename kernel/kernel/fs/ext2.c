@@ -463,8 +463,7 @@ static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t 
         return false;
 
     /*
-     * The first 12 data blocks are stored directly
-     * in the inode.
+     * Direct blocks: logical blocks 0..11
      */
     if (logical_block < 12)
     {
@@ -477,39 +476,96 @@ static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t 
     if (block_size > 4096)
         return false;
 
-    /*
-     * A singly-indirect block contains an array of
-     * uint32_t filesystem block numbers.
-     */
-    uint32_t indirect_entries_per_block = block_size / sizeof(uint32_t);
+    uint32_t entries_per_block = block_size / sizeof(uint32_t);
 
-    uint32_t indirect_index = logical_block - 12;
-
-    /*
-     * Double- and triple-indirect blocks are not
-     * supported yet.
-     */
-    if (indirect_index >= indirect_entries_per_block)
+    if (entries_per_block == 0)
         return false;
 
     /*
-     * No singly-indirect block has been allocated.
-     *
-     * Return physical block 0 so the caller can treat
-     * it the same way as an unused direct block.
+     * Remove the 12 direct blocks from the logical index.
      */
-    if (inode->block[12] == 0)
+    uint32_t index = logical_block - 12;
+
+    /*
+     * Single indirect.
+     *
+     * inode->block[12] points to one block containing
+     * entries_per_block data-block numbers.
+     */
+    if (index < entries_per_block)
     {
-        *physical_block = 0;
+        if (inode->block[12] == 0)
+        {
+            *physical_block = 0;
+            return true;
+        }
+
+        uint32_t indirect_blocks[4096 / sizeof(uint32_t)];
+
+        if (!ext2_read_block(device, block_size, inode->block[12], indirect_blocks))
+            return false;
+        
+
+        *physical_block = indirect_blocks[index];
         return true;
     }
 
-    uint32_t indirect_blocks[4096 / sizeof(uint32_t)];
+    /*
+     * Skip the single-indirect range.
+     */
+    index -= entries_per_block;
 
-    if (!ext2_read_block(device, block_size, inode->block[12], indirect_blocks))
-        return false;
+    /*
+     * Double indirect.
+     *
+     * inode->block[13]
+     *     |
+     *     v
+     * first-level indirect block
+     *     |
+     *     v
+     * second-level indirect block
+     *     |
+     *     v
+     * data block
+     */
+    uint64_t double_capacity = (uint64_t)entries_per_block * (uint64_t)entries_per_block;
 
-    *physical_block = indirect_blocks[indirect_index];
+    if ((uint64_t)index < double_capacity)
+    {
+        if (inode->block[13] == 0)
+        {
+            *physical_block = 0;
+            return true;
+        }
 
-    return true;
+        uint32_t first_level_index = index / entries_per_block;
+        uint32_t second_level_index = index % entries_per_block;
+        uint32_t first_level[4096 / sizeof(uint32_t)];
+
+        if (!ext2_read_block(device, block_size, inode->block[13], first_level))
+            return false;
+
+        uint32_t second_level_block = first_level[first_level_index];
+
+        if (second_level_block == 0)
+        {
+            *physical_block = 0;
+            return true;
+        }
+
+        uint32_t second_level[4096 / sizeof(uint32_t)];
+
+        if (!ext2_read_block(device, block_size, second_level_block, second_level))
+            return false;
+
+        *physical_block = second_level[second_level_index];
+
+        return true;
+    }
+
+    /*
+     * Triple indirect is not supported yet.
+     */
+    return false;
 }
