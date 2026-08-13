@@ -6,9 +6,24 @@
 #include <kernel/heap.h>
 #include <kernel/vfs.h>
 
+typedef struct
+{
+    bool single_valid;
+    uint32_t single_block_number;
+    uint32_t single_entries[4096 / sizeof(uint32_t)];
+
+    bool double_root_valid;
+    uint32_t double_root_block_number;
+    uint32_t double_root_entries[4096 / sizeof(uint32_t)];
+
+    bool double_leaf_valid;
+    uint32_t double_leaf_block_number;
+    uint32_t double_leaf_entries[4096 / sizeof(uint32_t)];
+} ext2_block_cache_t;
+
 static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **result);
 static int ext2_vnode_read(vnode_t *node, size_t offset, void *buffer, size_t size, size_t *bytes_read);
-static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *inode, uint32_t logical_block, uint32_t *physical_block);
+static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *inode, uint32_t logical_block, uint32_t *physical_block, ext2_block_cache_t *cache);
 
 static const vnode_ops_t ext2_directory_ops;
 static const vnode_ops_t ext2_file_ops;
@@ -303,6 +318,9 @@ bool ext2_read_file(block_device_t *device, const ext2_superblock_t *superblock,
 
     uint8_t block[4096];
 
+    ext2_block_cache_t cache;
+    memset(&cache, 0, sizeof(cache));
+
     size_t total = 0;
 
     while (total < wanted)
@@ -313,7 +331,7 @@ bool ext2_read_file(block_device_t *device, const ext2_superblock_t *superblock,
 
         uint32_t block_number;
 
-        if (!ext2_get_data_block(device, superblock, inode, logical_block, &block_number))
+        if (!ext2_get_data_block(device, superblock, inode, logical_block, &block_number, &cache))
             return false;
 
         if (block_number == 0)
@@ -457,13 +475,25 @@ bool ext2_mount(block_device_t *device, ext2_fs_t *fs)
     return true;
 }
 
-static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *inode, uint32_t logical_block, uint32_t *physical_block)
+static bool ext2_get_data_block(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *inode,
+    uint32_t logical_block,
+    uint32_t *physical_block,
+    ext2_block_cache_t *cache)
 {
-    if (device == NULL || superblock == NULL || inode == NULL || physical_block == NULL)
+    if (device == NULL ||
+        superblock == NULL ||
+        inode == NULL ||
+        physical_block == NULL ||
+        cache == NULL)
+    {
         return false;
+    }
 
     /*
-     * Direct blocks: logical blocks 0..11
+     * Direct blocks: logical blocks 0..11.
      */
     if (logical_block < 12)
     {
@@ -471,95 +501,143 @@ static bool ext2_get_data_block(block_device_t *device, const ext2_superblock_t 
         return true;
     }
 
-    uint32_t block_size = 1024u << superblock->log_block_size;
+    uint32_t block_size =
+        1024u << superblock->log_block_size;
 
     if (block_size > 4096)
         return false;
 
-    uint32_t entries_per_block = block_size / sizeof(uint32_t);
+    uint32_t entries_per_block =
+        block_size / sizeof(uint32_t);
 
     if (entries_per_block == 0)
         return false;
 
-    /*
-     * Remove the 12 direct blocks from the logical index.
-     */
     uint32_t index = logical_block - 12;
 
     /*
      * Single indirect.
-     *
-     * inode->block[12] points to one block containing
-     * entries_per_block data-block numbers.
      */
     if (index < entries_per_block)
     {
-        if (inode->block[12] == 0)
+        uint32_t indirect_block =
+            inode->block[12];
+
+        if (indirect_block == 0)
         {
             *physical_block = 0;
             return true;
         }
 
-        uint32_t indirect_blocks[4096 / sizeof(uint32_t)];
+        if (!cache->single_valid ||
+            cache->single_block_number != indirect_block)
+        {
+            if (!ext2_read_block(
+                    device,
+                    block_size,
+                    indirect_block,
+                    cache->single_entries))
+            {
+                return false;
+            }
 
-        if (!ext2_read_block(device, block_size, inode->block[12], indirect_blocks))
-            return false;
-        
+            cache->single_block_number =
+                indirect_block;
 
-        *physical_block = indirect_blocks[index];
+            cache->single_valid = true;
+        }
+
+        *physical_block =
+            cache->single_entries[index];
+
         return true;
     }
 
-    /*
-     * Skip the single-indirect range.
-     */
     index -= entries_per_block;
 
     /*
      * Double indirect.
-     *
-     * inode->block[13]
-     *     |
-     *     v
-     * first-level indirect block
-     *     |
-     *     v
-     * second-level indirect block
-     *     |
-     *     v
-     * data block
      */
-    uint64_t double_capacity = (uint64_t)entries_per_block * (uint64_t)entries_per_block;
+    uint64_t double_capacity =
+        (uint64_t)entries_per_block *
+        (uint64_t)entries_per_block;
 
     if ((uint64_t)index < double_capacity)
     {
-        if (inode->block[13] == 0)
+        uint32_t root_block =
+            inode->block[13];
+
+        if (root_block == 0)
         {
             *physical_block = 0;
             return true;
         }
 
-        uint32_t first_level_index = index / entries_per_block;
-        uint32_t second_level_index = index % entries_per_block;
-        uint32_t first_level[4096 / sizeof(uint32_t)];
+        uint32_t first_level_index =
+            index / entries_per_block;
 
-        if (!ext2_read_block(device, block_size, inode->block[13], first_level))
-            return false;
+        uint32_t second_level_index =
+            index % entries_per_block;
 
-        uint32_t second_level_block = first_level[first_level_index];
+        /*
+         * Cache the double-indirect root block.
+         */
+        if (!cache->double_root_valid ||
+            cache->double_root_block_number != root_block)
+        {
+            if (!ext2_read_block(
+                    device,
+                    block_size,
+                    root_block,
+                    cache->double_root_entries))
+            {
+                return false;
+            }
 
-        if (second_level_block == 0)
+            cache->double_root_block_number =
+                root_block;
+
+            cache->double_root_valid = true;
+
+            /*
+             * The cached leaf belongs to the previous
+             * root contents, so invalidate it.
+             */
+            cache->double_leaf_valid = false;
+        }
+
+        uint32_t leaf_block =
+            cache->double_root_entries[first_level_index];
+
+        if (leaf_block == 0)
         {
             *physical_block = 0;
             return true;
         }
 
-        uint32_t second_level[4096 / sizeof(uint32_t)];
+        /*
+         * Cache the currently-used second-level block.
+         */
+        if (!cache->double_leaf_valid ||
+            cache->double_leaf_block_number != leaf_block)
+        {
+            if (!ext2_read_block(
+                    device,
+                    block_size,
+                    leaf_block,
+                    cache->double_leaf_entries))
+            {
+                return false;
+            }
 
-        if (!ext2_read_block(device, block_size, second_level_block, second_level))
-            return false;
+            cache->double_leaf_block_number =
+                leaf_block;
 
-        *physical_block = second_level[second_level_index];
+            cache->double_leaf_valid = true;
+        }
+
+        *physical_block =
+            cache->double_leaf_entries[second_level_index];
 
         return true;
     }
