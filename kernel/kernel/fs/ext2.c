@@ -41,6 +41,12 @@ typedef struct
     uint32_t allocated_blocks;
 } ext2_allocation_context_t;
 
+static bool ext2_write_block(
+    block_device_t *device,
+    uint32_t block_size,
+    uint32_t block_number,
+    const void *buffer);
+
 static bool ext2_flush_allocation_context(
     ext2_allocation_context_t *context)
 {
