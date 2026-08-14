@@ -73,7 +73,9 @@ static const vnode_ops_t ext2_file_ops =
         .read = ext2_vnode_read,
         .write = ext2_vnode_write};
 
-bool ext2_read_superblock(block_device_t *device, ext2_superblock_t *superblock)
+bool ext2_read_superblock(
+    block_device_t *device,
+    ext2_superblock_t *superblock)
 {
     if (device == NULL || superblock == NULL)
         return false;
@@ -139,7 +141,11 @@ static bool ext2_write_superblock(
                buffer) == 0;
 }
 
-static bool ext2_read_block(block_device_t *device, uint32_t block_size, uint32_t block_number, void *buffer)
+static bool ext2_read_block(
+    block_device_t *device,
+    uint32_t block_size,
+    uint32_t block_number,
+    void *buffer)
 {
     if (device == NULL || buffer == NULL)
         return false;
@@ -366,6 +372,390 @@ static bool ext2_allocate_block(
     return false;
 }
 
+static bool ext2_get_or_allocate_data_block(
+    ext2_fs_t *fs,
+    ext2_inode_t *inode,
+    uint32_t logical_block,
+    uint32_t *physical_block,
+    ext2_block_cache_t *cache)
+{
+    if (fs == NULL ||
+        fs->device == NULL ||
+        inode == NULL ||
+        physical_block == NULL ||
+        cache == NULL)
+    {
+        return false;
+    }
+
+    uint32_t block_size =
+        1024u << fs->superblock.log_block_size;
+
+    if (block_size == 0 ||
+        block_size > 4096)
+    {
+        return false;
+    }
+
+    uint32_t entries_per_block =
+        block_size / sizeof(uint32_t);
+
+    if (entries_per_block == 0)
+        return false;
+
+    uint32_t sectors_per_block =
+        block_size /
+        fs->device->sector_size;
+
+    /*
+     * ---------------------------------------------------------
+     * Direct blocks: 0..11
+     * ---------------------------------------------------------
+     */
+    if (logical_block < 12)
+    {
+        if (inode->block[logical_block] == 0)
+        {
+            uint32_t new_block;
+
+            if (!ext2_allocate_block(
+                    fs,
+                    &new_block))
+            {
+                return false;
+            }
+
+            inode->block[logical_block] =
+                new_block;
+
+            inode->sector_count +=
+                sectors_per_block;
+        }
+
+        *physical_block =
+            inode->block[logical_block];
+
+        return true;
+    }
+
+    uint32_t index =
+        logical_block - 12u;
+
+    /*
+     * ---------------------------------------------------------
+     * Single indirect
+     * ---------------------------------------------------------
+     */
+    if (index < entries_per_block)
+    {
+        uint32_t indirect_block =
+            inode->block[12];
+
+        /*
+         * No single-indirect table yet.
+         *
+         * Allocate one filesystem block for the table,
+         * zero it, write it, and attach it to the inode.
+         */
+        if (indirect_block == 0)
+        {
+            if (!ext2_allocate_block(
+                    fs,
+                    &indirect_block))
+            {
+                return false;
+            }
+
+            memset(
+                cache->single_entries,
+                0,
+                block_size);
+
+            if (!ext2_write_block(
+                    fs->device,
+                    block_size,
+                    indirect_block,
+                    cache->single_entries))
+            {
+                return false;
+            }
+
+            inode->block[12] =
+                indirect_block;
+
+            /*
+             * i_blocks includes metadata blocks too.
+             */
+            inode->sector_count +=
+                sectors_per_block;
+
+            cache->single_block_number =
+                indirect_block;
+
+            cache->single_valid =
+                true;
+        }
+        else if (!cache->single_valid ||
+                 cache->single_block_number !=
+                     indirect_block)
+        {
+            if (!ext2_read_block(
+                    fs->device,
+                    block_size,
+                    indirect_block,
+                    cache->single_entries))
+            {
+                return false;
+            }
+
+            cache->single_block_number =
+                indirect_block;
+
+            cache->single_valid =
+                true;
+        }
+
+        /*
+         * Allocate the requested data block if necessary.
+         */
+        if (cache->single_entries[index] == 0)
+        {
+            uint32_t new_block;
+
+            if (!ext2_allocate_block(
+                    fs,
+                    &new_block))
+            {
+                return false;
+            }
+
+            cache->single_entries[index] =
+                new_block;
+
+            if (!ext2_write_block(
+                    fs->device,
+                    block_size,
+                    indirect_block,
+                    cache->single_entries))
+            {
+                return false;
+            }
+
+            inode->sector_count +=
+                sectors_per_block;
+        }
+
+        *physical_block =
+            cache->single_entries[index];
+
+        return true;
+    }
+
+    index -=
+        entries_per_block;
+
+    /*
+     * ---------------------------------------------------------
+     * Double indirect
+     * ---------------------------------------------------------
+     */
+    uint64_t double_capacity =
+        (uint64_t)entries_per_block *
+        (uint64_t)entries_per_block;
+
+    if ((uint64_t)index >=
+        double_capacity)
+    {
+        /*
+         * Triple indirect is not supported yet.
+         */
+        return false;
+    }
+
+    uint32_t root_index =
+        index /
+        entries_per_block;
+
+    uint32_t leaf_index =
+        index %
+        entries_per_block;
+
+    uint32_t root_block =
+        inode->block[13];
+
+    /*
+     * Allocate the double-indirect root table if absent.
+     */
+    if (root_block == 0)
+    {
+        if (!ext2_allocate_block(
+                fs,
+                &root_block))
+        {
+            return false;
+        }
+
+        memset(
+            cache->double_root_entries,
+            0,
+            block_size);
+
+        if (!ext2_write_block(
+                fs->device,
+                block_size,
+                root_block,
+                cache->double_root_entries))
+        {
+            return false;
+        }
+
+        inode->block[13] =
+            root_block;
+
+        inode->sector_count +=
+            sectors_per_block;
+
+        cache->double_root_block_number =
+            root_block;
+
+        cache->double_root_valid =
+            true;
+
+        cache->double_leaf_valid =
+            false;
+    }
+    else if (!cache->double_root_valid ||
+             cache->double_root_block_number !=
+                 root_block)
+    {
+        if (!ext2_read_block(
+                fs->device,
+                block_size,
+                root_block,
+                cache->double_root_entries))
+        {
+            return false;
+        }
+
+        cache->double_root_block_number =
+            root_block;
+
+        cache->double_root_valid =
+            true;
+
+        cache->double_leaf_valid =
+            false;
+    }
+
+    uint32_t leaf_block =
+        cache->double_root_entries[root_index];
+
+    /*
+     * Allocate the second-level pointer block.
+     */
+    if (leaf_block == 0)
+    {
+        if (!ext2_allocate_block(
+                fs,
+                &leaf_block))
+        {
+            return false;
+        }
+
+        memset(
+            cache->double_leaf_entries,
+            0,
+            block_size);
+
+        if (!ext2_write_block(
+                fs->device,
+                block_size,
+                leaf_block,
+                cache->double_leaf_entries))
+        {
+            return false;
+        }
+
+        /*
+         * Connect leaf to the root table.
+         */
+        cache->double_root_entries[root_index] =
+            leaf_block;
+
+        if (!ext2_write_block(
+                fs->device,
+                block_size,
+                root_block,
+                cache->double_root_entries))
+        {
+            return false;
+        }
+
+        inode->sector_count +=
+            sectors_per_block;
+
+        cache->double_leaf_block_number =
+            leaf_block;
+
+        cache->double_leaf_valid =
+            true;
+    }
+    else if (!cache->double_leaf_valid ||
+             cache->double_leaf_block_number !=
+                 leaf_block)
+    {
+        if (!ext2_read_block(
+                fs->device,
+                block_size,
+                leaf_block,
+                cache->double_leaf_entries))
+        {
+            return false;
+        }
+
+        cache->double_leaf_block_number =
+            leaf_block;
+
+        cache->double_leaf_valid =
+            true;
+    }
+
+    /*
+     * Allocate the actual data block.
+     */
+    if (cache->double_leaf_entries[leaf_index] == 0)
+    {
+        uint32_t new_block;
+
+        if (!ext2_allocate_block(
+                fs,
+                &new_block))
+        {
+            return false;
+        }
+
+        cache->double_leaf_entries[leaf_index] =
+            new_block;
+
+        if (!ext2_write_block(
+                fs->device,
+                block_size,
+                leaf_block,
+                cache->double_leaf_entries))
+        {
+            return false;
+        }
+
+        inode->sector_count +=
+            sectors_per_block;
+    }
+
+    *physical_block =
+        cache->double_leaf_entries[leaf_index];
+
+    return true;
+}
+
 bool ext2_write_group_descriptor(
     block_device_t *device,
     const ext2_superblock_t *superblock,
@@ -426,7 +816,11 @@ bool ext2_write_group_descriptor(
         block);
 }
 
-bool ext2_read_inode(block_device_t *device, const ext2_superblock_t *superblock, uint32_t inode_number, ext2_inode_t *inode)
+bool ext2_read_inode(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    uint32_t inode_number,
+    ext2_inode_t *inode)
 {
     if (device == NULL || superblock == NULL || inode == NULL)
         return false;
@@ -1010,7 +1404,8 @@ static int ext2_vnode_write(
     *bytes_written = 0;
 
     ext2_vnode_data_t *data =
-        (ext2_vnode_data_t *)node->private_data;
+        (ext2_vnode_data_t *)
+            node->private_data;
 
     if (data == NULL ||
         data->fs == NULL)
@@ -1031,30 +1426,26 @@ static int ext2_vnode_write(
         return 0;
 
     /*
-     * W4 does not create sparse holes yet.
-     *
-     * Existing overwrite:
-     *     offset < size
-     *
-     * Append:
-     *     offset == size
-     *
-     * Hole creation:
-     *     offset > size
-     *
-     * is rejected for now.
+     * Sparse writes are still not supported.
      */
-    if (offset > data->inode.size_low)
+    if (offset >
+        data->inode.size_low)
+    {
         return -1;
+    }
 
-    if (size > SIZE_MAX - offset)
+    if (size >
+        SIZE_MAX - offset)
+    {
         return -1;
+    }
 
     size_t end_offset =
         offset + size;
 
     uint32_t block_size =
-        1024u << fs->superblock.log_block_size;
+        1024u <<
+        fs->superblock.log_block_size;
 
     if (block_size == 0 ||
         block_size > 4096)
@@ -1062,20 +1453,50 @@ static int ext2_vnode_write(
         return -1;
     }
 
+    uint32_t entries_per_block =
+        block_size /
+        sizeof(uint32_t);
+
     /*
-     * EXT2-W4 supports only the inode's 12 direct blocks.
+     * Writable capacity:
+     *
+     * 12 direct
+     * + one single-indirect table
+     * + one double-indirect tree
+     *
+     * Triple indirect is intentionally excluded.
      */
-    size_t direct_capacity =
-        (size_t)12u *
+    uint64_t supported_blocks =
+        12ull +
+        (uint64_t)entries_per_block +
+        (uint64_t)entries_per_block *
+            entries_per_block;
+
+    uint64_t supported_bytes =
+        supported_blocks *
         block_size;
 
-    if (end_offset > direct_capacity)
+    if ((uint64_t)end_offset >
+        supported_bytes)
+    {
         return -1;
+    }
+
+    /*
+     * size_low is currently our file-size representation,
+     * so don't allow crossing 4 GiB.
+     */
+    if ((uint64_t)end_offset >
+        UINT32_MAX)
+    {
+        return -1;
+    }
 
     if (data->block_cache == NULL)
     {
         data->block_cache =
-            kmalloc(sizeof(ext2_block_cache_t));
+            kmalloc(
+                sizeof(ext2_block_cache_t));
 
         if (data->block_cache == NULL)
             return -1;
@@ -1105,9 +1526,6 @@ static int ext2_vnode_write(
                 file_offset %
                 block_size);
 
-        if (logical_block >= 12)
-            return -1;
-
         size_t remaining =
             size - total;
 
@@ -1118,40 +1536,44 @@ static int ext2_vnode_write(
         if (chunk > remaining)
             chunk = remaining;
 
-        uint32_t block_number =
-            data->inode.block[logical_block];
-
-        bool newly_allocated =
-            false;
-
         /*
-         * Missing direct block:
-         * allocate it now.
+         * Determine whether this block already existed before
+         * allocation. This tells the partial-write path whether
+         * it needs to preserve existing contents.
          */
-        if (block_number == 0)
+        uint32_t old_block_number = 0;
+
+        if (!ext2_get_data_block(
+                fs->device,
+                &fs->superblock,
+                &data->inode,
+                logical_block,
+                &old_block_number,
+                data->block_cache))
         {
-            if (!ext2_allocate_block(
-                    fs,
-                    &block_number))
-            {
-                return -1;
-            }
-
-            data->inode.block[logical_block] =
-                block_number;
-
-            data->inode.sector_count +=
-                block_size /
-                fs->device->sector_size;
-
-            newly_allocated =
-                true;
+            return -1;
         }
 
+        bool newly_allocated =
+            old_block_number == 0;
+
+        uint32_t block_number = 0;
+
+        if (!ext2_get_or_allocate_data_block(
+                fs,
+                &data->inode,
+                logical_block,
+                &block_number,
+                data->block_cache))
+        {
+            return -1;
+        }
+
+        if (block_number == 0)
+            return -1;
+
         /*
-         * Full-block write:
-         *
-         * No read-modify-write is necessary.
+         * Whole filesystem block.
          */
         if (offset_in_block == 0 &&
             chunk == block_size)
@@ -1169,13 +1591,10 @@ static int ext2_vnode_write(
         else
         {
             /*
-             * Partial block.
+             * Partial write:
              *
-             * Existing block:
-             *     preserve bytes outside the write range.
-             *
-             * Newly allocated block:
-             *     begin from zeroes.
+             * Existing block -> preserve unchanged bytes.
+             * Fresh block    -> start as zero-filled.
              */
             if (newly_allocated)
             {
@@ -1212,13 +1631,10 @@ static int ext2_vnode_write(
             }
         }
 
-        total += chunk;
+        total +=
+            chunk;
     }
 
-    /*
-     * Increase file size only when the write went beyond
-     * the old EOF.
-     */
     if (end_offset >
         data->inode.size_low)
     {
@@ -1227,8 +1643,13 @@ static int ext2_vnode_write(
     }
 
     /*
-     * Commit all direct pointers, sector count and file size
-     * together in the inode.
+     * Commit:
+     *
+     * - direct pointers
+     * - single indirect pointer
+     * - double indirect pointer
+     * - i_blocks / sector_count
+     * - file size
      */
     if (!ext2_write_inode(
             fs->device,

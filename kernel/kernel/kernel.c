@@ -340,8 +340,57 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	printf("hardware interrupts enabled\n");
 
 	{
-		const size_t test_size =
-			6000u;
+		uint32_t block_size =
+			1024u << ext2_fs.superblock.log_block_size;
+
+		uint32_t entries_per_block =
+			block_size /
+			sizeof(uint32_t);
+
+		/*
+		 * End two data blocks inside the double-indirect region.
+		 *
+		 * Layout:
+		 *
+		 * 12 direct blocks
+		 * N single-indirect blocks
+		 * then double-indirect blocks
+		 */
+		size_t target_size =
+			((size_t)12u +
+			 entries_per_block +
+			 2u) *
+				block_size +
+			123u;
+
+		file_t *file = NULL;
+
+		if (vfs_open(
+				"/grow.txt",
+				VFS_OPEN_WRITE,
+				&file) != 0)
+		{
+			printf(
+				"EXT2-W5: failed opening /grow.txt\n");
+
+			halt_forever();
+		}
+
+		size_t old_size =
+			file->vnode->size;
+
+		if (old_size >= target_size)
+		{
+			printf(
+				"EXT2-W5: /grow.txt already beyond test target\n");
+
+			vfs_close(file);
+			halt_forever();
+		}
+
+		size_t test_size =
+			target_size -
+			old_size;
 
 		uint8_t *test_data =
 			kmalloc(test_size);
@@ -353,8 +402,9 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 			verify == NULL)
 		{
 			printf(
-				"EXT2-W4: test buffer allocation failed\n");
+				"EXT2-W5: buffer allocation failed\n");
 
+			vfs_close(file);
 			halt_forever();
 		}
 
@@ -363,40 +413,38 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 			 i++)
 		{
 			test_data[i] =
-				(uint8_t)((i * 31u) ^
-						  0xA7u);
+				(uint8_t)((i * 47u) ^
+						  (i >> 3) ^
+						  0x6Du);
 		}
-
-		file_t *file = NULL;
-
-		if (vfs_open(
-				"/grow.txt",
-				VFS_OPEN_WRITE,
-				&file) != 0)
-		{
-			printf(
-				"EXT2-W4: failed opening /grow.txt\n");
-
-			halt_forever();
-		}
-
-		size_t old_size =
-			file->vnode->size;
 
 		file->offset =
 			old_size;
 
 		size_t written = 0;
 
-		if (vfs_write(
+		uint64_t write_start_ms =
+			timer_uptime_ms();
+
+		int write_result =
+			vfs_write(
 				file,
 				test_data,
 				test_size,
-				&written) != 0 ||
+				&written);
+
+		uint64_t write_end_ms =
+			timer_uptime_ms();
+
+		uint64_t write_elapsed_ms =
+			write_end_ms -
+			write_start_ms;
+
+		if (write_result != 0 ||
 			written != test_size)
 		{
 			printf(
-				"EXT2-W4: multi-block growth write failed\n");
+				"EXT2-W5: indirect growth write FAILED\n");
 
 			vfs_close(file);
 			halt_forever();
@@ -407,18 +455,17 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 		vfs_close(file);
 
-		if (new_size !=
-			old_size + test_size)
+		if (new_size != target_size)
 		{
 			printf(
-				"EXT2-W4: size update FAILED\n");
+				"EXT2-W5: size update FAILED\n");
 
 			halt_forever();
 		}
 
 		/*
-		 * Reopen so we get the inode back from disk,
-		 * rather than relying on the vnode we just modified.
+		 * Reopen to force inode information to be loaded
+		 * from the filesystem again.
 		 */
 		file = NULL;
 
@@ -428,31 +475,52 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 				&file) != 0)
 		{
 			printf(
-				"EXT2-W4: failed reopening /grow.txt\n");
+				"EXT2-W5: reopen failed\n");
 
 			halt_forever();
 		}
 
-		/*
-		 * No seek API yet.
-		 */
 		file->offset =
 			old_size;
 
-		size_t read_back = 0;
+		size_t total_read =
+			0;
 
-		if (vfs_read(
-				file,
-				verify,
-				test_size,
-				&read_back) != 0 ||
-			read_back != test_size)
+		while (total_read <
+			   test_size)
 		{
-			printf(
-				"EXT2-W4: verification read failed\n");
+			size_t chunk_read =
+				0;
 
-			vfs_close(file);
-			halt_forever();
+			size_t remaining =
+				test_size -
+				total_read;
+
+			if (vfs_read(
+					file,
+					verify +
+						total_read,
+					remaining,
+					&chunk_read) != 0)
+			{
+				printf(
+					"EXT2-W5: verification read FAILED\n");
+
+				vfs_close(file);
+				halt_forever();
+			}
+
+			if (chunk_read == 0)
+			{
+				printf(
+					"EXT2-W5: unexpected EOF\n");
+
+				vfs_close(file);
+				halt_forever();
+			}
+
+			total_read +=
+				chunk_read;
 		}
 
 		vfs_close(file);
@@ -463,18 +531,29 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 				test_size) != 0)
 		{
 			printf(
-				"EXT2-W4: data verification FAILED\n");
+				"EXT2-W5: data verification FAILED\n");
 
 			halt_forever();
 		}
 
 		printf(
-			"EXT2-W4: multi-block direct growth passed\n");
+			"EXT2-W5: single indirect PASSED\n");
 
 		printf(
-			"EXT2-W4: size %u -> %u\n",
+			"EXT2-W5: double indirect PASSED\n");
+
+		printf(
+			"EXT2-W5: size %u -> %u\n",
 			(unsigned)old_size,
 			(unsigned)new_size);
+
+		printf(
+			"EXT2-W5: bytes written = %u\n",
+			(unsigned)written);
+
+		printf(
+			"EXT2-W5: write time = %u ms\n",
+			(unsigned)write_elapsed_ms);
 
 		kfree(verify);
 		kfree(test_data);
