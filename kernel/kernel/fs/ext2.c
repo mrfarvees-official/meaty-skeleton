@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <kernel/ext2.h>
 #include <kernel/block_device.h>
@@ -10,17 +11,144 @@
 struct ext2_block_cache
 {
     bool single_valid;
+    bool single_dirty;
     uint32_t single_block_number;
     uint32_t single_entries[4096 / sizeof(uint32_t)];
 
     bool double_root_valid;
+    bool double_root_dirty;
     uint32_t double_root_block_number;
     uint32_t double_root_entries[4096 / sizeof(uint32_t)];
 
     bool double_leaf_valid;
+    bool double_leaf_dirty;
     uint32_t double_leaf_block_number;
     uint32_t double_leaf_entries[4096 / sizeof(uint32_t)];
 };
+
+typedef struct
+{
+    ext2_fs_t *fs;
+
+    bool group_loaded;
+    uint32_t group;
+
+    ext2_block_group_descriptor_t descriptor;
+
+    uint8_t bitmap[4096];
+
+    bool dirty;
+
+    uint32_t allocated_blocks;
+} ext2_allocation_context_t;
+
+static bool ext2_flush_allocation_context(
+    ext2_allocation_context_t *context)
+{
+    if (context == NULL ||
+        context->fs == NULL)
+    {
+        return false;
+    }
+
+    if (!context->group_loaded ||
+        !context->dirty)
+    {
+        return true;
+    }
+
+    ext2_fs_t *fs =
+        context->fs;
+
+    uint32_t block_size =
+        1024u << fs->superblock.log_block_size;
+
+    if (!ext2_write_block(
+            fs->device,
+            block_size,
+            context->descriptor.block_bitmap,
+            context->bitmap))
+    {
+        return false;
+    }
+
+    if (!ext2_write_group_descriptor(
+            fs->device,
+            &fs->superblock,
+            context->group,
+            &context->descriptor))
+    {
+        return false;
+    }
+
+    context->dirty = false;
+
+    return true;
+}
+
+static bool ext2_flush_block_cache(
+    ext2_fs_t *fs,
+    ext2_block_cache_t *cache)
+{
+    if (fs == NULL ||
+        cache == NULL)
+    {
+        return false;
+    }
+
+    uint32_t block_size =
+        1024u << fs->superblock.log_block_size;
+
+    if (cache->single_valid &&
+        cache->single_dirty)
+    {
+        if (!ext2_write_block(
+                fs->device,
+                block_size,
+                cache->single_block_number,
+                cache->single_entries))
+        {
+            return false;
+        }
+
+        cache->single_dirty =
+            false;
+    }
+
+    if (cache->double_leaf_valid &&
+        cache->double_leaf_dirty)
+    {
+        if (!ext2_write_block(
+                fs->device,
+                block_size,
+                cache->double_leaf_block_number,
+                cache->double_leaf_entries))
+        {
+            return false;
+        }
+
+        cache->double_leaf_dirty =
+            false;
+    }
+
+    if (cache->double_root_valid &&
+        cache->double_root_dirty)
+    {
+        if (!ext2_write_block(
+                fs->device,
+                block_size,
+                cache->double_root_block_number,
+                cache->double_root_entries))
+        {
+            return false;
+        }
+
+        cache->double_root_dirty =
+            false;
+    }
+
+    return true;
+}
 
 static int ext2_vnode_lookup(
     vnode_t *directory,
@@ -234,15 +362,18 @@ bool ext2_read_group_descriptor(
 }
 
 static bool ext2_allocate_block(
-    ext2_fs_t *fs,
+    ext2_allocation_context_t *context,
     uint32_t *allocated_block)
 {
-    if (fs == NULL ||
-        fs->device == NULL ||
+    if (context == NULL ||
+        context->fs == NULL ||
         allocated_block == NULL)
     {
         return false;
     }
+
+    ext2_fs_t *fs =
+        context->fs;
 
     ext2_superblock_t *superblock =
         &fs->superblock;
@@ -250,8 +381,11 @@ static bool ext2_allocate_block(
     uint32_t block_size =
         1024u << superblock->log_block_size;
 
-    if (block_size > 4096)
+    if (block_size == 0 ||
+        block_size > 4096)
+    {
         return false;
+    }
 
     if (superblock->free_block_count == 0)
         return false;
@@ -262,36 +396,64 @@ static bool ext2_allocate_block(
 
     uint32_t group_count =
         (data_blocks +
-         superblock->blocks_per_group - 1u) /
+         superblock->blocks_per_group -
+         1u) /
         superblock->blocks_per_group;
-
-    uint8_t bitmap[4096];
 
     for (uint32_t group = 0;
          group < group_count;
          group++)
     {
-        ext2_block_group_descriptor_t descriptor;
-
-        if (!ext2_read_group_descriptor(
-                fs->device,
-                superblock,
-                group,
-                &descriptor))
+        /*
+         * Load each group's descriptor and bitmap only once
+         * while allocating from it.
+         */
+        if (!context->group_loaded ||
+            context->group != group)
         {
-            return false;
-        }
+            /*
+             * Commit the previous group's bitmap/descriptor
+             * before switching groups.
+             */
+            if (!ext2_flush_allocation_context(
+                    context))
+            {
+                return false;
+            }
 
-        if (descriptor.free_blocks_count == 0)
-            continue;
+            if (!ext2_read_group_descriptor(
+                    fs->device,
+                    superblock,
+                    group,
+                    &context->descriptor))
+            {
+                return false;
+            }
 
-        if (!ext2_read_block(
-                fs->device,
-                block_size,
-                descriptor.block_bitmap,
-                bitmap))
-        {
-            return false;
+            if (context->descriptor.free_blocks_count ==
+                0)
+            {
+                context->group_loaded = false;
+                continue;
+            }
+
+            if (!ext2_read_block(
+                    fs->device,
+                    block_size,
+                    context->descriptor.block_bitmap,
+                    context->bitmap))
+            {
+                return false;
+            }
+
+            context->group =
+                group;
+
+            context->group_loaded =
+                true;
+
+            context->dirty =
+                false;
         }
 
         uint32_t group_first_block =
@@ -321,52 +483,42 @@ static bool ext2_allocate_block(
             uint8_t bit_mask =
                 (uint8_t)(1u << (bit % 8u));
 
-            if ((bitmap[byte_index] &
+            if ((context->bitmap[byte_index] &
                  bit_mask) != 0)
             {
                 continue;
             }
 
-            uint32_t block_number =
-                group_first_block + bit;
-
-            bitmap[byte_index] |=
+            context->bitmap[byte_index] |=
                 bit_mask;
 
-            if (!ext2_write_block(
-                    fs->device,
-                    block_size,
-                    descriptor.block_bitmap,
-                    bitmap))
-            {
-                return false;
-            }
-
-            descriptor.free_blocks_count--;
-
-            if (!ext2_write_group_descriptor(
-                    fs->device,
-                    superblock,
-                    group,
-                    &descriptor))
-            {
-                return false;
-            }
+            context->descriptor.free_blocks_count--;
 
             superblock->free_block_count--;
 
-            if (!ext2_write_superblock(
-                    fs->device,
-                    superblock))
-            {
-                return false;
-            }
+            context->allocated_blocks++;
+
+            context->dirty =
+                true;
 
             *allocated_block =
-                block_number;
+                group_first_block +
+                bit;
 
             return true;
         }
+
+        /*
+         * Current group became full.
+         */
+        if (!ext2_flush_allocation_context(
+                context))
+        {
+            return false;
+        }
+
+        context->group_loaded =
+            false;
     }
 
     return false;
@@ -377,13 +529,15 @@ static bool ext2_get_or_allocate_data_block(
     ext2_inode_t *inode,
     uint32_t logical_block,
     uint32_t *physical_block,
-    ext2_block_cache_t *cache)
+    ext2_block_cache_t *cache,
+    ext2_allocation_context_t *allocation)
 {
     if (fs == NULL ||
         fs->device == NULL ||
         inode == NULL ||
         physical_block == NULL ||
-        cache == NULL)
+        cache == NULL ||
+        allocation == NULL)
     {
         return false;
     }
@@ -419,7 +573,7 @@ static bool ext2_get_or_allocate_data_block(
             uint32_t new_block;
 
             if (!ext2_allocate_block(
-                    fs,
+                    allocation,
                     &new_block))
             {
                 return false;
@@ -460,7 +614,7 @@ static bool ext2_get_or_allocate_data_block(
         if (indirect_block == 0)
         {
             if (!ext2_allocate_block(
-                    fs,
+                    allocation,
                     &indirect_block))
             {
                 return false;
@@ -471,14 +625,8 @@ static bool ext2_get_or_allocate_data_block(
                 0,
                 block_size);
 
-            if (!ext2_write_block(
-                    fs->device,
-                    block_size,
-                    indirect_block,
-                    cache->single_entries))
-            {
-                return false;
-            }
+            cache->single_dirty =
+                true;
 
             inode->block[12] =
                 indirect_block;
@@ -523,7 +671,7 @@ static bool ext2_get_or_allocate_data_block(
             uint32_t new_block;
 
             if (!ext2_allocate_block(
-                    fs,
+                    allocation,
                     &new_block))
             {
                 return false;
@@ -532,14 +680,8 @@ static bool ext2_get_or_allocate_data_block(
             cache->single_entries[index] =
                 new_block;
 
-            if (!ext2_write_block(
-                    fs->device,
-                    block_size,
-                    indirect_block,
-                    cache->single_entries))
-            {
-                return false;
-            }
+            cache->single_dirty =
+                true;
 
             inode->sector_count +=
                 sectors_per_block;
@@ -589,7 +731,7 @@ static bool ext2_get_or_allocate_data_block(
     if (root_block == 0)
     {
         if (!ext2_allocate_block(
-                fs,
+                allocation,
                 &root_block))
         {
             return false;
@@ -600,14 +742,8 @@ static bool ext2_get_or_allocate_data_block(
             0,
             block_size);
 
-        if (!ext2_write_block(
-                fs->device,
-                block_size,
-                root_block,
-                cache->double_root_entries))
-        {
-            return false;
-        }
+        cache->double_root_dirty =
+            true;
 
         inode->block[13] =
             root_block;
@@ -617,6 +753,9 @@ static bool ext2_get_or_allocate_data_block(
 
         cache->double_root_block_number =
             root_block;
+
+        cache->double_root_dirty =
+            true;
 
         cache->double_root_valid =
             true;
@@ -656,7 +795,7 @@ static bool ext2_get_or_allocate_data_block(
     if (leaf_block == 0)
     {
         if (!ext2_allocate_block(
-                fs,
+                allocation,
                 &leaf_block))
         {
             return false;
@@ -667,29 +806,42 @@ static bool ext2_get_or_allocate_data_block(
             0,
             block_size);
 
-        if (!ext2_write_block(
-                fs->device,
-                block_size,
-                leaf_block,
-                cache->double_leaf_entries))
+        cache->double_leaf_dirty =
+            true;
+        return false;
+    }
+
+    /*
+     * Connect leaf to the root table.
+     */
+    uint32_t leaf_block =
+        cache->double_root_entries[root_index];
+
+    /*
+     * Allocate the second-level pointer block.
+     */
+    if (leaf_block == 0)
+    {
+        if (!ext2_allocate_block(
+                allocation,
+                &leaf_block))
         {
             return false;
         }
 
+        memset(
+            cache->double_leaf_entries,
+            0,
+            block_size);
+
         /*
-         * Connect leaf to the root table.
+         * Attach new leaf to root table in memory.
          */
         cache->double_root_entries[root_index] =
             leaf_block;
 
-        if (!ext2_write_block(
-                fs->device,
-                block_size,
-                root_block,
-                cache->double_root_entries))
-        {
-            return false;
-        }
+        cache->double_root_dirty =
+            true;
 
         inode->sector_count +=
             sectors_per_block;
@@ -699,11 +851,34 @@ static bool ext2_get_or_allocate_data_block(
 
         cache->double_leaf_valid =
             true;
+
+        cache->double_leaf_dirty =
+            true;
     }
     else if (!cache->double_leaf_valid ||
              cache->double_leaf_block_number !=
                  leaf_block)
     {
+        /*
+         * Switching away from an already-modified leaf:
+         * flush it before reusing the cache buffer.
+         */
+        if (cache->double_leaf_valid &&
+            cache->double_leaf_dirty)
+        {
+            if (!ext2_write_block(
+                    fs->device,
+                    block_size,
+                    cache->double_leaf_block_number,
+                    cache->double_leaf_entries))
+            {
+                return false;
+            }
+
+            cache->double_leaf_dirty =
+                false;
+        }
+
         if (!ext2_read_block(
                 fs->device,
                 block_size,
@@ -718,6 +893,9 @@ static bool ext2_get_or_allocate_data_block(
 
         cache->double_leaf_valid =
             true;
+
+        cache->double_leaf_dirty =
+            false;
     }
 
     /*
@@ -728,7 +906,7 @@ static bool ext2_get_or_allocate_data_block(
         uint32_t new_block;
 
         if (!ext2_allocate_block(
-                fs,
+                allocation,
                 &new_block))
         {
             return false;
@@ -737,14 +915,8 @@ static bool ext2_get_or_allocate_data_block(
         cache->double_leaf_entries[leaf_index] =
             new_block;
 
-        if (!ext2_write_block(
-                fs->device,
-                block_size,
-                leaf_block,
-                cache->double_leaf_entries))
-        {
-            return false;
-        }
+        cache->double_leaf_dirty =
+            true;
 
         inode->sector_count +=
             sectors_per_block;
@@ -1444,8 +1616,7 @@ static int ext2_vnode_write(
         offset + size;
 
     uint32_t block_size =
-        1024u <<
-        fs->superblock.log_block_size;
+        1024u << fs->superblock.log_block_size;
 
     if (block_size == 0 ||
         block_size > 4096)
@@ -1507,6 +1678,16 @@ static int ext2_vnode_write(
             sizeof(ext2_block_cache_t));
     }
 
+    ext2_allocation_context_t allocation;
+
+    memset(
+        &allocation,
+        0,
+        sizeof(allocation));
+
+    allocation.fs =
+        fs;
+
     uint8_t block[4096];
 
     size_t total = 0;
@@ -1517,14 +1698,12 @@ static int ext2_vnode_write(
             offset + total;
 
         uint32_t logical_block =
-            (uint32_t)(
-                file_offset /
-                block_size);
+            (uint32_t)(file_offset /
+                       block_size);
 
         uint32_t offset_in_block =
-            (uint32_t)(
-                file_offset %
-                block_size);
+            (uint32_t)(file_offset %
+                       block_size);
 
         size_t remaining =
             size - total;
@@ -1564,7 +1743,8 @@ static int ext2_vnode_write(
                 &data->inode,
                 logical_block,
                 &block_number,
-                data->block_cache))
+                data->block_cache,
+                &allocation))
         {
             return -1;
         }
