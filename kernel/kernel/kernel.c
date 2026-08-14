@@ -339,100 +339,152 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	file_t *file = NULL;
-	// if (vfs_open("/hello.txt", VFS_OPEN_READ, &file) != 0)
-	// {
-	// 	printf("VFS: failed opening /hello.txt\n");
-	// 	halt_forever();
-	// }
-	// char buffer[128];
-	// size_t bytes_read = 0;
-	// if (vfs_read(file, buffer, sizeof(buffer) - 1, &bytes_read) != 0)
-	// {
-	// 	printf("VFS: failed reading /hello.txt\n");
-	// 	vfs_close(file);
-	// 	halt_forever();
-	// }
-	// buffer[bytes_read] = '\0';
-	// printf("VFS: /hello.txt = %s\n", buffer);
-	// vfs_close(file);
-
-	// file = NULL;
-	// if (vfs_open("/big.txt", VFS_OPEN_READ, &file) != 0)
-	// {
-	// 	printf("VFS: failed opening /big.txt\n");
-	// 	halt_forever();
-	// }
-	// char big_buffer[4096];
-	// size_t total_big_read = 0;
-	// for (;;)
-	// {
-	// 	size_t chunk_read = 0;
-
-	// 	if (vfs_read(file, big_buffer, sizeof(big_buffer), &chunk_read) != 0)
-	// 	{
-	// 		printf("VFS: failed reading /big.txt\n");
-	// 		vfs_close(file);
-	// 		halt_forever();
-	// 	}
-
-	// 	if (chunk_read == 0)
-	// 		break;
-
-	// 	total_big_read += chunk_read;
-	// }
-	// printf("VFS: /big.txt bytes read = %u\n", (unsigned)total_big_read);
-	// vfs_close(file);
-
-	file = NULL;
-
-	if (vfs_open("/double.txt", VFS_OPEN_READ, &file) != 0)
 	{
-		printf("VFS: failed opening /double.txt\n");
-		halt_forever();
-	}
+		uint8_t original[32];
+		uint8_t verify[32];
 
-	uint8_t *double_buffer =
-		kmalloc(DOUBLE_READ_BUFFER_SIZE);
+		const char test_data[] =
+			"EXT2-W1-WRITE-TEST";
 
-	if (double_buffer == NULL)
-	{
-		printf("VFS: failed allocating read buffer\n");
-		vfs_close(file);
-		halt_forever();
-	}
-	size_t total_double_read = 0;
-	uint64_t read_start_ms = timer_uptime_ms();
-	for (;;)
-	{
-		size_t chunk_read = 0;
+		size_t original_read = 0;
+		size_t written = 0;
+		size_t verify_read = 0;
 
-		if (vfs_read(
-				file,
-				double_buffer,
-				DOUBLE_READ_BUFFER_SIZE,
-				&chunk_read) != 0)
+		file_t *read_file = NULL;
+
+		if (vfs_open(
+				"/double.txt",
+				VFS_OPEN_READ,
+				&read_file) != 0)
 		{
-			printf("VFS: failed reading /double.txt\n");
-			vfs_close(file);
+			printf(
+				"EXT2-W1: failed opening file for initial read\n");
+
 			halt_forever();
 		}
 
-		if (chunk_read == 0)
-			break;
+		if (vfs_read(
+				read_file,
+				original,
+				sizeof(test_data),
+				&original_read) != 0 ||
+			original_read != sizeof(test_data))
+		{
+			printf(
+				"EXT2-W1: failed saving original data\n");
 
-		total_double_read += chunk_read;
+			vfs_close(read_file);
+			halt_forever();
+		}
+
+		vfs_close(read_file);
+
+		file_t *write_file = NULL;
+
+		if (vfs_open(
+				"/double.txt",
+				VFS_OPEN_WRITE,
+				&write_file) != 0)
+		{
+			printf(
+				"EXT2-W1: failed opening file for write\n");
+
+			halt_forever();
+		}
+
+		if (vfs_write(
+				write_file,
+				test_data,
+				sizeof(test_data),
+				&written) != 0 ||
+			written != sizeof(test_data))
+		{
+			printf(
+				"EXT2-W1: write failed\n");
+
+			vfs_close(write_file);
+			halt_forever();
+		}
+
+		vfs_close(write_file);
+
+		read_file = NULL;
+
+		if (vfs_open(
+				"/double.txt",
+				VFS_OPEN_READ,
+				&read_file) != 0)
+		{
+			printf(
+				"EXT2-W1: failed reopening file\n");
+
+			halt_forever();
+		}
+
+		if (vfs_read(
+				read_file,
+				verify,
+				sizeof(test_data),
+				&verify_read) != 0 ||
+			verify_read != sizeof(test_data))
+		{
+			printf(
+				"EXT2-W1: verify read failed\n");
+
+			vfs_close(read_file);
+			halt_forever();
+		}
+
+		vfs_close(read_file);
+
+		if (memcmp(
+				verify,
+				test_data,
+				sizeof(test_data)) != 0)
+		{
+			printf(
+				"EXT2-W1: verification FAILED\n");
+
+			halt_forever();
+		}
+
+		/*
+		 * Restore original bytes.
+		 */
+		write_file = NULL;
+
+		if (vfs_open(
+				"/double.txt",
+				VFS_OPEN_WRITE,
+				&write_file) != 0)
+		{
+			printf(
+				"EXT2-W1: failed opening file for restore\n");
+
+			halt_forever();
+		}
+
+		written = 0;
+
+		if (vfs_write(
+				write_file,
+				original,
+				original_read,
+				&written) != 0 ||
+			written != original_read)
+		{
+			printf(
+				"EXT2-W1: restore failed\n");
+
+			vfs_close(write_file);
+			halt_forever();
+		}
+
+		vfs_close(write_file);
+
+		printf(
+			"EXT2-W1: existing-file overwrite passed\n");
 	}
-	uint64_t read_end_ms = timer_uptime_ms();
-	uint64_t read_elapsed_ms =
-		read_end_ms - read_start_ms;
-	printf("VFS: /double.txt bytes read = %u\n", (unsigned)total_double_read);
-	printf(
-		"VFS: /double.txt read time = %u ms\n",
-		(unsigned)read_elapsed_ms);
-
-	vfs_close(file);
-	kfree(double_buffer);
 
 	yield_forever();
 }

@@ -22,8 +22,25 @@ struct ext2_block_cache
     uint32_t double_leaf_entries[4096 / sizeof(uint32_t)];
 };
 
-static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **result);
-static int ext2_vnode_read(vnode_t *node, size_t offset, void *buffer, size_t size, size_t *bytes_read);
+static int ext2_vnode_lookup(
+    vnode_t *directory, 
+    const char *name, 
+    vnode_t **result);
+
+static int ext2_vnode_read(
+    vnode_t *node, 
+    size_t offset, 
+    void *buffer, 
+    size_t size, 
+    size_t *bytes_read);
+
+static int ext2_vnode_write(
+    vnode_t *node,
+    size_t offset,
+    const void *buffer,
+    size_t size,
+    size_t *bytes_written);
+
 static bool ext2_get_data_block(
     block_device_t *device,
     const ext2_superblock_t *superblock,
@@ -31,6 +48,7 @@ static bool ext2_get_data_block(
     uint32_t logical_block,
     uint32_t *physical_block,
     ext2_block_cache_t *cache);
+
 static bool ext2_read_file_cached(
     block_device_t *device,
     const ext2_superblock_t *superblock,
@@ -53,7 +71,7 @@ static const vnode_ops_t ext2_file_ops =
     {
         .lookup = NULL,
         .read = ext2_vnode_read,
-        .write = NULL};
+        .write = ext2_vnode_write};
 
 bool ext2_read_superblock(block_device_t *device, ext2_superblock_t *superblock)
 {
@@ -99,6 +117,39 @@ static bool ext2_read_block(block_device_t *device, uint32_t block_size, uint32_
     uint64_t lba = (uint64_t)block_number * sectors_per_block;
 
     return block_read(device, lba, sectors_per_block, buffer) == 0;
+}
+
+static bool ext2_write_block(
+    block_device_t *device,
+    uint32_t block_size,
+    uint32_t block_number,
+    const void *buffer)
+{
+    if (device == NULL ||
+        buffer == NULL ||
+        device->write == NULL)
+    {
+        return false;
+    }
+
+    if (block_size == 0)
+        return false;
+
+    if (block_size % device->sector_size != 0)
+        return false;
+
+    uint32_t sectors_per_block =
+        block_size / device->sector_size;
+
+    uint64_t lba =
+        (uint64_t)block_number *
+        sectors_per_block;
+
+    return block_write(
+               device,
+               lba,
+               sectors_per_block,
+               buffer) == 0;
 }
 
 bool ext2_read_group_descriptor(
@@ -611,6 +662,192 @@ static int ext2_vnode_read(vnode_t *node, size_t offset, void *buffer, size_t si
 
     if (!ext2_read_file_cached(fs->device, &fs->superblock, &data->inode, offset, buffer, size, bytes_read, data->block_cache))
         return -1;
+
+    return 0;
+}
+
+static int ext2_vnode_write(
+    vnode_t *node,
+    size_t offset,
+    const void *buffer,
+    size_t size,
+    size_t *bytes_written)
+{
+    if (node == NULL ||
+        buffer == NULL ||
+        bytes_written == NULL)
+    {
+        return -1;
+    }
+
+    *bytes_written = 0;
+
+    ext2_vnode_data_t *data =
+        (ext2_vnode_data_t *)node->private_data;
+
+    if (data == NULL ||
+        data->fs == NULL)
+    {
+        return -1;
+    }
+
+    ext2_fs_t *fs =
+        data->fs;
+
+    if (fs->device == NULL ||
+        fs->device->write == NULL)
+    {
+        return -1;
+    }
+
+    /*
+     * EXT2-W1:
+     *
+     * Existing-file overwrite only.
+     *
+     * No growth.
+     * No allocation.
+     * No inode-size changes.
+     */
+    if (offset >= data->inode.size_low)
+        return 0;
+
+    size_t available =
+        data->inode.size_low - offset;
+
+    size_t wanted =
+        size < available
+            ? size
+            : available;
+
+    if (wanted == 0)
+        return 0;
+
+    uint32_t block_size =
+        1024u << fs->superblock.log_block_size;
+
+    if (block_size > 4096)
+        return -1;
+
+    if (data->block_cache == NULL)
+    {
+        data->block_cache =
+            kmalloc(sizeof(ext2_block_cache_t));
+
+        if (data->block_cache == NULL)
+            return -1;
+
+        memset(
+            data->block_cache,
+            0,
+            sizeof(ext2_block_cache_t));
+    }
+
+    uint8_t block[4096];
+
+    size_t total = 0;
+
+    while (total < wanted)
+    {
+        size_t file_offset =
+            offset + total;
+
+        uint32_t logical_block =
+            (uint32_t)(
+                file_offset /
+                block_size);
+
+        uint32_t offset_in_block =
+            (uint32_t)(
+                file_offset %
+                block_size);
+
+        uint32_t block_number;
+
+        if (!ext2_get_data_block(
+                fs->device,
+                &fs->superblock,
+                &data->inode,
+                logical_block,
+                &block_number,
+                data->block_cache))
+        {
+            return -1;
+        }
+
+        /*
+         * EXT2-W1 cannot allocate blocks.
+         *
+         * A zero block number means a sparse/unallocated block,
+         * so writing there is not supported yet.
+         */
+        if (block_number == 0)
+            return -1;
+
+        size_t remaining =
+            wanted - total;
+
+        size_t chunk =
+            block_size -
+            offset_in_block;
+
+        if (chunk > remaining)
+            chunk = remaining;
+
+        /*
+         * Complete aligned block:
+         * write directly without read-modify-write.
+         */
+        if (offset_in_block == 0 &&
+            chunk == block_size)
+        {
+            if (!ext2_write_block(
+                    fs->device,
+                    block_size,
+                    block_number,
+                    (const uint8_t *)buffer +
+                        total))
+            {
+                return -1;
+            }
+        }
+        else
+        {
+            /*
+             * Partial block:
+             *
+             * read -> modify bytes -> write whole block
+             */
+            if (!ext2_read_block(
+                    fs->device,
+                    block_size,
+                    block_number,
+                    block))
+            {
+                return -1;
+            }
+
+            memcpy(
+                block + offset_in_block,
+                (const uint8_t *)buffer +
+                    total,
+                chunk);
+
+            if (!ext2_write_block(
+                    fs->device,
+                    block_size,
+                    block_number,
+                    block))
+            {
+                return -1;
+            }
+        }
+
+        total += chunk;
+    }
+
+    *bytes_written =
+        total;
 
     return 0;
 }

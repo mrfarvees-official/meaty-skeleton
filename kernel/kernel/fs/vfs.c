@@ -40,7 +40,8 @@ static const char *vfs_next_component(const char *path, char *component, size_t 
 
     while (*path != '\0' && *path != '/')
     {
-        if (length + 1 >= component_size) return NULL;
+        if (length + 1 >= component_size)
+            return NULL;
         component[length++] = *path++;
     }
 
@@ -56,19 +57,21 @@ void vfs_initialize(void)
 
 void vnode_ref(vnode_t *node)
 {
-    if (node == NULL) return;
+    if (node == NULL)
+        return;
 
     __atomic_add_fetch(&node->ref_count, 1, __ATOMIC_RELAXED);
 }
 
 void vnode_unref(vnode_t *node)
 {
-    if (node == NULL) return;
+    if (node == NULL)
+        return;
 
     /*
      * We're not freeing vnode objects here yet because the
      * filesytem owns them.
-     * 
+     *
      * Later inode/vnode cache can handle destruction
      */
     __atomic_sub_fetch(&node->ref_count, 1, __ATOMIC_RELEASE);
@@ -76,14 +79,17 @@ void vnode_unref(vnode_t *node)
 
 bool vfs_set_root(vnode_t *root)
 {
-    if (root == NULL) return false;
+    if (root == NULL)
+        return false;
 
-    if (root->type != VNODE_DIRECTORY) return false;
+    if (root->type != VNODE_DIRECTORY)
+        return false;
 
     /*
      * For now there may only be one root filesystem
      */
-    if (vfs_root != NULL) return false;
+    if (vfs_root != NULL)
+        return false;
 
     vnode_ref(root);
 
@@ -94,14 +100,17 @@ bool vfs_set_root(vnode_t *root)
 
 int vfs_lookup(const char *path, vnode_t **result)
 {
-    if (path == NULL  || result == NULL) return -1;
+    if (path == NULL || result == NULL)
+        return -1;
 
-    if (vfs_root == NULL) return -1;
+    if (vfs_root == NULL)
+        return -1;
 
     /*
      * For now only absolute paths are supported
      */
-    if (path[0] != '/') return -1;
+    if (path[0] != '/')
+        return -1;
 
     vnode_t *current = vfs_root;
     vnode_ref(current);
@@ -123,13 +132,14 @@ int vfs_lookup(const char *path, vnode_t **result)
     {
         cursor = vfs_next_component(cursor, component, sizeof(component));
 
-        if (cursor == NULL) 
+        if (cursor == NULL)
         {
             vnode_unref(current);
             return -1;
         }
 
-        if (component[0] == '\0') break;
+        if (component[0] == '\0')
+            break;
 
         if (current->type != VNODE_DIRECTORY)
         {
@@ -167,11 +177,13 @@ int vfs_lookup(const char *path, vnode_t **result)
 
 int vfs_open(const char *path, uint32_t flags, file_t **result)
 {
-    if (path == NULL || result == NULL) return -1;
+    if (path == NULL || result == NULL)
+        return -1;
 
     vnode_t *node = NULL;
 
-    if (vfs_lookup(path, &node) != 0) return -1;
+    if (vfs_lookup(path, &node) != 0)
+        return -1;
 
     /*
      * For now don't allow opening directories as files.
@@ -179,11 +191,11 @@ int vfs_open(const char *path, uint32_t flags, file_t **result)
     if (node->type != VNODE_REGULAR)
     {
         vnode_unref(node);
-        result -1;
+        result - 1;
     }
 
     file_t *file = kmalloc(sizeof(file_t));
-    
+
     if (file == NULL)
     {
         vnode_unref(node);
@@ -201,15 +213,18 @@ int vfs_open(const char *path, uint32_t flags, file_t **result)
 
 int vfs_read(file_t *file, void *buffer, size_t size, size_t *bytes_read)
 {
-    if (file == NULL || buffer == NULL || bytes_read == NULL) return -1;
+    if (file == NULL || buffer == NULL || bytes_read == NULL)
+        return -1;
 
     *bytes_read = 0;
 
-    if ((file->flags & VFS_OPEN_READ) == 0) return -1;
+    if ((file->flags & VFS_OPEN_READ) == 0)
+        return -1;
 
     vnode_t *node = file->vnode;
 
-    if (node == NULL || node->ops == NULL || node->ops->read == NULL) return -1;
+    if (node == NULL || node->ops == NULL || node->ops->read == NULL)
+        return -1;
 
     size_t count = 0;
 
@@ -224,19 +239,31 @@ int vfs_read(file_t *file, void *buffer, size_t size, size_t *bytes_read)
 
 int vfs_write(file_t *file, const void *buffer, size_t size, size_t *bytes_written)
 {
-    if (file == NULL || buffer == NULL || bytes_written == NULL) return -1;
+    if (file == NULL || buffer == NULL || bytes_written == NULL)
+        return -1;
 
     *bytes_written = 0;
 
-    if ((file->flags & VFS_OPEN_WRITE) == 0) return -1;
+    if ((file->flags & VFS_OPEN_WRITE) == 0)
+        return -1;
 
     vnode_t *node = file->vnode;
 
-    if (node == NULL || node->ops == NULL || node->ops->write == NULL) return -1;
+    if (node == NULL || node->ops == NULL || node->ops->write == NULL)
+        return -1;
 
     size_t count = 0;
 
-    int result = node->ops->write(node, file->offset, buffer, size, &count);
+    int result =
+        node->ops->write(
+            node,
+            file->offset,
+            buffer,
+            size,
+            &count);
+
+    if (result != 0)
+        return result;
 
     file->offset += count;
 
@@ -247,7 +274,8 @@ int vfs_write(file_t *file, const void *buffer, size_t size, size_t *bytes_writt
 
 void vfs_close(file_t *file)
 {
-    if (file == NULL) return;
+    if (file == NULL)
+        return;
 
     vnode_unref(file->vnode);
 
