@@ -340,6 +340,72 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	printf("hardware interrupts enabled\n");
 
 	{
+		static const char appended[] =
+			"EXT2-W3-GROWTH";
+
+		file_t *grow_file = NULL;
+
+		if (vfs_open(
+				"/grow.txt",
+				VFS_OPEN_WRITE,
+				&grow_file) != 0)
+		{
+			printf(
+				"EXT2-W3: failed opening /grow.txt\n");
+
+			halt_forever();
+		}
+
+		/*
+		 * No seek API yet, so position this test file
+		 * explicitly at EOF.
+		 */
+		grow_file->offset =
+			grow_file->vnode->size;
+
+		size_t old_size =
+			grow_file->vnode->size;
+
+		size_t written = 0;
+
+		if (vfs_write(
+				grow_file,
+				appended,
+				sizeof(appended),
+				&written) != 0 ||
+			written != sizeof(appended))
+		{
+			printf(
+				"EXT2-W3: growth write failed\n");
+
+			vfs_close(grow_file);
+			halt_forever();
+		}
+
+		size_t new_size =
+			grow_file->vnode->size;
+
+		vfs_close(grow_file);
+
+		if (new_size !=
+			old_size + sizeof(appended))
+		{
+			printf(
+				"EXT2-W3: inode size update FAILED\n");
+
+			halt_forever();
+		}
+
+		printf(
+			"EXT2-W3: direct block allocation passed\n");
+
+		printf(
+			"EXT2-W3: size %u -> %u\n",
+			(unsigned)old_size,
+			(unsigned)new_size);
+	}
+
+	{
 		uint8_t original[32];
 		uint8_t verify[32];
 
@@ -484,6 +550,102 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 		printf(
 			"EXT2-W1: existing-file overwrite passed\n");
+	}
+
+#define EXT2_W2_WRITE_MARKER 0
+
+	{
+		static const char marker[] =
+			"EXT2-W2-PERSISTENT";
+
+#if EXT2_W2_WRITE_MARKER
+
+		file_t *write_file = NULL;
+		size_t written = 0;
+
+		if (vfs_open(
+				"/double.txt",
+				VFS_OPEN_WRITE,
+				&write_file) != 0)
+		{
+			printf(
+				"EXT2-W2: failed opening file for write\n");
+
+			halt_forever();
+		}
+
+		if (vfs_write(
+				write_file,
+				marker,
+				sizeof(marker),
+				&written) != 0 ||
+			written != sizeof(marker))
+		{
+			printf(
+				"EXT2-W2: marker write failed\n");
+
+			vfs_close(write_file);
+			halt_forever();
+		}
+
+		vfs_close(write_file);
+
+		printf(
+			"EXT2-W2: persistent marker written\n");
+
+#else
+
+		file_t *read_file = NULL;
+		char verify[sizeof(marker)];
+		size_t bytes_read = 0;
+
+		memset(
+			verify,
+			0,
+			sizeof(verify));
+
+		if (vfs_open(
+				"/double.txt",
+				VFS_OPEN_READ,
+				&read_file) != 0)
+		{
+			printf(
+				"EXT2-W2: failed opening file for verify\n");
+
+			halt_forever();
+		}
+
+		if (vfs_read(
+				read_file,
+				verify,
+				sizeof(verify),
+				&bytes_read) != 0 ||
+			bytes_read != sizeof(marker))
+		{
+			printf(
+				"EXT2-W2: persistent marker read failed\n");
+
+			vfs_close(read_file);
+			halt_forever();
+		}
+
+		vfs_close(read_file);
+
+		if (memcmp(
+				verify,
+				marker,
+				sizeof(marker)) != 0)
+		{
+			printf(
+				"EXT2-W2: persistent marker NOT FOUND\n");
+
+			halt_forever();
+		}
+
+		printf(
+			"EXT2-W2: persistence across reboot PASSED\n");
+
+#endif
 	}
 
 	yield_forever();

@@ -92,6 +92,15 @@ create_benchmark_disk()
         "$BENCH_FILE" \
         /mnt/meaty-bench/double.txt
 
+    echo "Creating /grow.txt..."
+
+    sudo dd \
+        if=/dev/zero \
+        of=/mnt/meaty-bench/grow.txt \
+        bs=4096 \
+        count=1 \
+        conv=fsync
+
     sync
 
     echo "Benchmark file:"

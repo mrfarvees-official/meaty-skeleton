@@ -23,15 +23,15 @@ struct ext2_block_cache
 };
 
 static int ext2_vnode_lookup(
-    vnode_t *directory, 
-    const char *name, 
+    vnode_t *directory,
+    const char *name,
     vnode_t **result);
 
 static int ext2_vnode_read(
-    vnode_t *node, 
-    size_t offset, 
-    void *buffer, 
-    size_t size, 
+    vnode_t *node,
+    size_t offset,
+    void *buffer,
+    size_t size,
     size_t *bytes_read);
 
 static int ext2_vnode_write(
@@ -99,6 +99,44 @@ bool ext2_read_superblock(block_device_t *device, ext2_superblock_t *superblock)
         return false;
 
     return true;
+}
+
+static bool ext2_write_superblock(
+    block_device_t *device,
+    const ext2_superblock_t *superblock)
+{
+    if (device == NULL ||
+        superblock == NULL ||
+        device->write == NULL)
+    {
+        return false;
+    }
+
+    uint8_t buffer[1024];
+
+    /*
+     * Preserve superblock fields our reduced structure
+     * does not currently describe.
+     */
+    if (block_read(
+            device,
+            2,
+            2,
+            buffer) != 0)
+    {
+        return false;
+    }
+
+    memcpy(
+        buffer,
+        superblock,
+        sizeof(ext2_superblock_t));
+
+    return block_write(
+               device,
+               2,
+               2,
+               buffer) == 0;
 }
 
 static bool ext2_read_block(block_device_t *device, uint32_t block_size, uint32_t block_number, void *buffer)
@@ -189,6 +227,205 @@ bool ext2_read_group_descriptor(
     return true;
 }
 
+static bool ext2_allocate_block(
+    ext2_fs_t *fs,
+    uint32_t *allocated_block)
+{
+    if (fs == NULL ||
+        fs->device == NULL ||
+        allocated_block == NULL)
+    {
+        return false;
+    }
+
+    ext2_superblock_t *superblock =
+        &fs->superblock;
+
+    uint32_t block_size =
+        1024u << superblock->log_block_size;
+
+    if (block_size > 4096)
+        return false;
+
+    if (superblock->free_block_count == 0)
+        return false;
+
+    uint32_t data_blocks =
+        superblock->block_count -
+        superblock->first_data_block;
+
+    uint32_t group_count =
+        (data_blocks +
+         superblock->blocks_per_group - 1u) /
+        superblock->blocks_per_group;
+
+    uint8_t bitmap[4096];
+
+    for (uint32_t group = 0;
+         group < group_count;
+         group++)
+    {
+        ext2_block_group_descriptor_t descriptor;
+
+        if (!ext2_read_group_descriptor(
+                fs->device,
+                superblock,
+                group,
+                &descriptor))
+        {
+            return false;
+        }
+
+        if (descriptor.free_blocks_count == 0)
+            continue;
+
+        if (!ext2_read_block(
+                fs->device,
+                block_size,
+                descriptor.block_bitmap,
+                bitmap))
+        {
+            return false;
+        }
+
+        uint32_t group_first_block =
+            superblock->first_data_block +
+            group *
+                superblock->blocks_per_group;
+
+        uint32_t blocks_in_group =
+            superblock->blocks_per_group;
+
+        if (group_first_block +
+                blocks_in_group >
+            superblock->block_count)
+        {
+            blocks_in_group =
+                superblock->block_count -
+                group_first_block;
+        }
+
+        for (uint32_t bit = 0;
+             bit < blocks_in_group;
+             bit++)
+        {
+            uint32_t byte_index =
+                bit / 8u;
+
+            uint8_t bit_mask =
+                (uint8_t)(1u << (bit % 8u));
+
+            if ((bitmap[byte_index] &
+                 bit_mask) != 0)
+            {
+                continue;
+            }
+
+            uint32_t block_number =
+                group_first_block + bit;
+
+            bitmap[byte_index] |=
+                bit_mask;
+
+            if (!ext2_write_block(
+                    fs->device,
+                    block_size,
+                    descriptor.block_bitmap,
+                    bitmap))
+            {
+                return false;
+            }
+
+            descriptor.free_blocks_count--;
+
+            if (!ext2_write_group_descriptor(
+                    fs->device,
+                    superblock,
+                    group,
+                    &descriptor))
+            {
+                return false;
+            }
+
+            superblock->free_block_count--;
+
+            if (!ext2_write_superblock(
+                    fs->device,
+                    superblock))
+            {
+                return false;
+            }
+
+            *allocated_block =
+                block_number;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool ext2_write_group_descriptor(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    uint32_t group,
+    const ext2_block_group_descriptor_t *descriptor)
+{
+    if (device == NULL ||
+        superblock == NULL ||
+        descriptor == NULL)
+    {
+        return false;
+    }
+
+    uint32_t block_size =
+        1024u << superblock->log_block_size;
+
+    if (block_size > 4096)
+        return false;
+
+    uint32_t descriptors_per_block =
+        block_size /
+        sizeof(ext2_block_group_descriptor_t);
+
+    if (descriptors_per_block == 0)
+        return false;
+
+    uint32_t bgdt_first_block =
+        superblock->first_data_block + 1;
+
+    uint32_t descriptor_block =
+        bgdt_first_block +
+        group / descriptors_per_block;
+
+    uint32_t descriptor_index =
+        group % descriptors_per_block;
+
+    uint8_t block[4096];
+
+    if (!ext2_read_block(
+            device,
+            block_size,
+            descriptor_block,
+            block))
+    {
+        return false;
+    }
+
+    ext2_block_group_descriptor_t *entries =
+        (ext2_block_group_descriptor_t *)block;
+
+    entries[descriptor_index] =
+        *descriptor;
+
+    return ext2_write_block(
+        device,
+        block_size,
+        descriptor_block,
+        block);
+}
+
 bool ext2_read_inode(block_device_t *device, const ext2_superblock_t *superblock, uint32_t inode_number, ext2_inode_t *inode)
 {
     if (device == NULL || superblock == NULL || inode == NULL)
@@ -229,6 +466,96 @@ bool ext2_read_inode(block_device_t *device, const ext2_superblock_t *superblock
     memcpy(inode, block + offset_in_block, sizeof(ext2_inode_t));
 
     return true;
+}
+
+static bool ext2_write_inode(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    uint32_t inode_number,
+    const ext2_inode_t *inode)
+{
+    if (device == NULL ||
+        superblock == NULL ||
+        inode == NULL)
+    {
+        return false;
+    }
+
+    if (inode_number == 0 ||
+        inode_number > superblock->inode_count)
+    {
+        return false;
+    }
+
+    uint32_t block_size =
+        1024u << superblock->log_block_size;
+
+    if (block_size > 4096)
+        return false;
+
+    uint32_t inode_index =
+        inode_number - 1;
+
+    uint32_t group =
+        inode_index /
+        superblock->inodes_per_group;
+
+    uint32_t index_in_group =
+        inode_index %
+        superblock->inodes_per_group;
+
+    ext2_block_group_descriptor_t descriptor;
+
+    if (!ext2_read_group_descriptor(
+            device,
+            superblock,
+            group,
+            &descriptor))
+    {
+        return false;
+    }
+
+    uint64_t byte_offset =
+        (uint64_t)index_in_group *
+        superblock->inode_size;
+
+    uint32_t block_number =
+        descriptor.inode_table +
+        (uint32_t)(byte_offset /
+                   block_size);
+
+    uint32_t offset_in_block =
+        (uint32_t)(byte_offset %
+                   block_size);
+
+    if ((uint64_t)offset_in_block +
+            sizeof(ext2_inode_t) >
+        block_size)
+    {
+        return false;
+    }
+
+    uint8_t block[4096];
+
+    if (!ext2_read_block(
+            device,
+            block_size,
+            block_number,
+            block))
+    {
+        return false;
+    }
+
+    memcpy(
+        block + offset_in_block,
+        inode,
+        sizeof(ext2_inode_t));
+
+    return ext2_write_block(
+        device,
+        block_size,
+        block_number,
+        block);
 }
 
 bool ext2_list_directory(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *directory)
@@ -701,14 +1028,107 @@ static int ext2_vnode_write(
     }
 
     /*
-     * EXT2-W1:
+     * EXT2-W3:
      *
-     * Existing-file overwrite only.
+     * Permit one very specific growth operation:
      *
-     * No growth.
-     * No allocation.
-     * No inode-size changes.
+     * - write begins exactly at EOF
+     * - EOF is block aligned
+     * - write fits inside one new block
+     * - new logical block is a direct block
+     *
+     * Indirect growth comes later.
      */
+    if (offset == data->inode.size_low &&
+        size > 0)
+    {
+        uint32_t block_size =
+            1024u << fs->superblock.log_block_size;
+
+        if (block_size > 4096)
+            return -1;
+
+        if ((offset % block_size) != 0)
+            return -1;
+
+        if (size > block_size)
+            return -1;
+
+        uint32_t logical_block =
+            (uint32_t)(offset /
+                       block_size);
+
+        /*
+         * EXT2-W3 only allocates direct blocks.
+         */
+        if (logical_block >= 12)
+            return -1;
+
+        if (data->inode.block[logical_block] != 0)
+            return -1;
+
+        uint32_t new_block;
+
+        if (!ext2_allocate_block(
+                fs,
+                &new_block))
+        {
+            return -1;
+        }
+
+        uint8_t new_data[4096];
+
+        memset(
+            new_data,
+            0,
+            block_size);
+
+        memcpy(
+            new_data,
+            buffer,
+            size);
+
+        if (!ext2_write_block(
+                fs->device,
+                block_size,
+                new_block,
+                new_data))
+        {
+            return -1;
+        }
+
+        data->inode.block[logical_block] =
+            new_block;
+
+        data->inode.size_low +=
+            (uint32_t)size;
+
+        /*
+         * ext2 i_blocks counts 512-byte sectors,
+         * not filesystem blocks.
+         */
+        data->inode.sector_count +=
+            block_size /
+            fs->device->sector_size;
+
+        if (!ext2_write_inode(
+                fs->device,
+                &fs->superblock,
+                data->inode_number,
+                &data->inode))
+        {
+            return -1;
+        }
+
+        node->size =
+            data->inode.size_low;
+
+        *bytes_written =
+            size;
+
+        return 0;
+    }
+
     if (offset >= data->inode.size_low)
         return 0;
 
@@ -753,14 +1173,12 @@ static int ext2_vnode_write(
             offset + total;
 
         uint32_t logical_block =
-            (uint32_t)(
-                file_offset /
-                block_size);
+            (uint32_t)(file_offset /
+                       block_size);
 
         uint32_t offset_in_block =
-            (uint32_t)(
-                file_offset %
-                block_size);
+            (uint32_t)(file_offset %
+                       block_size);
 
         uint32_t block_number;
 

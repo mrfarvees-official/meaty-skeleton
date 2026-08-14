@@ -125,12 +125,51 @@ typedef struct
     ext2_block_cache_t  *block_cache;
 } ext2_vnode_data_t;
 
-bool ext2_read_superblock(block_device_t *device, ext2_superblock_t *superblock);
-bool ext2_read_group_descriptor(block_device_t *device, const ext2_superblock_t *superblock, uint32_t group, ext2_block_group_descriptor_t *descriptor);
-bool ext2_read_inode(block_device_t *device, const ext2_superblock_t *superblock, uint32_t inode_number, ext2_inode_t *inode);
-bool ext2_list_directory(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *directory);
-bool ext2_lookup(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *directory, const char *name, uint32_t *inode_number);
-bool ext2_read_file(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *inode, size_t offset, void *buffer, size_t buffer_size, size_t *bytes_read);
-bool ext2_mount(block_device_t *device, ext2_fs_t *fs);
+bool ext2_read_superblock(
+    block_device_t *device, 
+    ext2_superblock_t *superblock);
+
+bool ext2_read_group_descriptor(
+    block_device_t *device, 
+    const ext2_superblock_t *superblock, 
+    uint32_t group, 
+    ext2_block_group_descriptor_t *descriptor);
+
+bool ext2_write_group_descriptor(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    uint32_t group,
+    const ext2_block_group_descriptor_t *descriptor);
+
+bool ext2_read_inode(
+    block_device_t *device, 
+    const ext2_superblock_t *superblock, 
+    uint32_t inode_number, 
+    ext2_inode_t *inode);
+
+bool ext2_list_directory(
+    block_device_t *device, 
+    const ext2_superblock_t *superblock, 
+    const ext2_inode_t *directory);
+
+bool ext2_lookup(
+    block_device_t *device, 
+    const ext2_superblock_t *superblock, 
+    const ext2_inode_t *directory, 
+    const char *name, 
+    uint32_t *inode_number);
+
+bool ext2_read_file(
+    block_device_t *device, 
+    const ext2_superblock_t *superblock, 
+    const ext2_inode_t *inode, 
+    size_t offset, 
+    void *buffer, 
+    size_t buffer_size, 
+    size_t *bytes_read);
+    
+bool ext2_mount(
+    block_device_t *device, 
+    ext2_fs_t *fs);
 
 #endif
