@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <stdio.h>
 
 #include <kernel/ext2.h>
 #include <kernel/block_device.h>
@@ -551,8 +550,17 @@ static bool ext2_get_or_allocate_data_block(
         return false;
     }
 
+    if (fs->device->sector_size == 0 ||
+        block_size %
+                fs->device->sector_size !=
+            0)
+    {
+        return false;
+    }
+
     uint32_t entries_per_block =
-        block_size / sizeof(uint32_t);
+        block_size /
+        sizeof(uint32_t);
 
     if (entries_per_block == 0)
         return false;
@@ -562,15 +570,15 @@ static bool ext2_get_or_allocate_data_block(
         fs->device->sector_size;
 
     /*
-     * ---------------------------------------------------------
-     * Direct blocks: 0..11
-     * ---------------------------------------------------------
+     * =========================================================
+     * Direct blocks
+     * =========================================================
      */
-    if (logical_block < 12)
+    if (logical_block < 12u)
     {
         if (inode->block[logical_block] == 0)
         {
-            uint32_t new_block;
+            uint32_t new_block = 0;
 
             if (!ext2_allocate_block(
                     allocation,
@@ -578,6 +586,9 @@ static bool ext2_get_or_allocate_data_block(
             {
                 return false;
             }
+
+            if (new_block == 0)
+                return false;
 
             inode->block[logical_block] =
                 new_block;
@@ -596,9 +607,9 @@ static bool ext2_get_or_allocate_data_block(
         logical_block - 12u;
 
     /*
-     * ---------------------------------------------------------
+     * =========================================================
      * Single indirect
-     * ---------------------------------------------------------
+     * =========================================================
      */
     if (index < entries_per_block)
     {
@@ -606,10 +617,7 @@ static bool ext2_get_or_allocate_data_block(
             inode->block[12];
 
         /*
-         * No single-indirect table yet.
-         *
-         * Allocate one filesystem block for the table,
-         * zero it, write it, and attach it to the inode.
+         * Create the single-indirect pointer table.
          */
         if (indirect_block == 0)
         {
@@ -620,19 +628,20 @@ static bool ext2_get_or_allocate_data_block(
                 return false;
             }
 
+            if (indirect_block == 0)
+                return false;
+
             memset(
                 cache->single_entries,
                 0,
                 block_size);
 
-            cache->single_dirty =
-                true;
-
             inode->block[12] =
                 indirect_block;
 
             /*
-             * i_blocks includes metadata blocks too.
+             * ext2 i_blocks counts sectors occupied by
+             * metadata blocks as well as data blocks.
              */
             inode->sector_count +=
                 sectors_per_block;
@@ -641,6 +650,14 @@ static bool ext2_get_or_allocate_data_block(
                 indirect_block;
 
             cache->single_valid =
+                true;
+
+            /*
+             * Do not write the table yet.
+             * ext2_flush_block_cache() will write it once
+             * when this vfs_write() finishes.
+             */
+            cache->single_dirty =
                 true;
         }
         else if (!cache->single_valid ||
@@ -661,14 +678,17 @@ static bool ext2_get_or_allocate_data_block(
 
             cache->single_valid =
                 true;
+
+            cache->single_dirty =
+                false;
         }
 
         /*
-         * Allocate the requested data block if necessary.
+         * Allocate the requested data block.
          */
         if (cache->single_entries[index] == 0)
         {
-            uint32_t new_block;
+            uint32_t new_block = 0;
 
             if (!ext2_allocate_block(
                     allocation,
@@ -676,6 +696,9 @@ static bool ext2_get_or_allocate_data_block(
             {
                 return false;
             }
+
+            if (new_block == 0)
+                return false;
 
             cache->single_entries[index] =
                 new_block;
@@ -693,14 +716,19 @@ static bool ext2_get_or_allocate_data_block(
         return true;
     }
 
+    /*
+     * Move index so zero means the first block represented
+     * by the double-indirect tree.
+     */
     index -=
         entries_per_block;
 
     /*
-     * ---------------------------------------------------------
+     * =========================================================
      * Double indirect
-     * ---------------------------------------------------------
+     * =========================================================
      */
+
     uint64_t double_capacity =
         (uint64_t)entries_per_block *
         (uint64_t)entries_per_block;
@@ -709,7 +737,7 @@ static bool ext2_get_or_allocate_data_block(
         double_capacity)
     {
         /*
-         * Triple indirect is not supported yet.
+         * Triple indirect is intentionally unsupported.
          */
         return false;
     }
@@ -726,7 +754,9 @@ static bool ext2_get_or_allocate_data_block(
         inode->block[13];
 
     /*
-     * Allocate the double-indirect root table if absent.
+     * ---------------------------------------------------------
+     * Double-indirect root table
+     * ---------------------------------------------------------
      */
     if (root_block == 0)
     {
@@ -737,13 +767,13 @@ static bool ext2_get_or_allocate_data_block(
             return false;
         }
 
+        if (root_block == 0)
+            return false;
+
         memset(
             cache->double_root_entries,
             0,
             block_size);
-
-        cache->double_root_dirty =
-            true;
 
         inode->block[13] =
             root_block;
@@ -754,13 +784,19 @@ static bool ext2_get_or_allocate_data_block(
         cache->double_root_block_number =
             root_block;
 
-        cache->double_root_dirty =
-            true;
-
         cache->double_root_valid =
             true;
 
+        cache->double_root_dirty =
+            true;
+
+        /*
+         * No leaf is currently cached.
+         */
         cache->double_leaf_valid =
+            false;
+
+        cache->double_leaf_dirty =
             false;
     }
     else if (!cache->double_root_valid ||
@@ -782,18 +818,50 @@ static bool ext2_get_or_allocate_data_block(
         cache->double_root_valid =
             true;
 
+        cache->double_root_dirty =
+            false;
+
         cache->double_leaf_valid =
+            false;
+
+        cache->double_leaf_dirty =
             false;
     }
 
+    /*
+     * The root entry points at a second-level pointer table.
+     */
     uint32_t leaf_block =
         cache->double_root_entries[root_index];
 
     /*
-     * Allocate the second-level pointer block.
+     * ---------------------------------------------------------
+     * Double-indirect leaf table
+     * ---------------------------------------------------------
      */
     if (leaf_block == 0)
     {
+        /*
+         * Before replacing the leaf cache with a newly
+         * allocated table, preserve an older dirty leaf if
+         * one is currently cached.
+         */
+        if (cache->double_leaf_valid &&
+            cache->double_leaf_dirty)
+        {
+            if (!ext2_write_block(
+                    fs->device,
+                    block_size,
+                    cache->double_leaf_block_number,
+                    cache->double_leaf_entries))
+            {
+                return false;
+            }
+
+            cache->double_leaf_dirty =
+                false;
+        }
+
         if (!ext2_allocate_block(
                 allocation,
                 &leaf_block))
@@ -801,33 +869,8 @@ static bool ext2_get_or_allocate_data_block(
             return false;
         }
 
-        memset(
-            cache->double_leaf_entries,
-            0,
-            block_size);
-
-        cache->double_leaf_dirty =
-            true;
-        return false;
-    }
-
-    /*
-     * Connect leaf to the root table.
-     */
-    uint32_t leaf_block =
-        cache->double_root_entries[root_index];
-
-    /*
-     * Allocate the second-level pointer block.
-     */
-    if (leaf_block == 0)
-    {
-        if (!ext2_allocate_block(
-                allocation,
-                &leaf_block))
-        {
+        if (leaf_block == 0)
             return false;
-        }
 
         memset(
             cache->double_leaf_entries,
@@ -835,7 +878,8 @@ static bool ext2_get_or_allocate_data_block(
             block_size);
 
         /*
-         * Attach new leaf to root table in memory.
+         * Connect this new leaf table to the root table.
+         * Keep the root dirty instead of immediately writing it.
          */
         cache->double_root_entries[root_index] =
             leaf_block;
@@ -843,6 +887,10 @@ static bool ext2_get_or_allocate_data_block(
         cache->double_root_dirty =
             true;
 
+        /*
+         * The leaf itself is another filesystem block, so it
+         * also contributes to inode->sector_count.
+         */
         inode->sector_count +=
             sectors_per_block;
 
@@ -860,8 +908,9 @@ static bool ext2_get_or_allocate_data_block(
                  leaf_block)
     {
         /*
-         * Switching away from an already-modified leaf:
-         * flush it before reusing the cache buffer.
+         * We're switching from one double-indirect leaf table
+         * to another. The cache contains only one leaf table,
+         * so flush the old one before reusing its buffer.
          */
         if (cache->double_leaf_valid &&
             cache->double_leaf_dirty)
@@ -899,11 +948,13 @@ static bool ext2_get_or_allocate_data_block(
     }
 
     /*
-     * Allocate the actual data block.
+     * ---------------------------------------------------------
+     * Actual data block referenced by the leaf table
+     * ---------------------------------------------------------
      */
     if (cache->double_leaf_entries[leaf_index] == 0)
     {
-        uint32_t new_block;
+        uint32_t new_block = 0;
 
         if (!ext2_allocate_block(
                 allocation,
@@ -912,9 +963,15 @@ static bool ext2_get_or_allocate_data_block(
             return false;
         }
 
+        if (new_block == 0)
+            return false;
+
         cache->double_leaf_entries[leaf_index] =
             new_block;
 
+        /*
+         * Defer this metadata write.
+         */
         cache->double_leaf_dirty =
             true;
 
@@ -1531,7 +1588,12 @@ static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **res
     return 0;
 }
 
-static int ext2_vnode_read(vnode_t *node, size_t offset, void *buffer, size_t size, size_t *bytes_read)
+static int ext2_vnode_read(
+    vnode_t *node, 
+    size_t offset, 
+    void *buffer, 
+    size_t size, 
+    size_t *bytes_read)
 {
     if (node == NULL || buffer == NULL || bytes_read == NULL)
         return -1;
@@ -1616,10 +1678,19 @@ static int ext2_vnode_write(
         offset + size;
 
     uint32_t block_size =
-        1024u << fs->superblock.log_block_size;
+        1024u <<
+        fs->superblock.log_block_size;
 
     if (block_size == 0 ||
         block_size > 4096)
+    {
+        return -1;
+    }
+
+    if (fs->device->sector_size == 0 ||
+        block_size %
+                fs->device->sector_size !=
+            0)
     {
         return -1;
     }
@@ -1628,24 +1699,27 @@ static int ext2_vnode_write(
         block_size /
         sizeof(uint32_t);
 
+    if (entries_per_block == 0)
+        return -1;
+
     /*
      * Writable capacity:
      *
      * 12 direct
-     * + one single-indirect table
-     * + one double-indirect tree
+     * + single indirect
+     * + double indirect
      *
-     * Triple indirect is intentionally excluded.
+     * Triple indirect is intentionally unsupported.
      */
     uint64_t supported_blocks =
         12ull +
         (uint64_t)entries_per_block +
         (uint64_t)entries_per_block *
-            entries_per_block;
+            (uint64_t)entries_per_block;
 
     uint64_t supported_bytes =
         supported_blocks *
-        block_size;
+        (uint64_t)block_size;
 
     if ((uint64_t)end_offset >
         supported_bytes)
@@ -1654,8 +1728,8 @@ static int ext2_vnode_write(
     }
 
     /*
-     * size_low is currently our file-size representation,
-     * so don't allow crossing 4 GiB.
+     * size_low is currently the only file-size field
+     * handled by the write implementation.
      */
     if ((uint64_t)end_offset >
         UINT32_MAX)
@@ -1663,6 +1737,10 @@ static int ext2_vnode_write(
         return -1;
     }
 
+    /*
+     * Create the indirect metadata cache if this vnode
+     * does not already have one.
+     */
     if (data->block_cache == NULL)
     {
         data->block_cache =
@@ -1678,6 +1756,14 @@ static int ext2_vnode_write(
             sizeof(ext2_block_cache_t));
     }
 
+    /*
+     * One allocation context is used for the entire
+     * vfs_write().
+     *
+     * This allows the allocator to keep the current block
+     * bitmap and group descriptor in RAM instead of writing
+     * them after every single allocation.
+     */
     ext2_allocation_context_t allocation;
 
     memset(
@@ -1698,12 +1784,14 @@ static int ext2_vnode_write(
             offset + total;
 
         uint32_t logical_block =
-            (uint32_t)(file_offset /
-                       block_size);
+            (uint32_t)(
+                file_offset /
+                block_size);
 
         uint32_t offset_in_block =
-            (uint32_t)(file_offset %
-                       block_size);
+            (uint32_t)(
+                file_offset %
+                block_size);
 
         size_t remaining =
             size - total;
@@ -1716,9 +1804,16 @@ static int ext2_vnode_write(
             chunk = remaining;
 
         /*
-         * Determine whether this block already existed before
-         * allocation. This tells the partial-write path whether
-         * it needs to preserve existing contents.
+         * Determine whether this file block existed before
+         * allocation.
+         *
+         * This matters for partial writes:
+         *
+         * existing block:
+         *     preserve untouched bytes
+         *
+         * newly allocated block:
+         *     untouched bytes start as zero
          */
         uint32_t old_block_number = 0;
 
@@ -1738,6 +1833,11 @@ static int ext2_vnode_write(
 
         uint32_t block_number = 0;
 
+        /*
+         * Obtain the physical block, allocating direct,
+         * single-indirect, or double-indirect metadata/data
+         * blocks as necessary.
+         */
         if (!ext2_get_or_allocate_data_block(
                 fs,
                 &data->inode,
@@ -1753,7 +1853,9 @@ static int ext2_vnode_write(
             return -1;
 
         /*
-         * Whole filesystem block.
+         * Full filesystem block write.
+         *
+         * No read-modify-write is required.
          */
         if (offset_in_block == 0 &&
             chunk == block_size)
@@ -1771,13 +1873,15 @@ static int ext2_vnode_write(
         else
         {
             /*
-             * Partial write:
-             *
-             * Existing block -> preserve unchanged bytes.
-             * Fresh block    -> start as zero-filled.
+             * Partial filesystem block.
              */
             if (newly_allocated)
             {
+                /*
+                 * New ext2 data blocks exposed by a partial
+                 * write must have zeroes outside the supplied
+                 * byte range.
+                 */
                 memset(
                     block,
                     0,
@@ -1785,6 +1889,9 @@ static int ext2_vnode_write(
             }
             else
             {
+                /*
+                 * Preserve bytes outside the modified range.
+                 */
                 if (!ext2_read_block(
                         fs->device,
                         block_size,
@@ -1796,7 +1903,8 @@ static int ext2_vnode_write(
             }
 
             memcpy(
-                block + offset_in_block,
+                block +
+                    offset_in_block,
                 (const uint8_t *)buffer +
                     total,
                 chunk);
@@ -1815,6 +1923,10 @@ static int ext2_vnode_write(
             chunk;
     }
 
+    /*
+     * Update the in-memory inode size only after the data
+     * write loop completed successfully.
+     */
     if (end_offset >
         data->inode.size_low)
     {
@@ -1823,12 +1935,63 @@ static int ext2_vnode_write(
     }
 
     /*
-     * Commit:
+     * =========================================================
+     * W6 commit phase
+     * =========================================================
      *
-     * - direct pointers
-     * - single indirect pointer
-     * - double indirect pointer
-     * - i_blocks / sector_count
+     * The write path intentionally deferred metadata writes
+     * while allocating blocks.
+     *
+     * Commit them now.
+     */
+
+    /*
+     * 1. Commit single-indirect and double-indirect pointer
+     *    tables that were modified in RAM.
+     */
+    if (!ext2_flush_block_cache(
+            fs,
+            data->block_cache))
+    {
+        return -1;
+    }
+
+    /*
+     * 2. Commit the current allocation bitmap and block-group
+     *    descriptor.
+     *
+     * Groups crossed earlier in this write were already
+     * flushed when the allocator switched groups.
+     */
+    if (!ext2_flush_allocation_context(
+            &allocation))
+    {
+        return -1;
+    }
+
+    /*
+     * 3. Persist free_block_count once for this complete
+     *    vfs_write(), rather than once per block.
+     */
+    if (allocation.allocated_blocks > 0)
+    {
+        if (!ext2_write_superblock(
+                fs->device,
+                &fs->superblock))
+        {
+            return -1;
+        }
+    }
+
+    /*
+     * 4. Finally commit the inode.
+     *
+     * This persists:
+     *
+     * - direct block pointers
+     * - single-indirect root pointer
+     * - double-indirect root pointer
+     * - sector_count / i_blocks
      * - file size
      */
     if (!ext2_write_inode(
