@@ -23,7 +23,7 @@ RECREATE_BENCH_DISK=false
 # Disk and benchmark sizes.
 #
 DISK_SIZE=256M
-BENCH_FILE_SIZE=100M
+BENCH_FILE_SIZE=32M
 BENCH_FILE=double.txt
 
 create_benchmark_disk()

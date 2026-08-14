@@ -38,6 +38,7 @@
 #define AHCI_FIS_TYPE_REG_H2D 0x27u
 
 #define ATA_CMD_READ_DMA_EXT 0x25u
+#define ATA_CMD_WRITE_DMA_EXT 0x35u
 
 #define ATA_CMD_IDENTIFY_DEVICE 0xECu
 
@@ -206,6 +207,7 @@ static bool ahci_prepare_port(
     uint32_t port_index);
 static void ahci_test_gpt_read(void);
 static bool ahci_initialize_disk(void);
+static void ahci_test_write(void);
 
 static ahci_port_t *ahci_disk_port = NULL;
 
@@ -516,6 +518,7 @@ bool ahci_probe(const pci_device_t *device)
 
             return false;
         }
+        ahci_test_write();
     }
 
     return true;
@@ -730,7 +733,7 @@ static bool ahci_wait_device_ready(
     return false;
 }
 
-static bool ahci_build_read_prdt(
+static bool ahci_build_dma_prdt(
     void *buffer,
     size_t byte_count,
     uint16_t *prdt_count)
@@ -902,7 +905,7 @@ static bool ahci_read_dma(
 
     uint16_t prdt_count = 0;
 
-    if (!ahci_build_read_prdt(
+    if (!ahci_build_dma_prdt(
             buffer,
             byte_count,
             &prdt_count))
@@ -1056,6 +1059,219 @@ static bool ahci_read_dma(
 
     printf(
         "AHCI: DMA read timeout "
+        "CI=0x%x IS=0x%x TFD=0x%x\n",
+        (unsigned)port->ci,
+        (unsigned)port->is,
+        (unsigned)port->tfd);
+
+    return false;
+}
+
+static bool ahci_write_dma(
+    uint64_t lba,
+    uint32_t sector_count,
+    const void *buffer)
+{
+    if (ahci_disk_port == NULL ||
+        ahci_command_table == NULL ||
+        buffer == NULL)
+    {
+        return false;
+    }
+
+    if (sector_count == 0 ||
+        sector_count >
+            AHCI_MAX_SECTORS_PER_COMMAND)
+    {
+        return false;
+    }
+
+    /*
+     * WRITE DMA EXT uses a 48-bit LBA.
+     */
+    const uint64_t lba48_limit =
+        (1ULL << 48);
+
+    if (lba >= lba48_limit)
+        return false;
+
+    if ((uint64_t)sector_count >
+        lba48_limit - lba)
+    {
+        return false;
+    }
+
+    size_t byte_count =
+        (size_t)sector_count *
+        AHCI_SECTOR_SIZE;
+
+    ahci_port_t *port =
+        ahci_disk_port;
+
+    /*
+     * Slot zero must be free.
+     */
+    if ((port->ci & 1u) != 0 ||
+        (port->sact & 1u) != 0)
+    {
+        printf(
+            "AHCI: command slot 0 busy\n");
+
+        return false;
+    }
+
+    if (!ahci_wait_device_ready(port))
+        return false;
+
+    /*
+     * Clear stale interrupt/error state.
+     */
+    port->is =
+        0xFFFFFFFFu;
+
+    memset(
+        ahci_command_table,
+        0,
+        PAGE_SIZE);
+
+    uint16_t prdt_count = 0;
+
+    if (!ahci_build_dma_prdt(
+            (void *)buffer,
+            byte_count,
+            &prdt_count))
+    {
+        return false;
+    }
+
+    ahci_command_header_t *command_list =
+        (ahci_command_header_t *)
+            ahci_port_memory_virtual;
+
+    ahci_command_header_t *header =
+        &command_list[0];
+
+    uint32_t command_table_base =
+        header->command_table_base;
+
+    uint32_t command_table_base_upper =
+        header->command_table_base_upper;
+
+    memset(
+        header,
+        0,
+        sizeof(*header));
+
+    header->command_table_base =
+        command_table_base;
+
+    header->command_table_base_upper =
+        command_table_base_upper;
+
+    /*
+     * CFL = 5 DWORDs.
+     *
+     * Bit 6 = W.
+     * W = 1 means memory -> disk.
+     */
+    header->flags =
+        5u | (1u << 6);
+
+    header->prdt_length =
+        prdt_count;
+
+    ahci_fis_reg_h2d_t *fis =
+        (ahci_fis_reg_h2d_t *)
+            ahci_command_table->command_fis;
+
+    memset(
+        fis,
+        0,
+        sizeof(*fis));
+
+    fis->fis_type =
+        AHCI_FIS_TYPE_REG_H2D;
+
+    fis->pmport_and_c =
+        1u << 7;
+
+    fis->command =
+        ATA_CMD_WRITE_DMA_EXT;
+
+    fis->lba0 =
+        (uint8_t)(lba >> 0);
+
+    fis->lba1 =
+        (uint8_t)(lba >> 8);
+
+    fis->lba2 =
+        (uint8_t)(lba >> 16);
+
+    fis->lba3 =
+        (uint8_t)(lba >> 24);
+
+    fis->lba4 =
+        (uint8_t)(lba >> 32);
+
+    fis->lba5 =
+        (uint8_t)(lba >> 40);
+
+    fis->device =
+        1u << 6;
+
+    fis->count_low =
+        (uint8_t)(sector_count &
+                  0xFFu);
+
+    fis->count_high =
+        (uint8_t)((sector_count >> 8) &
+                  0xFFu);
+
+    /*
+     * Issue slot zero.
+     */
+    port->ci =
+        1u;
+
+    for (uint32_t timeout = 0;
+         timeout < AHCI_COMMAND_TIMEOUT;
+         timeout++)
+    {
+        if ((port->is &
+             AHCI_PORT_IS_TFES) != 0)
+        {
+            printf(
+                "AHCI: task file error during write "
+                "IS=0x%x TFD=0x%x\n",
+                (unsigned)port->is,
+                (unsigned)port->tfd);
+
+            return false;
+        }
+
+        if ((port->ci & 1u) == 0)
+        {
+            uint8_t status =
+                (uint8_t)(port->tfd &
+                          0xFFu);
+
+            if ((status &
+                 ATA_STATUS_ERR) != 0)
+            {
+                printf(
+                    "AHCI: ATA error after DMA write "
+                    "TFD=0x%x\n",
+                    (unsigned)port->tfd);
+
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    printf(
+        "AHCI: DMA write timeout "
         "CI=0x%x IS=0x%x TFD=0x%x\n",
         (unsigned)port->ci,
         (unsigned)port->is,
@@ -1242,6 +1458,88 @@ static int ahci_block_read(
             chunk;
 
         destination +=
+            (size_t)chunk *
+            AHCI_SECTOR_SIZE;
+
+        remaining -=
+            chunk;
+    }
+
+    return 0;
+}
+
+static int ahci_block_write(
+    block_device_t *device,
+    uint64_t lba,
+    uint32_t count,
+    const void *buffer)
+{
+    if (device == NULL ||
+        buffer == NULL ||
+        count == 0)
+    {
+        return -1;
+    }
+
+    if (lba >=
+        device->sector_count)
+    {
+        return -1;
+    }
+
+    if ((uint64_t)count >
+        device->sector_count - lba)
+    {
+        return -1;
+    }
+
+    /*
+     * Any write may overlap the current read-ahead window.
+     *
+     * Keep correctness simple for now:
+     * invalidate the entire read cache.
+     */
+    ahci_read_cache_valid =
+        false;
+
+    ahci_read_cache_sector_count =
+        0;
+
+    uint64_t current_lba =
+        lba;
+
+    uint32_t remaining =
+        count;
+
+    const uint8_t *source =
+        (const uint8_t *)buffer;
+
+    while (remaining > 0)
+    {
+        uint32_t chunk =
+            remaining >
+                    AHCI_MAX_SECTORS_PER_COMMAND
+                ? AHCI_MAX_SECTORS_PER_COMMAND
+                : remaining;
+
+        if (!ahci_write_dma(
+                current_lba,
+                chunk,
+                source))
+        {
+            /*
+             * Keep cache invalid after a failed write too.
+             */
+            ahci_read_cache_valid =
+                false;
+
+            return -1;
+        }
+
+        current_lba +=
+            chunk;
+
+        source +=
             (size_t)chunk *
             AHCI_SECTOR_SIZE;
 
@@ -1540,7 +1838,7 @@ static bool ahci_initialize_disk(void)
      * Read-only for now.
      */
     ahci_disk.write =
-        NULL;
+        ahci_block_write;
 
     ahci_disk.private_data =
         NULL;
@@ -1666,6 +1964,116 @@ static void ahci_test_gpt_read(void)
         buffer[5],
         buffer[6],
         buffer[7]);
+}
+
+static void ahci_test_write(void)
+{
+    block_device_t *device =
+        ahci_primary_disk();
+
+    if (device == NULL ||
+        device->write == NULL)
+    {
+        printf(
+            "AHCI: write test unavailable\n");
+
+        return;
+    }
+
+    const uint64_t test_lba =
+        100;
+
+    uint8_t original[AHCI_SECTOR_SIZE];
+    uint8_t test_data[AHCI_SECTOR_SIZE];
+    uint8_t verify[AHCI_SECTOR_SIZE];
+
+    if (block_read(
+            device,
+            test_lba,
+            1,
+            original) != 0)
+    {
+        printf(
+            "AHCI: write test initial read failed\n");
+
+        return;
+    }
+
+    for (size_t i = 0;
+         i < sizeof(test_data);
+         i++)
+    {
+        test_data[i] =
+            (uint8_t)(
+                (i * 37u) ^
+                0xA5u);
+    }
+
+    if (block_write(
+            device,
+            test_lba,
+            1,
+            test_data) != 0)
+    {
+        printf(
+            "AHCI: write test write failed\n");
+
+        return;
+    }
+
+    memset(
+        verify,
+        0,
+        sizeof(verify));
+
+    if (block_read(
+            device,
+            test_lba,
+            1,
+            verify) != 0)
+    {
+        printf(
+            "AHCI: write test verify read failed\n");
+
+        /*
+         * Still attempt to restore.
+         */
+        block_write(
+            device,
+            test_lba,
+            1,
+            original);
+
+        return;
+    }
+
+    bool matched =
+        memcmp(
+            test_data,
+            verify,
+            AHCI_SECTOR_SIZE) == 0;
+
+    /*
+     * Restore original sector regardless of verification result.
+     */
+    if (block_write(
+            device,
+            test_lba,
+            1,
+            original) != 0)
+    {
+        printf(
+            "AHCI: WARNING: failed restoring "
+            "write-test sector\n");
+
+        return;
+    }
+
+    printf(
+        "AHCI: DMA write/read test %s\n",
+        matched
+            ? "passed"
+            : "FAILED");
 }
 
 block_device_t *ahci_primary_disk(void)

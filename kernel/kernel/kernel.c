@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <kernel/tty.h>
 #include <kernel/multiboot.h>
@@ -179,6 +180,112 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 		halt_forever();
 	}
+	else
+	{
+		block_device_t *partition =
+			&partitions[0].block;
+
+		uint8_t original[512];
+		uint8_t test_data[512];
+		uint8_t verify[512];
+
+		/*
+		 * Use a sector well inside the partition.
+		 * We save and restore it immediately.
+		 */
+		const uint64_t test_lba = 100;
+
+		if (block_read(
+				partition,
+				test_lba,
+				1,
+				original) != 0)
+		{
+			printf(
+				"Partition: initial write-test read failed\n");
+
+			halt_forever();
+		}
+
+		for (size_t i = 0;
+			 i < sizeof(test_data);
+			 i++)
+		{
+			test_data[i] =
+				(uint8_t)((i * 29u) ^
+						  0x5Au);
+		}
+
+		if (block_write(
+				partition,
+				test_lba,
+				1,
+				test_data) != 0)
+		{
+			printf(
+				"Partition: write test failed\n");
+
+			halt_forever();
+		}
+
+		memset(
+			verify,
+			0,
+			sizeof(verify));
+
+		if (block_read(
+				partition,
+				test_lba,
+				1,
+				verify) != 0)
+		{
+			printf(
+				"Partition: verify read failed\n");
+
+			/*
+			 * Attempt restore before stopping.
+			 */
+			block_write(
+				partition,
+				test_lba,
+				1,
+				original);
+
+			halt_forever();
+		}
+
+		if (memcmp(
+				test_data,
+				verify,
+				sizeof(test_data)) != 0)
+		{
+			printf(
+				"Partition: write verification FAILED\n");
+
+			block_write(
+				partition,
+				test_lba,
+				1,
+				original);
+
+			halt_forever();
+		}
+
+		if (block_write(
+				partition,
+				test_lba,
+				1,
+				original) != 0)
+		{
+			printf(
+				"Partition: failed restoring test sector\n");
+
+			halt_forever();
+		}
+
+		printf(
+			"Partition: write/read test passed\n");
+	}
 
 	static ext2_fs_t ext2_fs;
 
@@ -303,7 +410,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		if (vfs_read(
 				file,
 				double_buffer,
-				sizeof(DOUBLE_READ_BUFFER_SIZE),
+				DOUBLE_READ_BUFFER_SIZE,
 				&chunk_read) != 0)
 		{
 			printf("VFS: failed reading /double.txt\n");
