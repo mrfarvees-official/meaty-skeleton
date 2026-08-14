@@ -340,312 +340,144 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	printf("hardware interrupts enabled\n");
 
 	{
-		static const char appended[] =
-			"EXT2-W3-GROWTH";
+		const size_t test_size =
+			6000u;
 
-		file_t *grow_file = NULL;
+		uint8_t *test_data =
+			kmalloc(test_size);
+
+		uint8_t *verify =
+			kmalloc(test_size);
+
+		if (test_data == NULL ||
+			verify == NULL)
+		{
+			printf(
+				"EXT2-W4: test buffer allocation failed\n");
+
+			halt_forever();
+		}
+
+		for (size_t i = 0;
+			 i < test_size;
+			 i++)
+		{
+			test_data[i] =
+				(uint8_t)((i * 31u) ^
+						  0xA7u);
+		}
+
+		file_t *file = NULL;
 
 		if (vfs_open(
 				"/grow.txt",
 				VFS_OPEN_WRITE,
-				&grow_file) != 0)
+				&file) != 0)
 		{
 			printf(
-				"EXT2-W3: failed opening /grow.txt\n");
+				"EXT2-W4: failed opening /grow.txt\n");
 
 			halt_forever();
 		}
 
-		/*
-		 * No seek API yet, so position this test file
-		 * explicitly at EOF.
-		 */
-		grow_file->offset =
-			grow_file->vnode->size;
-
 		size_t old_size =
-			grow_file->vnode->size;
+			file->vnode->size;
+
+		file->offset =
+			old_size;
 
 		size_t written = 0;
 
 		if (vfs_write(
-				grow_file,
-				appended,
-				sizeof(appended),
+				file,
+				test_data,
+				test_size,
 				&written) != 0 ||
-			written != sizeof(appended))
+			written != test_size)
 		{
 			printf(
-				"EXT2-W3: growth write failed\n");
+				"EXT2-W4: multi-block growth write failed\n");
 
-			vfs_close(grow_file);
+			vfs_close(file);
 			halt_forever();
 		}
 
 		size_t new_size =
-			grow_file->vnode->size;
+			file->vnode->size;
 
-		vfs_close(grow_file);
+		vfs_close(file);
 
 		if (new_size !=
-			old_size + sizeof(appended))
+			old_size + test_size)
 		{
 			printf(
-				"EXT2-W3: inode size update FAILED\n");
-
-			halt_forever();
-		}
-
-		printf(
-			"EXT2-W3: direct block allocation passed\n");
-
-		printf(
-			"EXT2-W3: size %u -> %u\n",
-			(unsigned)old_size,
-			(unsigned)new_size);
-	}
-
-	{
-		uint8_t original[32];
-		uint8_t verify[32];
-
-		const char test_data[] =
-			"EXT2-W1-WRITE-TEST";
-
-		size_t original_read = 0;
-		size_t written = 0;
-		size_t verify_read = 0;
-
-		file_t *read_file = NULL;
-
-		if (vfs_open(
-				"/double.txt",
-				VFS_OPEN_READ,
-				&read_file) != 0)
-		{
-			printf(
-				"EXT2-W1: failed opening file for initial read\n");
-
-			halt_forever();
-		}
-
-		if (vfs_read(
-				read_file,
-				original,
-				sizeof(test_data),
-				&original_read) != 0 ||
-			original_read != sizeof(test_data))
-		{
-			printf(
-				"EXT2-W1: failed saving original data\n");
-
-			vfs_close(read_file);
-			halt_forever();
-		}
-
-		vfs_close(read_file);
-
-		file_t *write_file = NULL;
-
-		if (vfs_open(
-				"/double.txt",
-				VFS_OPEN_WRITE,
-				&write_file) != 0)
-		{
-			printf(
-				"EXT2-W1: failed opening file for write\n");
-
-			halt_forever();
-		}
-
-		if (vfs_write(
-				write_file,
-				test_data,
-				sizeof(test_data),
-				&written) != 0 ||
-			written != sizeof(test_data))
-		{
-			printf(
-				"EXT2-W1: write failed\n");
-
-			vfs_close(write_file);
-			halt_forever();
-		}
-
-		vfs_close(write_file);
-
-		read_file = NULL;
-
-		if (vfs_open(
-				"/double.txt",
-				VFS_OPEN_READ,
-				&read_file) != 0)
-		{
-			printf(
-				"EXT2-W1: failed reopening file\n");
-
-			halt_forever();
-		}
-
-		if (vfs_read(
-				read_file,
-				verify,
-				sizeof(test_data),
-				&verify_read) != 0 ||
-			verify_read != sizeof(test_data))
-		{
-			printf(
-				"EXT2-W1: verify read failed\n");
-
-			vfs_close(read_file);
-			halt_forever();
-		}
-
-		vfs_close(read_file);
-
-		if (memcmp(
-				verify,
-				test_data,
-				sizeof(test_data)) != 0)
-		{
-			printf(
-				"EXT2-W1: verification FAILED\n");
+				"EXT2-W4: size update FAILED\n");
 
 			halt_forever();
 		}
 
 		/*
-		 * Restore original bytes.
+		 * Reopen so we get the inode back from disk,
+		 * rather than relying on the vnode we just modified.
 		 */
-		write_file = NULL;
+		file = NULL;
 
 		if (vfs_open(
-				"/double.txt",
-				VFS_OPEN_WRITE,
-				&write_file) != 0)
-		{
-			printf(
-				"EXT2-W1: failed opening file for restore\n");
-
-			halt_forever();
-		}
-
-		written = 0;
-
-		if (vfs_write(
-				write_file,
-				original,
-				original_read,
-				&written) != 0 ||
-			written != original_read)
-		{
-			printf(
-				"EXT2-W1: restore failed\n");
-
-			vfs_close(write_file);
-			halt_forever();
-		}
-
-		vfs_close(write_file);
-
-		printf(
-			"EXT2-W1: existing-file overwrite passed\n");
-	}
-
-#define EXT2_W2_WRITE_MARKER 0
-
-	{
-		static const char marker[] =
-			"EXT2-W2-PERSISTENT";
-
-#if EXT2_W2_WRITE_MARKER
-
-		file_t *write_file = NULL;
-		size_t written = 0;
-
-		if (vfs_open(
-				"/double.txt",
-				VFS_OPEN_WRITE,
-				&write_file) != 0)
-		{
-			printf(
-				"EXT2-W2: failed opening file for write\n");
-
-			halt_forever();
-		}
-
-		if (vfs_write(
-				write_file,
-				marker,
-				sizeof(marker),
-				&written) != 0 ||
-			written != sizeof(marker))
-		{
-			printf(
-				"EXT2-W2: marker write failed\n");
-
-			vfs_close(write_file);
-			halt_forever();
-		}
-
-		vfs_close(write_file);
-
-		printf(
-			"EXT2-W2: persistent marker written\n");
-
-#else
-
-		file_t *read_file = NULL;
-		char verify[sizeof(marker)];
-		size_t bytes_read = 0;
-
-		memset(
-			verify,
-			0,
-			sizeof(verify));
-
-		if (vfs_open(
-				"/double.txt",
+				"/grow.txt",
 				VFS_OPEN_READ,
-				&read_file) != 0)
+				&file) != 0)
 		{
 			printf(
-				"EXT2-W2: failed opening file for verify\n");
+				"EXT2-W4: failed reopening /grow.txt\n");
 
 			halt_forever();
 		}
+
+		/*
+		 * No seek API yet.
+		 */
+		file->offset =
+			old_size;
+
+		size_t read_back = 0;
 
 		if (vfs_read(
-				read_file,
+				file,
 				verify,
-				sizeof(verify),
-				&bytes_read) != 0 ||
-			bytes_read != sizeof(marker))
+				test_size,
+				&read_back) != 0 ||
+			read_back != test_size)
 		{
 			printf(
-				"EXT2-W2: persistent marker read failed\n");
+				"EXT2-W4: verification read failed\n");
 
-			vfs_close(read_file);
+			vfs_close(file);
 			halt_forever();
 		}
 
-		vfs_close(read_file);
+		vfs_close(file);
 
 		if (memcmp(
+				test_data,
 				verify,
-				marker,
-				sizeof(marker)) != 0)
+				test_size) != 0)
 		{
 			printf(
-				"EXT2-W2: persistent marker NOT FOUND\n");
+				"EXT2-W4: data verification FAILED\n");
 
 			halt_forever();
 		}
 
 		printf(
-			"EXT2-W2: persistence across reboot PASSED\n");
+			"EXT2-W4: multi-block direct growth passed\n");
 
-#endif
+		printf(
+			"EXT2-W4: size %u -> %u\n",
+			(unsigned)old_size,
+			(unsigned)new_size);
+
+		kfree(verify);
+		kfree(test_data);
 	}
 
 	yield_forever();

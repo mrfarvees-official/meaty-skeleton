@@ -1027,126 +1027,49 @@ static int ext2_vnode_write(
         return -1;
     }
 
+    if (size == 0)
+        return 0;
+
     /*
-     * EXT2-W3:
+     * W4 does not create sparse holes yet.
      *
-     * Permit one very specific growth operation:
+     * Existing overwrite:
+     *     offset < size
      *
-     * - write begins exactly at EOF
-     * - EOF is block aligned
-     * - write fits inside one new block
-     * - new logical block is a direct block
+     * Append:
+     *     offset == size
      *
-     * Indirect growth comes later.
+     * Hole creation:
+     *     offset > size
+     *
+     * is rejected for now.
      */
-    if (offset == data->inode.size_low &&
-        size > 0)
-    {
-        uint32_t block_size =
-            1024u << fs->superblock.log_block_size;
+    if (offset > data->inode.size_low)
+        return -1;
 
-        if (block_size > 4096)
-            return -1;
+    if (size > SIZE_MAX - offset)
+        return -1;
 
-        if ((offset % block_size) != 0)
-            return -1;
-
-        if (size > block_size)
-            return -1;
-
-        uint32_t logical_block =
-            (uint32_t)(offset /
-                       block_size);
-
-        /*
-         * EXT2-W3 only allocates direct blocks.
-         */
-        if (logical_block >= 12)
-            return -1;
-
-        if (data->inode.block[logical_block] != 0)
-            return -1;
-
-        uint32_t new_block;
-
-        if (!ext2_allocate_block(
-                fs,
-                &new_block))
-        {
-            return -1;
-        }
-
-        uint8_t new_data[4096];
-
-        memset(
-            new_data,
-            0,
-            block_size);
-
-        memcpy(
-            new_data,
-            buffer,
-            size);
-
-        if (!ext2_write_block(
-                fs->device,
-                block_size,
-                new_block,
-                new_data))
-        {
-            return -1;
-        }
-
-        data->inode.block[logical_block] =
-            new_block;
-
-        data->inode.size_low +=
-            (uint32_t)size;
-
-        /*
-         * ext2 i_blocks counts 512-byte sectors,
-         * not filesystem blocks.
-         */
-        data->inode.sector_count +=
-            block_size /
-            fs->device->sector_size;
-
-        if (!ext2_write_inode(
-                fs->device,
-                &fs->superblock,
-                data->inode_number,
-                &data->inode))
-        {
-            return -1;
-        }
-
-        node->size =
-            data->inode.size_low;
-
-        *bytes_written =
-            size;
-
-        return 0;
-    }
-
-    if (offset >= data->inode.size_low)
-        return 0;
-
-    size_t available =
-        data->inode.size_low - offset;
-
-    size_t wanted =
-        size < available
-            ? size
-            : available;
-
-    if (wanted == 0)
-        return 0;
+    size_t end_offset =
+        offset + size;
 
     uint32_t block_size =
         1024u << fs->superblock.log_block_size;
 
-    if (block_size > 4096)
+    if (block_size == 0 ||
+        block_size > 4096)
+    {
+        return -1;
+    }
+
+    /*
+     * EXT2-W4 supports only the inode's 12 direct blocks.
+     */
+    size_t direct_capacity =
+        (size_t)12u *
+        block_size;
+
+    if (end_offset > direct_capacity)
         return -1;
 
     if (data->block_cache == NULL)
@@ -1167,43 +1090,26 @@ static int ext2_vnode_write(
 
     size_t total = 0;
 
-    while (total < wanted)
+    while (total < size)
     {
         size_t file_offset =
             offset + total;
 
         uint32_t logical_block =
-            (uint32_t)(file_offset /
-                       block_size);
+            (uint32_t)(
+                file_offset /
+                block_size);
 
         uint32_t offset_in_block =
-            (uint32_t)(file_offset %
-                       block_size);
+            (uint32_t)(
+                file_offset %
+                block_size);
 
-        uint32_t block_number;
-
-        if (!ext2_get_data_block(
-                fs->device,
-                &fs->superblock,
-                &data->inode,
-                logical_block,
-                &block_number,
-                data->block_cache))
-        {
-            return -1;
-        }
-
-        /*
-         * EXT2-W1 cannot allocate blocks.
-         *
-         * A zero block number means a sparse/unallocated block,
-         * so writing there is not supported yet.
-         */
-        if (block_number == 0)
+        if (logical_block >= 12)
             return -1;
 
         size_t remaining =
-            wanted - total;
+            size - total;
 
         size_t chunk =
             block_size -
@@ -1212,9 +1118,40 @@ static int ext2_vnode_write(
         if (chunk > remaining)
             chunk = remaining;
 
+        uint32_t block_number =
+            data->inode.block[logical_block];
+
+        bool newly_allocated =
+            false;
+
         /*
-         * Complete aligned block:
-         * write directly without read-modify-write.
+         * Missing direct block:
+         * allocate it now.
+         */
+        if (block_number == 0)
+        {
+            if (!ext2_allocate_block(
+                    fs,
+                    &block_number))
+            {
+                return -1;
+            }
+
+            data->inode.block[logical_block] =
+                block_number;
+
+            data->inode.sector_count +=
+                block_size /
+                fs->device->sector_size;
+
+            newly_allocated =
+                true;
+        }
+
+        /*
+         * Full-block write:
+         *
+         * No read-modify-write is necessary.
          */
         if (offset_in_block == 0 &&
             chunk == block_size)
@@ -1232,17 +1169,31 @@ static int ext2_vnode_write(
         else
         {
             /*
-             * Partial block:
+             * Partial block.
              *
-             * read -> modify bytes -> write whole block
+             * Existing block:
+             *     preserve bytes outside the write range.
+             *
+             * Newly allocated block:
+             *     begin from zeroes.
              */
-            if (!ext2_read_block(
-                    fs->device,
-                    block_size,
-                    block_number,
-                    block))
+            if (newly_allocated)
             {
-                return -1;
+                memset(
+                    block,
+                    0,
+                    block_size);
+            }
+            else
+            {
+                if (!ext2_read_block(
+                        fs->device,
+                        block_size,
+                        block_number,
+                        block))
+                {
+                    return -1;
+                }
             }
 
             memcpy(
@@ -1263,6 +1214,33 @@ static int ext2_vnode_write(
 
         total += chunk;
     }
+
+    /*
+     * Increase file size only when the write went beyond
+     * the old EOF.
+     */
+    if (end_offset >
+        data->inode.size_low)
+    {
+        data->inode.size_low =
+            (uint32_t)end_offset;
+    }
+
+    /*
+     * Commit all direct pointers, sector count and file size
+     * together in the inode.
+     */
+    if (!ext2_write_inode(
+            fs->device,
+            &fs->superblock,
+            data->inode_number,
+            &data->inode))
+    {
+        return -1;
+    }
+
+    node->size =
+        data->inode.size_low;
 
     *bytes_written =
         total;
