@@ -316,9 +316,18 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	printf("printf works: %d %s\n", 123, "hello");
-	fprintf(stdout, "stdout works: %x\n", 0xCAFE);
-	fprintf(stderr, "stderr works\n");
+	char buffer[64];
+
+	printf("Enter text: ");
+
+	if (fgets(buffer, sizeof(buffer), stdin) != NULL)
+	{
+		printf("\nYou entered: %s", buffer);
+	}
+	else
+	{
+		printf("\nfgets failed\n");
+	}
 
 	yield_forever();
 }

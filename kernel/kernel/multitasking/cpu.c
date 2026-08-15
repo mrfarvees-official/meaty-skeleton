@@ -40,6 +40,7 @@ void cpu_local_initialize(void)
         cpu_locals[i].reschedule_pending = false;
         cpu_locals[i].scheduler_ticks = 0;
         cpu_locals[i].idle_ticks = 0;
+        cpu_locals[i].scheduler_preempt_restore_flags = 0;
     }
 }
 

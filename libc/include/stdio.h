@@ -3,6 +3,7 @@
 
 #include <sys/cdefs.h>
 #include <stdarg.h>
+#include <stddef.h>
 
 #define EOF (-1)
 
@@ -24,8 +25,20 @@ extern FILE *stdin;
 extern FILE *stdout;
 extern FILE *stderr;
 
+int fgetc(FILE *stream);
+int getchar(void);
+
+char *fgets(char *str, int size, FILE *stream);
+
 int fputc(int, FILE *);
 int putchar(int);
+
+size_t fwrite(
+	const void *ptr,
+	size_t size,
+	size_t nmemb,
+	FILE *stream
+);
 
 int fputs(const char *, FILE *);
 int puts(const char *);

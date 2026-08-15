@@ -31,6 +31,11 @@ FREEOBJS=\
 $(ARCH_FREEOBJS) \
 stdio/printf.o \
 stdio/fputc.o \
+stdio/fputs.o \
+stdio/fwrite.o \
+stdio/fgetc.o \
+stdio/fgets.o \
+stdio/getchar.o \
 stdio/stream.o \
 stdio/putchar.o \
 stdio/puts.o \

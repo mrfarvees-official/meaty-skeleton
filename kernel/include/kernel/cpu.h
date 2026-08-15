@@ -23,7 +23,7 @@ typedef struct cpu_local
     bool                scheduler_switch_lock_held;
     volatile uint32_t   scheduler_ticks;
     volatile uint32_t   idle_ticks;
-
+    uint32_t            scheduler_preempt_restore_flags;
 } cpu_local_t;
 
 void cpu_local_initialize(void);

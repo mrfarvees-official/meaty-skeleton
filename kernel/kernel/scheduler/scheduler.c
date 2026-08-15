@@ -15,7 +15,6 @@ typedef struct
 } scheduler_policy_slot_t;
 
 static scheduler_policy_slot_t policy_slots[SCHED_POLICY_COUNT];
-
 static bool scheduler_initialized = false;
 static spinlock_t scheduler_lock = SPINLOCK_INITIALIZER;
 
@@ -459,11 +458,37 @@ void scheduler_schedule(void)
         current;
 
     /*
-     * Transfer scheduler-lock ownership across the
-     * actual stack switch.
+     * If scheduler_switch_flags was supplied by the interrupt
+     * dispatcher, preserve the interrupted context's EFLAGS.
+     *
+     * Otherwise this is normal task-context scheduling and the
+     * flags captured while taking scheduler_lock are correct.
      */
-    cpu->scheduler_switch_flags =
-        flags;
+    if (!cpu->scheduler_switch_lock_held &&
+        cpu->scheduler_switch_flags != 0)
+    {
+        uint32_t restore_flags =
+            cpu->scheduler_switch_flags;
+
+        cpu->scheduler_switch_flags =
+            restore_flags;
+    }
+    else
+    {
+        if (cpu->scheduler_preempt_restore_flags != 0)
+        {
+            cpu->scheduler_switch_flags =
+                cpu->scheduler_preempt_restore_flags;
+
+            cpu->scheduler_preempt_restore_flags =
+                0;
+        }
+        else
+        {
+            cpu->scheduler_switch_flags =
+                flags;
+        }
+    }
 
     cpu->scheduler_switch_lock_held =
         true;
@@ -976,15 +1001,20 @@ bool scheduler_preemption_pending(void)
     return cpu->reschedule_pending;
 }
 
-void scheduler_handle_safe_preemption_point(void)
+void scheduler_handle_safe_preemption_point(
+    uint32_t restore_flags)
 {
-    cpu_local_t *cpu = cpu_current();
+    cpu_local_t *cpu =
+        cpu_current();
 
     if (cpu == NULL)
         return;
 
     if (!cpu->reschedule_pending)
         return;
+
+    cpu->scheduler_preempt_restore_flags =
+        restore_flags;
 
     scheduler_schedule();
 }

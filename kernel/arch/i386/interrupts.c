@@ -313,7 +313,7 @@ void interrupt_dispatch(struct interrupt_frame *frame)
          * If the timer or another IRQ requested a reschedule,
          * it is now safe to switch tasks.
          */
-        scheduler_handle_safe_preemption_point();
+        scheduler_handle_safe_preemption_point(frame->eflags);
 
         return;
     }
@@ -337,7 +337,7 @@ void interrupt_dispatch(struct interrupt_frame *frame)
     {
         handler(frame);
 
-        scheduler_handle_safe_preemption_point();
+        scheduler_handle_safe_preemption_point(frame->eflags);
         return;
     }
 

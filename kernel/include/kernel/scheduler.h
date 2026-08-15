@@ -60,7 +60,7 @@ bool scheduler_set_policy(task_t* task, sched_policy_t policy);
  */
 void scheduler_tick(void);
 bool scheduler_preemption_pending(void);
-void scheduler_handle_safe_preemption_point(void);
+void scheduler_handle_safe_preemption_point(uint32_t restore_flags);
 
 /*
  * Idle task.
