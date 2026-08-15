@@ -117,24 +117,10 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	vfs_initialize();
 	printf("VFS initialized\n");
 
-	// if (!ramfs_initialize())
-	// {
-	// 	printf("RAMFS initialization failed\n");
-	// 	halt_forever();
-	// }
-	// printf("RAMFS mounted as /\n");
-
 	pci_device_t ahci_controller;
 
 	if (pci_find_ahci_controller(&ahci_controller))
 	{
-		printf(
-			"AHCI: PCI %u:%u.%u vendor=%x device=%x\n",
-			(unsigned)ahci_controller.bus,
-			(unsigned)ahci_controller.device,
-			(unsigned)ahci_controller.function,
-			(unsigned)ahci_controller.vendor_id,
-			(unsigned)ahci_controller.device_id);
 
 		if (!ahci_probe(&ahci_controller))
 		{
@@ -157,10 +143,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		halt_forever();
 	}
 
-	printf(
-		"Storage: using %s\n",
-		disk->name);
-
 	static partition_device_t partitions[8];
 
 	size_t partition_count =
@@ -169,14 +151,9 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 			partitions,
 			8);
 
-	printf(
-		"Storage: found %u partitions\n",
-		(unsigned)partition_count);
-
 	if (partition_count == 0)
 	{
-		printf(
-			"Storage: no usable partitions\n");
+		printf("Storage: no usable partitions\n");
 
 		halt_forever();
 	}
@@ -339,160 +316,9 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	    {
-        uint32_t free_before =
-            ext2_fs.superblock.free_inode_count;
-
-        uint32_t new_inode_number = 0;
-
-        if (!ext2_allocate_inode(
-                &ext2_fs,
-                &new_inode_number))
-        {
-            printf(
-                "EXT2-C1: inode allocation FAILED\n");
-
-            halt_forever();
-        }
-
-        printf(
-            "EXT2-C1: allocated inode %u\n",
-            (unsigned)new_inode_number);
-
-        if (new_inode_number == 0)
-        {
-            printf(
-                "EXT2-C1: invalid inode number FAILED\n");
-
-            halt_forever();
-        }
-
-        if (ext2_fs.superblock.free_inode_count !=
-            free_before - 1u)
-        {
-            printf(
-                "EXT2-C1: superblock free inode count FAILED\n");
-
-            halt_forever();
-        }
-
-        ext2_inode_t inode;
-
-        memset(
-            &inode,
-            0,
-            sizeof(inode));
-
-        if (!ext2_read_inode(
-                ext2_fs.device,
-                &ext2_fs.superblock,
-                new_inode_number,
-                &inode))
-        {
-            printf(
-                "EXT2-C1: inode reread FAILED\n");
-
-            halt_forever();
-        }
-
-        if ((inode.mode & EXT2_S_IFMT) !=
-            EXT2_S_IFREG)
-        {
-            printf(
-                "EXT2-C1: inode type FAILED\n");
-
-            halt_forever();
-        }
-
-        if (inode.size_low != 0 ||
-            inode.size_high != 0 ||
-            inode.sector_count != 0)
-        {
-            printf(
-                "EXT2-C1: inode initialization FAILED\n");
-
-            halt_forever();
-        }
-
-        /*
-         * Verify the bitmap and group-descriptor accounting
-         * independently from ext2_allocate_inode().
-         */
-        uint32_t inode_index =
-            new_inode_number - 1u;
-
-        uint32_t group =
-            inode_index /
-            ext2_fs.superblock.inodes_per_group;
-
-        uint32_t bit =
-            inode_index %
-            ext2_fs.superblock.inodes_per_group;
-
-        ext2_block_group_descriptor_t descriptor;
-
-        if (!ext2_read_group_descriptor(
-                ext2_fs.device,
-                &ext2_fs.superblock,
-                group,
-                &descriptor))
-        {
-            printf(
-                "EXT2-C1: descriptor reread FAILED\n");
-
-            halt_forever();
-        }
-
-        uint32_t block_size =
-            1024u <<
-            ext2_fs.superblock.log_block_size;
-
-        uint8_t bitmap[4096];
-
-        uint32_t sectors_per_block =
-            block_size /
-            ext2_fs.device->sector_size;
-
-        if (block_read(
-                ext2_fs.device,
-                (uint64_t)descriptor.inode_bitmap *
-                    sectors_per_block,
-                sectors_per_block,
-                bitmap) != 0)
-        {
-            printf(
-                "EXT2-C1: inode bitmap reread FAILED\n");
-
-            halt_forever();
-        }
-
-        uint8_t mask =
-            (uint8_t)
-                (1u << (bit % 8u));
-
-        if ((bitmap[bit / 8u] &
-             mask) == 0)
-        {
-            printf(
-                "EXT2-C1: inode bitmap bit FAILED\n");
-
-            halt_forever();
-        }
-
-        printf(
-            "EXT2-C1: inode bitmap PASSED\n");
-
-        printf(
-            "EXT2-C1: regular inode initialization PASSED\n");
-
-        printf(
-            "EXT2-C1: free inodes %u -> %u\n",
-            (unsigned)free_before,
-            (unsigned)ext2_fs.superblock.free_inode_count);
-
-        printf(
-            "EXT2-C1: PASSED\n");
-    }
+	printf("printf works: %d %s\n", 123, "hello");
+	fprintf(stdout, "stdout works: %x\n", 0xCAFE);
+	fprintf(stderr, "stderr works\n");
 
 	yield_forever();
 }

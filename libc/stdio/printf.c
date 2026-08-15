@@ -256,13 +256,14 @@ static char *__uint_str(
 	return b;
 }
 
-static void displayCharacter(char c, int *count)
+static void displayCharacter(FILE *stream, char c, int *count)
 {
-	putchar((unsigned char)c);
+	if (fputc((unsigned char)c, stream) == EOF)
+		return;
 	*count += 1;
 }
 
-static void displayString(const char *string, int *count)
+static void displayString(FILE *stream, const char *string, int *count)
 {
 	if (string == NULL)
 	{
@@ -271,19 +272,20 @@ static void displayString(const char *string, int *count)
 
 	for (size_t i = 0; string[i] != '\0'; ++i)
 	{
-		displayCharacter(string[i], count);
+		displayCharacter(stream, string[i], count);
 	}
 }
 
-static void displayRepeatedCharacter(char c, int amount, int *count)
+static void displayRepeatedCharacter(FILE *stream, char c, int amount, int *count)
 {
 	while (amount-- > 0)
 	{
-		displayCharacter(c, count);
+		displayCharacter(stream, c, count);
 	}
 }
 
 static void displayPaddedFloat(
+	FILE *stream,
 	const char *text,
 	int width,
 	bool left_justify,
@@ -303,23 +305,24 @@ static void displayPaddedFloat(
 		if (zero_pad &&
 			(text[0] == '-' || text[0] == '+' || text[0] == ' '))
 		{
-			displayCharacter(text[0], count);
-			displayRepeatedCharacter('0', padding, count);
-			displayString(text + 1, count);
+			displayCharacter(stream, text[0], count);
+			displayRepeatedCharacter(stream, '0', padding, count);
+			displayString(stream, text + 1, count);
 			return;
 		}
 
 		displayRepeatedCharacter(
+			stream,
 			zero_pad ? '0' : ' ',
 			padding,
 			count);
 	}
 
-	displayString(text, count);
+	displayString(stream, text, count);
 
 	if (left_justify)
 	{
-		displayRepeatedCharacter(' ', padding, count);
+		displayRepeatedCharacter(stream, ' ', padding, count);
 	}
 }
 
@@ -1055,9 +1058,9 @@ static char *format_long_double(
 	return buffer;
 }
 
-int vprintf(const char *format, va_list list)
+int vfprintf(FILE *stream, const char *format, va_list list)
 {
-	if (format == NULL)
+	if (stream == NULL || format == NULL)
 	{
 		return -1;
 	}
@@ -1069,7 +1072,7 @@ int vprintf(const char *format, va_list list)
 	{
 		if (format[i] != '%')
 		{
-			displayCharacter(format[i], &chars);
+			displayCharacter(stream, format[i], &chars);
 			continue;
 		}
 
@@ -1080,7 +1083,7 @@ int vprintf(const char *format, va_list list)
 		 */
 		if (format[i] == '\0')
 		{
-			displayCharacter('%', &chars);
+			displayCharacter(stream, '%', &chars);
 			break;
 		}
 
@@ -1266,7 +1269,7 @@ int vprintf(const char *format, va_list list)
 		{
 		case '%':
 		{
-			displayCharacter('%', &chars);
+			displayCharacter(stream, '%', &chars);
 			break;
 		}
 
@@ -1277,14 +1280,14 @@ int vprintf(const char *format, va_list list)
 
 			if (!leftJustify)
 			{
-				displayRepeatedCharacter(' ', padding, &chars);
+				displayRepeatedCharacter(stream, ' ', padding, &chars);
 			}
 
-			displayCharacter(character, &chars);
+			displayCharacter(stream, character, &chars);
 
 			if (leftJustify)
 			{
-				displayRepeatedCharacter(' ', padding, &chars);
+				displayRepeatedCharacter(stream, ' ', padding, &chars);
 			}
 
 			break;
@@ -1316,17 +1319,17 @@ int vprintf(const char *format, va_list list)
 
 			if (!leftJustify)
 			{
-				displayRepeatedCharacter(' ', padding, &chars);
+				displayRepeatedCharacter(stream, ' ', padding, &chars);
 			}
 
 			for (size_t j = 0; j < stringLength; ++j)
 			{
-				displayCharacter(string[j], &chars);
+				displayCharacter(stream, string[j], &chars);
 			}
 
 			if (leftJustify)
 			{
-				displayRepeatedCharacter(' ', padding, &chars);
+				displayRepeatedCharacter(stream, ' ', padding, &chars);
 			}
 
 			break;
@@ -1335,13 +1338,6 @@ int vprintf(const char *format, va_list list)
 		case 'd':
 		case 'i':
 		{
-			/*
-			 * For integer conversions, an explicit precision
-			 * disables the zero-padding flag.
-			 *
-			 * Full integer precision padding is not implemented
-			 * in this version.
-			 */
 			if (precisionSpecified)
 			{
 				zeroPad = false;
@@ -1457,10 +1453,6 @@ int vprintf(const char *format, va_list list)
 
 			case 'z':
 			{
-				/*
-				 * intptr_t is used as the signed size type
-				 * for this small kernel libc.
-				 */
 				intptr_t integer =
 					va_arg(list, intptr_t);
 
@@ -1500,7 +1492,7 @@ int vprintf(const char *format, va_list list)
 				break;
 			}
 
-			displayString(intStrBuffer, &chars);
+			displayString(stream, intStrBuffer, &chars);
 			break;
 		}
 
@@ -1510,7 +1502,6 @@ int vprintf(const char *format, va_list list)
 		case 'X':
 		{
 			int base = 10;
-			bool uppercase = false;
 
 			if (specifier == 'o')
 			{
@@ -1523,7 +1514,6 @@ int vprintf(const char *format, va_list list)
 			else if (specifier == 'X')
 			{
 				base = 16;
-				uppercase = true;
 			}
 
 			if (precisionSpecified)
@@ -1571,10 +1561,6 @@ int vprintf(const char *format, va_list list)
 				break;
 
 			case 't':
-				/*
-				 * uintptr_t is used as the unsigned
-				 * counterpart of ptrdiff_t here.
-				 */
 				integer =
 					va_arg(list, uintptr_t);
 				break;
@@ -1613,14 +1599,9 @@ int vprintf(const char *format, va_list list)
 				numberWidth -= prefixLength;
 			}
 
-			/*
-			 * Handle prefixes before zero padding:
-			 *
-			 * %#08x -> 0x00002a
-			 */
 			if (prefixLength > 0 && zeroPad && !leftJustify)
 			{
-				displayString(prefix, &chars);
+				displayString(stream, prefix, &chars);
 
 				__uint_str(
 					integer,
@@ -1632,7 +1613,7 @@ int vprintf(const char *format, va_list list)
 					false,
 					true);
 
-				displayString(intStrBuffer, &chars);
+				displayString(stream, intStrBuffer, &chars);
 			}
 			else
 			{
@@ -1648,15 +1629,11 @@ int vprintf(const char *format, va_list list)
 
 				if (!leftJustify)
 				{
-					displayString(prefix, &chars);
-					displayString(intStrBuffer, &chars);
+					displayString(stream, prefix, &chars);
+					displayString(stream, intStrBuffer, &chars);
 				}
 				else
 				{
-					/*
-					 * Rebuild left-justified output so
-					 * the prefix appears before the digits.
-					 */
 					size_t currentLength =
 						strlen(intStrBuffer);
 
@@ -1666,8 +1643,8 @@ int vprintf(const char *format, va_list list)
 						intStrBuffer[--currentLength] = '\0';
 					}
 
-					displayString(prefix, &chars);
-					displayString(intStrBuffer, &chars);
+					displayString(stream, prefix, &chars);
+					displayString(stream, intStrBuffer, &chars);
 
 					int used =
 						prefixLength + (int)currentLength;
@@ -1677,6 +1654,7 @@ int vprintf(const char *format, va_list list)
 					if (padding > 0)
 					{
 						displayRepeatedCharacter(
+							stream,
 							' ',
 							padding,
 							&chars);
@@ -1684,7 +1662,6 @@ int vprintf(const char *format, va_list list)
 				}
 			}
 
-			(void)uppercase;
 			break;
 		}
 
@@ -1693,9 +1670,6 @@ int vprintf(const char *format, va_list list)
 			void *pointer = va_arg(list, void *);
 			uintptr_t value = (uintptr_t)pointer;
 
-			/*
-			 * Width includes the "0x" prefix.
-			 */
 			int numberWidth = lengthSpec;
 
 			if (numberWidth >= 2)
@@ -1709,7 +1683,7 @@ int vprintf(const char *format, va_list list)
 
 			if (zeroPad && !leftJustify)
 			{
-				displayString("0x", &chars);
+				displayString(stream, "0x", &chars);
 
 				__uint_str(
 					(uintmax_t)value,
@@ -1721,12 +1695,10 @@ int vprintf(const char *format, va_list list)
 					false,
 					true);
 
-				displayString(intStrBuffer, &chars);
+				displayString(stream, intStrBuffer, &chars);
 			}
 			else if (!leftJustify)
 			{
-				int digitsLength;
-
 				__uint_str(
 					(uintmax_t)value,
 					intStrBuffer,
@@ -1737,7 +1709,7 @@ int vprintf(const char *format, va_list list)
 					false,
 					false);
 
-				digitsLength =
+				int digitsLength =
 					(int)strlen(intStrBuffer);
 
 				int padding =
@@ -1749,12 +1721,13 @@ int vprintf(const char *format, va_list list)
 				}
 
 				displayRepeatedCharacter(
+					stream,
 					' ',
 					padding,
 					&chars);
 
-				displayString("0x", &chars);
-				displayString(intStrBuffer, &chars);
+				displayString(stream, "0x", &chars);
+				displayString(stream, intStrBuffer, &chars);
 			}
 			else
 			{
@@ -1768,8 +1741,8 @@ int vprintf(const char *format, va_list list)
 					false,
 					false);
 
-				displayString("0x", &chars);
-				displayString(intStrBuffer, &chars);
+				displayString(stream, "0x", &chars);
+				displayString(stream, intStrBuffer, &chars);
 
 				int used =
 					2 + (int)strlen(intStrBuffer);
@@ -1779,6 +1752,7 @@ int vprintf(const char *format, va_list list)
 				if (padding > 0)
 				{
 					displayRepeatedCharacter(
+						stream,
 						' ',
 						padding,
 						&chars);
@@ -1857,9 +1831,6 @@ int vprintf(const char *format, va_list list)
 			}
 			else
 			{
-				/*
-				 * float is promoted to double in variadic calls.
-				 */
 				value = (long double)va_arg(list, double);
 			}
 
@@ -1875,6 +1846,7 @@ int vprintf(const char *format, va_list list)
 				spaceNoSign);
 
 			displayPaddedFloat(
+				stream,
 				float_buffer,
 				lengthSpec,
 				leftJustify,
@@ -1886,15 +1858,11 @@ int vprintf(const char *format, va_list list)
 
 		default:
 		{
-			/*
-			 * Preserve unknown format sequences instead
-			 * of silently deleting them.
-			 */
-			displayCharacter('%', &chars);
+			displayCharacter(stream, '%', &chars);
 
 			if (specifier != '\0')
 			{
-				displayCharacter(specifier, &chars);
+				displayCharacter(stream, specifier, &chars);
 			}
 
 			break;
@@ -1905,13 +1873,29 @@ int vprintf(const char *format, va_list list)
 	return chars;
 }
 
-__attribute__((format(printf, 1, 2))) int printf(const char *format, ...)
+int vprintf(const char *format, va_list list)
+{
+	return vfprintf(stdout, format, list);
+}
+
+int fprintf(FILE *stream, const char *format, ...)
 {
 	va_list list;
+
 	va_start(list, format);
-
-	int result = vprintf(format, list);
-
+	int result = vfprintf(stream, format, list);
 	va_end(list);
+
+	return result;
+}
+
+int printf(const char *format, ...)
+{
+	va_list list;
+
+	va_start(list, format);
+	int result = vfprintf(stdout, format, list);
+	va_end(list);
+
 	return result;
 }
