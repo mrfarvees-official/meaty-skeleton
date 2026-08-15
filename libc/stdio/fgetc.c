@@ -16,6 +16,15 @@ int fgetc(FILE *stream)
         return EOF;
     }
 
+    if (stream->has_pushback)
+    {
+        int c = stream->pushback;
+
+        stream->has_pushback = 0;
+
+        return c;
+    }
+
 #if defined(__is_libk)
 
     /**

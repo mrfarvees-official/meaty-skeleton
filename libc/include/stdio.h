@@ -15,6 +15,9 @@
 typedef struct FILE {
 	int fd;
 	unsigned int flags;
+
+	int pushback;
+	int has_pushback;
 } FILE;
 
 #ifdef __cplusplus
@@ -27,6 +30,7 @@ extern FILE *stderr;
 
 int fgetc(FILE *stream);
 int getchar(void);
+int ungetc(int c, FILE *stream);
 
 char *fgets(char *str, int size, FILE *stream);
 

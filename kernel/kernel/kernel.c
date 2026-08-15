@@ -316,18 +316,28 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	char buffer[64];
+	int c1;
+	int c2;
+	int c3;
 
-	printf("Enter text: ");
+	printf("type one key: ");
 
-	if (fgets(buffer, sizeof(buffer), stdin) != NULL)
-	{
-		printf("\nYou entered: %s", buffer);
-	}
-	else
-	{
-		printf("\nfgets failed\n");
-	}
+	c1 = getchar();
+
+	ungetc(c1, stdin);
+
+	c2 = getchar();
+
+	printf(
+		"\nfirst=%c pushed-back=%c\n",
+		c1,
+		c2);
+
+	printf("type another key: ");
+
+	c3 = getchar();
+
+	printf("\nnext=%c\n", c3);
 
 	yield_forever();
 }

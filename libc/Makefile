@@ -35,6 +35,7 @@ stdio/fputs.o \
 stdio/fwrite.o \
 stdio/fgetc.o \
 stdio/fgets.o \
+stdio/ungetc.o \
 stdio/getchar.o \
 stdio/stream.o \
 stdio/putchar.o \
