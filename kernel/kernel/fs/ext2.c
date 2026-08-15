@@ -1187,7 +1187,322 @@ static bool ext2_write_inode(
         block);
 }
 
-bool ext2_list_directory(block_device_t *device, const ext2_superblock_t *superblock, const ext2_inode_t *directory)
+static bool ext2_initialize_new_inode(
+    ext2_fs_t *fs,
+    uint32_t inode_number)
+{
+    if (fs == NULL ||
+        fs->device == NULL)
+    {
+        return false;
+    }
+
+    ext2_superblock_t *superblock =
+        &fs->superblock;
+
+    if (inode_number == 0 ||
+        inode_number > superblock->inode_count)
+    {
+        return false;
+    }
+
+    uint32_t block_size =
+        1024u << superblock->log_block_size;
+
+    if (block_size == 0 ||
+        block_size > 4096)
+    {
+        return false;
+    }
+
+    if (superblock->inode_size <
+            sizeof(ext2_inode_t) ||
+        superblock->inode_size >
+            block_size)
+    {
+        return false;
+    }
+
+    uint32_t inode_index =
+        inode_number - 1u;
+
+    uint32_t group =
+        inode_index /
+        superblock->inodes_per_group;
+
+    uint32_t index_in_group =
+        inode_index %
+        superblock->inodes_per_group;
+
+    ext2_block_group_descriptor_t descriptor;
+
+    if (!ext2_read_group_descriptor(
+            fs->device,
+            superblock,
+            group,
+            &descriptor))
+    {
+        return false;
+    }
+
+    uint64_t byte_offset =
+        (uint64_t)index_in_group *
+        superblock->inode_size;
+
+    uint32_t block_number =
+        descriptor.inode_table +
+        (uint32_t)(byte_offset /
+                   block_size);
+
+    uint32_t offset_in_block =
+        (uint32_t)(byte_offset %
+                   block_size);
+
+    /*
+     * ext2 inode records should not straddle blocks for the
+     * layouts we support.
+     */
+    if ((uint64_t)offset_in_block +
+            superblock->inode_size >
+        block_size)
+    {
+        return false;
+    }
+
+    uint8_t block[4096];
+
+    if (!ext2_read_block(
+            fs->device,
+            block_size,
+            block_number,
+            block))
+    {
+        return false;
+    }
+
+    /*
+     * This inode may have been used before. Clear the entire
+     * on-disk inode record, not only our 128-byte ext2_inode_t.
+     */
+    memset(
+        block + offset_in_block,
+        0,
+        superblock->inode_size);
+
+    ext2_inode_t *inode =
+        (ext2_inode_t *)(block + offset_in_block);
+
+    /*
+     * Empty regular file.
+     *
+     * 0644 permissions:
+     * owner: read/write
+     * group: read
+     * other: read
+     *
+     * No directory entry exists during C1, so link_count stays
+     * zero. C2 will establish the directory link.
+     */
+    inode->mode =
+        EXT2_S_IFREG | 0644u;
+
+    inode->uid = 0;
+    inode->gid = 0;
+
+    inode->size_low = 0;
+    inode->size_high = 0;
+
+    inode->link_count = 0;
+    inode->sector_count = 0;
+
+    return ext2_write_block(
+        fs->device,
+        block_size,
+        block_number,
+        block);
+}
+
+bool ext2_allocate_inode(
+    ext2_fs_t *fs,
+    uint32_t *inode_number)
+{
+    if (fs == NULL ||
+        fs->device == NULL ||
+        inode_number == NULL)
+    {
+        return false;
+    }
+
+    ext2_superblock_t *superblock =
+        &fs->superblock;
+
+    if (superblock->inode_count == 0 ||
+        superblock->inodes_per_group == 0 ||
+        superblock->free_inode_count == 0)
+    {
+        return false;
+    }
+
+    uint32_t block_size =
+        1024u << superblock->log_block_size;
+
+    if (block_size == 0 ||
+        block_size > 4096)
+    {
+        return false;
+    }
+
+    /*
+     * Inode groups are determined from inode_count, not
+     * block_count.
+     */
+    uint32_t group_count =
+        (superblock->inode_count +
+         superblock->inodes_per_group -
+         1u) /
+        superblock->inodes_per_group;
+
+    uint8_t bitmap[4096];
+
+    for (uint32_t group = 0;
+         group < group_count;
+         group++)
+    {
+        ext2_block_group_descriptor_t descriptor;
+
+        if (!ext2_read_group_descriptor(
+                fs->device,
+                superblock,
+                group,
+                &descriptor))
+        {
+            return false;
+        }
+
+        if (descriptor.free_inodes_count == 0)
+            continue;
+
+        if (!ext2_read_block(
+                fs->device,
+                block_size,
+                descriptor.inode_bitmap,
+                bitmap))
+        {
+            return false;
+        }
+
+        uint32_t first_inode_index =
+            group *
+            superblock->inodes_per_group;
+
+        uint32_t inodes_in_group =
+            superblock->inodes_per_group;
+
+        if (first_inode_index +
+                inodes_in_group >
+            superblock->inode_count)
+        {
+            inodes_in_group =
+                superblock->inode_count -
+                first_inode_index;
+        }
+
+        for (uint32_t bit = 0;
+             bit < inodes_in_group;
+             bit++)
+        {
+            uint32_t candidate =
+                first_inode_index +
+                bit +
+                1u;
+
+            /*
+             * Never hand out reserved inodes.
+             *
+             * Revision-0 filesystems do not have a meaningful
+             * first_non_reserved_inode field; inode 11 is the
+             * traditional first normal inode.
+             */
+            uint32_t first_usable_inode =
+                superblock->revision_level == 0
+                    ? 11u
+                    : superblock->first_non_reserved_inode;
+
+            if (candidate <
+                first_usable_inode)
+            {
+                continue;
+            }
+
+            uint32_t byte_index =
+                bit / 8u;
+
+            uint8_t bit_mask =
+                (uint8_t)(1u << (bit % 8u));
+
+            if ((bitmap[byte_index] &
+                 bit_mask) != 0)
+            {
+                continue;
+            }
+
+            /*
+             * Initialize the inode itself before publishing its
+             * allocation through the bitmap.
+             */
+            if (!ext2_initialize_new_inode(
+                    fs,
+                    candidate))
+            {
+                return false;
+            }
+
+            bitmap[byte_index] |=
+                bit_mask;
+
+            if (!ext2_write_block(
+                    fs->device,
+                    block_size,
+                    descriptor.inode_bitmap,
+                    bitmap))
+            {
+                return false;
+            }
+
+            descriptor.free_inodes_count--;
+
+            if (!ext2_write_group_descriptor(
+                    fs->device,
+                    superblock,
+                    group,
+                    &descriptor))
+            {
+                return false;
+            }
+
+            superblock->free_inode_count--;
+
+            if (!ext2_write_superblock(
+                    fs->device,
+                    superblock))
+            {
+                return false;
+            }
+
+            *inode_number =
+                candidate;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool ext2_list_directory(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *directory)
 {
     if (device == NULL || superblock == NULL || directory == NULL)
         return false;
@@ -1595,10 +1910,10 @@ static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **res
 }
 
 static int ext2_vnode_read(
-    vnode_t *node, 
-    size_t offset, 
-    void *buffer, 
-    size_t size, 
+    vnode_t *node,
+    size_t offset,
+    void *buffer,
+    size_t size,
     size_t *bytes_read)
 {
     if (node == NULL || buffer == NULL || bytes_read == NULL)
@@ -1684,8 +1999,7 @@ static int ext2_vnode_write(
         offset + size;
 
     uint32_t block_size =
-        1024u <<
-        fs->superblock.log_block_size;
+        1024u << fs->superblock.log_block_size;
 
     if (block_size == 0 ||
         block_size > 4096)
@@ -1790,14 +2104,12 @@ static int ext2_vnode_write(
             offset + total;
 
         uint32_t logical_block =
-            (uint32_t)(
-                file_offset /
-                block_size);
+            (uint32_t)(file_offset /
+                       block_size);
 
         uint32_t offset_in_block =
-            (uint32_t)(
-                file_offset %
-                block_size);
+            (uint32_t)(file_offset %
+                       block_size);
 
         size_t remaining =
             size - total;

@@ -147,6 +147,10 @@ bool ext2_read_inode(
     uint32_t inode_number, 
     ext2_inode_t *inode);
 
+bool ext2_allocate_inode(
+    ext2_fs_t *fs,
+    uint32_t *inode_number);
+
 bool ext2_list_directory(
     block_device_t *device, 
     const ext2_superblock_t *superblock, 

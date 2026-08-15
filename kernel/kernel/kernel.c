@@ -339,225 +339,160 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	{
-		uint32_t block_size =
-			1024u << ext2_fs.superblock.log_block_size;
+	    {
+        uint32_t free_before =
+            ext2_fs.superblock.free_inode_count;
 
-		uint32_t entries_per_block =
-			block_size /
-			sizeof(uint32_t);
+        uint32_t new_inode_number = 0;
 
-		/*
-		 * End two data blocks inside the double-indirect region.
-		 *
-		 * Layout:
-		 *
-		 * 12 direct blocks
-		 * N single-indirect blocks
-		 * then double-indirect blocks
-		 */
-		size_t target_size =
-			((size_t)12u +
-			 entries_per_block +
-			 2u) *
-				block_size +
-			123u;
+        if (!ext2_allocate_inode(
+                &ext2_fs,
+                &new_inode_number))
+        {
+            printf(
+                "EXT2-C1: inode allocation FAILED\n");
 
-		file_t *file = NULL;
+            halt_forever();
+        }
 
-		if (vfs_open(
-				"/grow.txt",
-				VFS_OPEN_WRITE,
-				&file) != 0)
-		{
-			printf(
-				"EXT2-W5: failed opening /grow.txt\n");
+        printf(
+            "EXT2-C1: allocated inode %u\n",
+            (unsigned)new_inode_number);
 
-			halt_forever();
-		}
+        if (new_inode_number == 0)
+        {
+            printf(
+                "EXT2-C1: invalid inode number FAILED\n");
 
-		size_t old_size =
-			file->vnode->size;
+            halt_forever();
+        }
 
-		if (old_size >= target_size)
-		{
-			printf(
-				"EXT2-W5: /grow.txt already beyond test target\n");
+        if (ext2_fs.superblock.free_inode_count !=
+            free_before - 1u)
+        {
+            printf(
+                "EXT2-C1: superblock free inode count FAILED\n");
 
-			vfs_close(file);
-			halt_forever();
-		}
+            halt_forever();
+        }
 
-		size_t test_size =
-			target_size -
-			old_size;
+        ext2_inode_t inode;
 
-		uint8_t *test_data =
-			kmalloc(test_size);
+        memset(
+            &inode,
+            0,
+            sizeof(inode));
 
-		uint8_t *verify =
-			kmalloc(test_size);
+        if (!ext2_read_inode(
+                ext2_fs.device,
+                &ext2_fs.superblock,
+                new_inode_number,
+                &inode))
+        {
+            printf(
+                "EXT2-C1: inode reread FAILED\n");
 
-		if (test_data == NULL ||
-			verify == NULL)
-		{
-			printf(
-				"EXT2-W5: buffer allocation failed\n");
+            halt_forever();
+        }
 
-			vfs_close(file);
-			halt_forever();
-		}
+        if ((inode.mode & EXT2_S_IFMT) !=
+            EXT2_S_IFREG)
+        {
+            printf(
+                "EXT2-C1: inode type FAILED\n");
 
-		for (size_t i = 0;
-			 i < test_size;
-			 i++)
-		{
-			test_data[i] =
-				(uint8_t)((i * 47u) ^
-						  (i >> 3) ^
-						  0x6Du);
-		}
+            halt_forever();
+        }
 
-		file->offset =
-			old_size;
+        if (inode.size_low != 0 ||
+            inode.size_high != 0 ||
+            inode.sector_count != 0)
+        {
+            printf(
+                "EXT2-C1: inode initialization FAILED\n");
 
-		size_t written = 0;
+            halt_forever();
+        }
 
-		uint64_t write_start_ms =
-			timer_uptime_ms();
+        /*
+         * Verify the bitmap and group-descriptor accounting
+         * independently from ext2_allocate_inode().
+         */
+        uint32_t inode_index =
+            new_inode_number - 1u;
 
-		int write_result =
-			vfs_write(
-				file,
-				test_data,
-				test_size,
-				&written);
+        uint32_t group =
+            inode_index /
+            ext2_fs.superblock.inodes_per_group;
 
-		uint64_t write_end_ms =
-			timer_uptime_ms();
+        uint32_t bit =
+            inode_index %
+            ext2_fs.superblock.inodes_per_group;
 
-		uint64_t write_elapsed_ms =
-			write_end_ms -
-			write_start_ms;
+        ext2_block_group_descriptor_t descriptor;
 
-		if (write_result != 0 ||
-			written != test_size)
-		{
-			printf(
-				"EXT2-W5: indirect growth write FAILED\n");
+        if (!ext2_read_group_descriptor(
+                ext2_fs.device,
+                &ext2_fs.superblock,
+                group,
+                &descriptor))
+        {
+            printf(
+                "EXT2-C1: descriptor reread FAILED\n");
 
-			vfs_close(file);
-			halt_forever();
-		}
+            halt_forever();
+        }
 
-		size_t new_size =
-			file->vnode->size;
+        uint32_t block_size =
+            1024u <<
+            ext2_fs.superblock.log_block_size;
 
-		vfs_close(file);
+        uint8_t bitmap[4096];
 
-		if (new_size != target_size)
-		{
-			printf(
-				"EXT2-W5: size update FAILED\n");
+        uint32_t sectors_per_block =
+            block_size /
+            ext2_fs.device->sector_size;
 
-			halt_forever();
-		}
+        if (block_read(
+                ext2_fs.device,
+                (uint64_t)descriptor.inode_bitmap *
+                    sectors_per_block,
+                sectors_per_block,
+                bitmap) != 0)
+        {
+            printf(
+                "EXT2-C1: inode bitmap reread FAILED\n");
 
-		/*
-		 * Reopen to force inode information to be loaded
-		 * from the filesystem again.
-		 */
-		file = NULL;
+            halt_forever();
+        }
 
-		if (vfs_open(
-				"/grow.txt",
-				VFS_OPEN_READ,
-				&file) != 0)
-		{
-			printf(
-				"EXT2-W5: reopen failed\n");
+        uint8_t mask =
+            (uint8_t)
+                (1u << (bit % 8u));
 
-			halt_forever();
-		}
+        if ((bitmap[bit / 8u] &
+             mask) == 0)
+        {
+            printf(
+                "EXT2-C1: inode bitmap bit FAILED\n");
 
-		file->offset =
-			old_size;
+            halt_forever();
+        }
 
-		size_t total_read =
-			0;
+        printf(
+            "EXT2-C1: inode bitmap PASSED\n");
 
-		while (total_read <
-			   test_size)
-		{
-			size_t chunk_read =
-				0;
+        printf(
+            "EXT2-C1: regular inode initialization PASSED\n");
 
-			size_t remaining =
-				test_size -
-				total_read;
+        printf(
+            "EXT2-C1: free inodes %u -> %u\n",
+            (unsigned)free_before,
+            (unsigned)ext2_fs.superblock.free_inode_count);
 
-			if (vfs_read(
-					file,
-					verify +
-						total_read,
-					remaining,
-					&chunk_read) != 0)
-			{
-				printf(
-					"EXT2-W5: verification read FAILED\n");
-
-				vfs_close(file);
-				halt_forever();
-			}
-
-			if (chunk_read == 0)
-			{
-				printf(
-					"EXT2-W5: unexpected EOF\n");
-
-				vfs_close(file);
-				halt_forever();
-			}
-
-			total_read +=
-				chunk_read;
-		}
-
-		vfs_close(file);
-
-		if (memcmp(
-				test_data,
-				verify,
-				test_size) != 0)
-		{
-			printf(
-				"EXT2-W5: data verification FAILED\n");
-
-			halt_forever();
-		}
-
-		printf(
-			"EXT2-W5: single indirect PASSED\n");
-
-		printf(
-			"EXT2-W5: double indirect PASSED\n");
-
-		printf(
-			"EXT2-W5: size %u -> %u\n",
-			(unsigned)old_size,
-			(unsigned)new_size);
-
-		printf(
-			"EXT2-W5: bytes written = %u\n",
-			(unsigned)written);
-
-		printf(
-			"EXT2-W5: write time = %u ms\n",
-			(unsigned)write_elapsed_ms);
-
-		kfree(verify);
-		kfree(test_data);
-	}
+        printf(
+            "EXT2-C1: PASSED\n");
+    }
 
 	yield_forever();
 }
