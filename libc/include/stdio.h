@@ -16,6 +16,10 @@
 #define SEEK_CUR   			1
 #define SEEK_END   			2
 
+#define _IOFBF				0
+#define _IOLBF				1
+#define _IONBF				2
+
 #define BUFSIZ	   			1024
 
 #define _IO_BUFFER_OWNED 	(1U << 4)
@@ -30,6 +34,7 @@ typedef struct FILE {
 	unsigned char *write_buffer;
 	size_t write_buffer_size;
 	size_t write_buffer_used;
+	int buffering_mode;
 } FILE;
 
 #ifdef __cplusplus
@@ -68,6 +73,12 @@ size_t fwrite(
 	size_t size,
 	size_t nmemb,
 	FILE *stream);
+
+int setvbuf(
+    FILE *stream,
+    char *buffer,
+    int mode,
+    size_t size);
 
 int feof(FILE *stream);
 int ferror(FILE *stream);

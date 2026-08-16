@@ -21,6 +21,26 @@ int fputc(int ic, FILE *stream)
 
     c = (unsigned char)ic;
 
+    /*
+     * Any stream configured with an output buffer goes through
+     * fwrite(), including stdout/stderr if setvbuf() changes them.
+     */
+    if (stream->write_buffer != NULL &&
+        stream->write_buffer_size != 0)
+    {
+        if (fwrite(
+                &c,
+                1,
+                1,
+                stream) != 1)
+        {
+            stream->flags |= _IO_ERROR;
+            return EOF;
+        }
+
+        return (int)c;
+    }
+
 #if defined(__is_libk)
 
     /*

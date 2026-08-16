@@ -3,6 +3,7 @@
 
 #if defined(__is_libk)
 #include <kernel/fd.h>
+#include <kernel/tty.h>
 #endif
 
 int fflush(FILE *stream)
@@ -10,11 +11,10 @@ int fflush(FILE *stream)
     if (stream == NULL)
     {
         /*
-         * We don't yet maintain a global registry of all open FILE
-         * objects, so there is nothing useful to enumerate here.
+         * Still no global FILE registry.
          *
-         * stdout/stderr are unbuffered and regular file streams must
-         * currently be flushed individually.
+         * We will make fflush(NULL) enumerate all open output
+         * streams in a later phase.
          */
         return 0;
     }
@@ -30,50 +30,59 @@ int fflush(FILE *stream)
 
 #if defined(__is_libk)
 
-    if (stream->fd < KERNEL_FD_FIRST)
+    /*
+     * Buffered stdout/stderr.
+     */
+    if (stream->fd == 1 ||
+        stream->fd == 2)
     {
-        /*
-         * Standard output streams are currently unbuffered, so this
-         * should never contain pending bytes.
-         */
-        stream->flags |= _IO_ERROR;
-        return EOF;
+        terminal_write(
+            (const char *)stream->write_buffer,
+            stream->write_buffer_used);
+
+        stream->write_buffer_used = 0;
+
+        return 0;
     }
 
-    size_t offset = 0;
-
-    while (offset <
-           stream->write_buffer_used)
+    /*
+     * VFS-backed regular file.
+     */
+    if (stream->fd >= KERNEL_FD_FIRST)
     {
-        size_t written = 0;
+        size_t offset = 0;
 
-        if (kernel_fd_write(
-                stream->fd,
-                stream->write_buffer + offset,
-                stream->write_buffer_used - offset,
-                &written) != 0)
+        while (offset <
+               stream->write_buffer_used)
         {
-            stream->flags |= _IO_ERROR;
-            return EOF;
+            size_t written = 0;
+
+            if (kernel_fd_write(
+                    stream->fd,
+                    stream->write_buffer + offset,
+                    stream->write_buffer_used - offset,
+                    &written) != 0)
+            {
+                stream->flags |= _IO_ERROR;
+                return EOF;
+            }
+
+            if (written == 0)
+            {
+                stream->flags |= _IO_ERROR;
+                return EOF;
+            }
+
+            offset += written;
         }
 
-        if (written == 0)
-        {
-            stream->flags |= _IO_ERROR;
-            return EOF;
-        }
+        stream->write_buffer_used = 0;
 
-        offset += written;
+        return 0;
     }
 
-    stream->write_buffer_used = 0;
-
-    return 0;
-
-#else
+#endif
 
     stream->flags |= _IO_ERROR;
     return EOF;
-
-#endif
 }

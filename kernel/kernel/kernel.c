@@ -319,140 +319,253 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	{
 		printf(
-			"\n=== stdio output buffering test ===\n");
+			"\n=== setvbuf test ===\n");
 
+		/*
+		 * ==========================================================
+		 * Full buffering with caller-owned buffer
+		 * ==========================================================
+		 */
 		FILE *file =
 			fopen(
-				"/stdio-buffer.txt",
-				"w+");
+				"/setvbuf-full.txt",
+				"w");
+
+		static char full_buffer[16];
 
 		printf(
-			"open=%d\n",
+			"full open=%d\n",
 			file != NULL);
 
 		if (file != NULL)
 		{
-			size_t written =
-				fwrite(
-					"BUFFER",
-					1,
-					6,
-					file);
+			int result =
+				setvbuf(
+					file,
+					full_buffer,
+					_IOFBF,
+					sizeof(full_buffer));
 
 			printf(
-				"write=%u pos=%ld error=%d\n",
-				(unsigned)written,
-				ftell(file),
-				ferror(file));
+				"full setvbuf=%d\n",
+				result);
 
-			/*
-			 * A second descriptor should still see the underlying file
-			 * as empty before fflush().
-			 */
+			fwrite(
+				"FULL",
+				1,
+				4,
+				file);
+
 			FILE *reader =
 				fopen(
-					"/stdio-buffer.txt",
+					"/setvbuf-full.txt",
 					"r");
 
 			if (reader != NULL)
 			{
-				char buffer[8] = {0};
+				char data[8] = {0};
 
 				size_t read =
 					fread(
-						buffer,
+						data,
 						1,
-						6,
+						4,
 						reader);
 
 				printf(
-					"before flush read=%u eof=%d\n",
-					(unsigned)read,
-					feof(reader));
+					"full before flush=%u\n",
+					(unsigned)read);
 
 				fclose(reader);
 			}
 
-			printf(
-				"flush=%d pos=%ld error=%d\n",
-				fflush(file),
-				ftell(file),
-				ferror(file));
+			fflush(file);
 
-			FILE *reader2 =
+			reader =
 				fopen(
-					"/stdio-buffer.txt",
+					"/setvbuf-full.txt",
 					"r");
 
-			if (reader2 != NULL)
+			if (reader != NULL)
 			{
-				char buffer[8] = {0};
+				char data[8] = {0};
 
 				size_t read =
 					fread(
-						buffer,
+						data,
 						1,
-						6,
-						reader2);
+						4,
+						reader);
 
 				printf(
-					"after flush read=%u data=%s\n",
+					"full after flush=%u data=%s\n",
 					(unsigned)read,
-					buffer);
+					data);
 
-				fclose(reader2);
+				fclose(reader);
 			}
-
-			/*
-			 * fseek must flush pending output before moving.
-			 */
-			fwrite(
-				"XY",
-				1,
-				2,
-				file);
-
-			printf(
-				"pending pos=%ld\n",
-				ftell(file));
-
-			int seek_result =
-				fseek(
-					file,
-					0,
-					SEEK_SET);
-
-			printf(
-				"seek=%d pos=%ld\n",
-				seek_result,
-				ftell(file));
 
 			fclose(file);
 		}
 
 		/*
-		 * Verify the two pending bytes survived the fseek flush.
+		 * ==========================================================
+		 * Unbuffered
+		 * ==========================================================
 		 */
 		file =
 			fopen(
-				"/stdio-buffer.txt",
+				"/setvbuf-none.txt",
+				"w");
+
+		if (file != NULL)
+		{
+			int result =
+				setvbuf(
+					file,
+					NULL,
+					_IONBF,
+					0);
+
+			printf(
+				"none setvbuf=%d\n",
+				result);
+
+			fwrite(
+				"NOW",
+				1,
+				3,
+				file);
+
+			FILE *reader =
+				fopen(
+					"/setvbuf-none.txt",
+					"r");
+
+			if (reader != NULL)
+			{
+				char data[4] = {0};
+
+				size_t read =
+					fread(
+						data,
+						1,
+						3,
+						reader);
+
+				printf(
+					"none immediate=%u data=%s\n",
+					(unsigned)read,
+					data);
+
+				fclose(reader);
+			}
+
+			fclose(file);
+		}
+
+		/*
+		 * ==========================================================
+		 * Line buffering
+		 * ==========================================================
+		 */
+		file =
+			fopen(
+				"/setvbuf-line.txt",
+				"w");
+
+		if (file != NULL)
+		{
+			int result =
+				setvbuf(
+					file,
+					NULL,
+					_IOLBF,
+					16);
+
+			printf(
+				"line setvbuf=%d\n",
+				result);
+
+			fwrite(
+				"LINE",
+				1,
+				4,
+				file);
+
+			FILE *reader =
+				fopen(
+					"/setvbuf-line.txt",
+					"r");
+
+			if (reader != NULL)
+			{
+				char data[8] = {0};
+
+				size_t read =
+					fread(
+						data,
+						1,
+						5,
+						reader);
+
+				printf(
+					"line before newline=%u\n",
+					(unsigned)read);
+
+				fclose(reader);
+			}
+
+			fputc(
+				'\n',
+				file);
+
+			reader =
+				fopen(
+					"/setvbuf-line.txt",
+					"r");
+
+			if (reader != NULL)
+			{
+				char data[8] = {0};
+
+				size_t read =
+					fread(
+						data,
+						1,
+						5,
+						reader);
+
+				printf(
+					"line after newline=%u first=%c last=%u\n",
+					(unsigned)read,
+					data[0],
+					(unsigned char)data[4]);
+
+				fclose(reader);
+			}
+
+			fclose(file);
+		}
+
+		/*
+		 * Read-only streams are deliberately unsupported in this
+		 * output-buffering phase.
+		 */
+		file =
+			fopen(
+				"/setvbuf-full.txt",
 				"r");
 
 		if (file != NULL)
 		{
-			char buffer[9] = {0};
-
-			size_t read =
-				fread(
-					buffer,
-					1,
-					8,
-					file);
-
 			printf(
-				"final read=%u data=%s\n",
-				(unsigned)read,
-				buffer);
+				"read-only setvbuf=%d\n",
+				setvbuf(
+					file,
+					NULL,
+					_IOFBF,
+					16));
 
 			fclose(file);
 		}

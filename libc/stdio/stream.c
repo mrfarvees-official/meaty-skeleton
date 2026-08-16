@@ -8,6 +8,7 @@ static FILE __stdin = {
 	.write_buffer = NULL,
 	.write_buffer_size = 0,
 	.write_buffer_used = 0,
+	.buffering_mode = _IONBF,
 };
 
 static FILE __stdout = {
@@ -18,6 +19,7 @@ static FILE __stdout = {
 	.write_buffer = NULL,
 	.write_buffer_size = 0,
 	.write_buffer_used = 0,
+	.buffering_mode = _IONBF,
 };
 
 static FILE __stderr = {
@@ -28,6 +30,7 @@ static FILE __stderr = {
 	.write_buffer = NULL,
 	.write_buffer_size = 0,
 	.write_buffer_used = 0,
+	.buffering_mode = _IONBF,
 };
 
 FILE *stdin  = &__stdin;

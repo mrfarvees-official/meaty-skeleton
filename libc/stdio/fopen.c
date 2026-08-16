@@ -223,26 +223,20 @@ FILE *fopen(
     stream->write_buffer = NULL;
     stream->write_buffer_size = 0;
     stream->write_buffer_used = 0;
+    stream->buffering_mode = _IONBF;
 
     if (stdio_flags & _IO_WRITE)
     {
-        stream->write_buffer =
-            kmalloc(BUFSIZ);
-
-        if (stream->write_buffer == NULL)
+        if (setvbuf(
+                stream,
+                NULL,
+                _IOFBF,
+                BUFSIZ) != 0)
         {
             kernel_fd_close(fd);
             kfree(stream);
             return NULL;
         }
-
-        stream->write_buffer_size =
-            BUFSIZ;
-
-        stream->write_buffer_used = 0;
-
-        stream->flags |=
-            _IO_BUFFER_OWNED;
     }
 
     return stream;

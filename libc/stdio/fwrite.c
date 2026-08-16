@@ -43,21 +43,21 @@ size_t fwrite(
     size_t total_bytes =
         size * nmemb;
 
-#if defined(__is_libk)
+    const unsigned char *data =
+        (const unsigned char *)ptr;
 
     /*
-     * Buffered regular-file path.
+     * ==========================================================
+     * Buffered output
+     * ==========================================================
      */
-    if (stream->fd >= KERNEL_FD_FIRST &&
-        stream->write_buffer != NULL &&
+    if (stream->write_buffer != NULL &&
         stream->write_buffer_size != 0)
     {
-        const unsigned char *data =
-            (const unsigned char *)ptr;
-
         size_t consumed = 0;
 
-        while (consumed < total_bytes)
+        while (consumed <
+               total_bytes)
         {
             size_t available =
                 stream->write_buffer_size -
@@ -72,8 +72,39 @@ size_t fwrite(
                     stream->write_buffer_size;
             }
 
+            /*
+             * Line buffering is easiest and clearest if we append
+             * one byte at a time and flush immediately after '\n'.
+             */
+            if (stream->buffering_mode ==
+                _IOLBF)
+            {
+                unsigned char c =
+                    data[consumed];
+
+                stream->write_buffer[
+                    stream->write_buffer_used++] =
+                        c;
+
+                consumed++;
+
+                if (c == '\n' ||
+                    stream->write_buffer_used ==
+                        stream->write_buffer_size)
+                {
+                    if (fflush(stream) == EOF)
+                        return consumed / size;
+                }
+
+                continue;
+            }
+
+            /*
+             * Fully-buffered mode can copy larger chunks.
+             */
             size_t remaining =
-                total_bytes - consumed;
+                total_bytes -
+                consumed;
 
             size_t chunk =
                 remaining < available
@@ -96,47 +127,54 @@ size_t fwrite(
         return nmemb;
     }
 
+#if defined(__is_libk)
+
     /*
-     * Fallback direct file write.
+     * ==========================================================
+     * Unbuffered regular file
+     * ==========================================================
      */
     if (stream->fd >= KERNEL_FD_FIRST)
     {
-        size_t bytes_written = 0;
+        size_t consumed = 0;
 
-        if (kernel_fd_write(
-                stream->fd,
-                ptr,
-                total_bytes,
-                &bytes_written) != 0)
+        while (consumed <
+               total_bytes)
         {
-            stream->flags |= _IO_ERROR;
-            return 0;
+            size_t written = 0;
+
+            if (kernel_fd_write(
+                    stream->fd,
+                    data + consumed,
+                    total_bytes - consumed,
+                    &written) != 0)
+            {
+                stream->flags |= _IO_ERROR;
+
+                return consumed / size;
+            }
+
+            if (written == 0)
+            {
+                stream->flags |= _IO_ERROR;
+
+                return consumed / size;
+            }
+
+            consumed +=
+                written;
         }
 
-        if (bytes_written >
-            total_bytes)
-        {
-            stream->flags |= _IO_ERROR;
-            return 0;
-        }
-
-        if (bytes_written <
-            total_bytes)
-        {
-            stream->flags |= _IO_ERROR;
-        }
-
-        return bytes_written / size;
+        return nmemb;
     }
 
 #endif
 
     /*
-     * stdout/stderr fallback.
+     * ==========================================================
+     * Unbuffered stdout/stderr
+     * ==========================================================
      */
-    const unsigned char *data =
-        (const unsigned char *)ptr;
-
     size_t completed = 0;
 
     for (size_t element = 0;
