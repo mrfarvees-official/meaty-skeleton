@@ -26,6 +26,17 @@
 #define RECURSIVE_DIRECTORY_BASE 0xFFFFF000u
 
 /*
+ * Temporary kernel-only mapping used to initialize page-directory
+ * frames that are not otherwise virtually mapped.
+ *
+ * Keep this outside the kernel heap and below the recursive region.
+ */
+#define PAGE_DIRECTORY_SCRATCH_ADDRESS 0xE0000000u
+
+#define PAGE_DIRECTORY_SCRATCH_INDEX \
+    ((size_t)(PAGE_DIRECTORY_SCRATCH_ADDRESS >> 22))
+
+/*
  * Bootstrap paging structures.
  *
  * These must be located in the identity-mapped portion of memory before
@@ -65,13 +76,43 @@ static uint32_t *recursive_page_table(size_t directory_index)
                         directory_index * PAGE_SIZE);
 }
 
-static void load_page_directory(uintptr_t physical_address)
+static void load_page_directory(
+    uintptr_t physical_address)
 {
     __asm__ volatile(
         "movl %0, %%cr3"
         :
         : "r"((uint32_t)physical_address)
         : "memory");
+}
+
+uintptr_t paging_current_directory(void)
+{
+    uint32_t cr3;
+
+    __asm__ volatile(
+        "movl %%cr3, %0"
+        : "=r"(cr3));
+
+    return (uintptr_t)(cr3 & PAGE_FRAME);
+}
+
+bool paging_switch_directory(
+    uintptr_t directory_physical)
+{
+    if (!is_page_aligned(
+            directory_physical))
+    {
+        return false;
+    }
+
+    if (directory_physical == 0)
+        return false;
+
+    load_page_directory(
+        directory_physical);
+
+    return true;
 }
 
 static void reload_page_directory(void)
@@ -178,6 +219,131 @@ void paging_initialize(void)
      * Ensure the processor uses the completed paging structures.
      */
     reload_page_directory();
+}
+
+bool paging_create_user_directory(
+    uintptr_t *directory_physical)
+{
+    if (directory_physical == NULL)
+        return false;
+
+    uintptr_t frame =
+        pmm_allocate_frame();
+
+    if (frame == 0)
+        return false;
+
+    /*
+     * Temporarily map the physical directory frame into the current
+     * address space so it can be initialized.
+     */
+    if (!paging_map_page(
+            PAGE_DIRECTORY_SCRATCH_ADDRESS,
+            frame,
+            PAGE_WRITABLE))
+    {
+        pmm_free_frame(frame);
+        return false;
+    }
+
+    uint32_t *new_directory =
+        (uint32_t *)
+            PAGE_DIRECTORY_SCRATCH_ADDRESS;
+
+    memset(
+        new_directory,
+        0,
+        PAGE_SIZE);
+
+    uint32_t *current_directory =
+        recursive_page_directory();
+
+    /*
+     * Share all existing supervisor mappings.
+     *
+     * PAGE_USER PDEs represent user-visible regions and are
+     * intentionally omitted, giving the new address space an empty
+     * userspace namespace.
+     *
+     * Also omit the temporary scratch PDE itself.
+     */
+    for (size_t i = 0;
+         i < PAGE_DIRECTORY_ENTRIES;
+         ++i)
+    {
+        if (i ==
+            RECURSIVE_DIRECTORY_INDEX)
+        {
+            continue;
+        }
+
+        if (i ==
+            PAGE_DIRECTORY_SCRATCH_INDEX)
+        {
+            continue;
+        }
+
+        uint32_t entry =
+            current_directory[i];
+
+        if ((entry & PAGE_PRESENT) == 0)
+            continue;
+
+        if ((entry & PAGE_USER) != 0)
+            continue;
+
+        new_directory[i] =
+            entry;
+    }
+
+    /*
+     * Recursive mapping must point at this directory's own physical
+     * frame, not the current address space's directory.
+     */
+    new_directory[RECURSIVE_DIRECTORY_INDEX] =
+        (uint32_t)(frame & PAGE_FRAME) |
+        PAGE_PRESENT |
+        PAGE_WRITABLE;
+
+    /*
+     * Remove only the temporary virtual alias.
+     *
+     * Do not free the directory frame.
+     */
+    if (!paging_unmap_page(
+            PAGE_DIRECTORY_SCRATCH_ADDRESS,
+            false))
+    {
+        pmm_free_frame(frame);
+        return false;
+    }
+
+    *directory_physical =
+        frame;
+
+    return true;
+}
+
+void paging_destroy_user_directory(
+    uintptr_t directory_physical)
+{
+    if (directory_physical == 0)
+        return;
+
+    if (!is_page_aligned(
+            directory_physical))
+    {
+        return;
+    }
+
+    /*
+     * U3a creates no private page tables in these directories yet.
+     *
+     * Shared supervisor page tables belong to the kernel address
+     * space and must not be freed here.
+     */
+    pmm_free_frame(
+        directory_physical);
 }
 
 bool paging_map_page(

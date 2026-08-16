@@ -39,6 +39,7 @@
 #include "../arch/i386/pit.h"
 
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002u
+#define U3_TEST_USER_ADDRESS 0x00400000u
 
 static void halt_forever(void)
 {
@@ -230,6 +231,177 @@ static void u1_start_scheduler_owned_test(void)
 	halt_forever();
 }
 
+static void u3_address_space_test(void)
+{
+	printf(
+		"\n=== U3a ADDRESS-SPACE TEST ===\n");
+
+	/*
+	 * The existing U1/U2 userspace setup normally places a user page
+	 * at 0x00400000.
+	 *
+	 * Create one explicitly here so we have a mapping whose absence
+	 * can be tested in the new address space.
+	 */
+	uintptr_t test_physical = 0;
+
+	if (!paging_get_physical_address(
+			(uintptr_t)u1_user_test_entry,
+			&test_physical))
+	{
+		printf(
+			"U3a: cannot resolve test user code frame\n");
+
+		halt_forever();
+	}
+
+	test_physical &=
+		~(uintptr_t)(PAGE_SIZE - 1u);
+
+	if (!paging_is_mapped(
+			U3_TEST_USER_ADDRESS))
+	{
+		if (!paging_map_page(
+				U3_TEST_USER_ADDRESS,
+				test_physical,
+				PAGE_USER))
+		{
+			printf(
+				"U3a: failed creating original user mapping\n");
+
+			halt_forever();
+		}
+	}
+
+	printf(
+		"U3a: original user mapping present=%d\n",
+		paging_is_mapped(
+			U3_TEST_USER_ADDRESS));
+
+	uintptr_t original_directory =
+		paging_current_directory();
+
+	uintptr_t user_directory = 0;
+
+	if (!paging_create_user_directory(
+			&user_directory))
+	{
+		printf(
+			"U3a: failed creating user directory\n");
+
+		halt_forever();
+	}
+
+	printf(
+		"U3a: original CR3=0x%lx new CR3=0x%lx\n",
+		(unsigned long)original_directory,
+		(unsigned long)user_directory);
+
+	if (user_directory ==
+		original_directory)
+	{
+		printf(
+			"U3a: directory was not distinct\n");
+
+		halt_forever();
+	}
+
+	if (!paging_switch_directory(
+			user_directory))
+	{
+		printf(
+			"U3a: failed switching to new directory\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * If this print works, the kernel's code/data/stack/terminal
+	 * mappings survived the CR3 switch.
+	 */
+	printf(
+		"U3a: running under new address space\n");
+
+	if (paging_current_directory() !=
+		user_directory)
+	{
+		printf(
+			"U3a: CR3 verification FAILED\n");
+
+		halt_forever();
+	}
+
+	bool mapped_in_new =
+		paging_is_mapped(
+			U3_TEST_USER_ADDRESS);
+
+	printf(
+		"U3a: user mapping in new space=%d\n",
+		mapped_in_new);
+
+	if (mapped_in_new)
+	{
+		printf(
+			"U3a: user mapping leaked into new space\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * Exercise the shared kernel heap while the second CR3 is live.
+	 */
+	void *probe =
+		kmalloc(64u);
+
+	if (probe == NULL)
+	{
+		printf(
+			"U3a: kernel heap unavailable in new space\n");
+
+		halt_forever();
+	}
+
+	memset(
+		probe,
+		0xA5,
+		64u);
+
+	kfree(probe);
+
+	printf(
+		"U3a: kernel mappings survived CR3 switch\n");
+
+	if (!paging_switch_directory(
+			original_directory))
+	{
+		/*
+		 * Practically unreachable because a failed CR3 load would
+		 * already be catastrophic, but keep the invariant explicit.
+		 */
+		halt_forever();
+	}
+
+	printf(
+		"U3a: restored original address space\n");
+
+	if (!paging_is_mapped(
+			U3_TEST_USER_ADDRESS))
+	{
+		printf(
+			"U3a: original user mapping was lost\n");
+
+		halt_forever();
+	}
+
+	paging_destroy_user_directory(
+		user_directory);
+
+	printf(
+		"U3a: isolated address-space switch confirmed\n");
+
+	halt_forever();
+}
+
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
@@ -305,13 +477,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	/*
-	 * Final U1 proof:
-	 *
-	 * Run the CPL3 transition from a scheduler-owned task before AP
-	 * startup so task placement is deterministic.
-	 */
-	u1_start_scheduler_owned_test();
+	u3_address_space_test();
 
 	process_initialize();
 	printf("process system initialized\n");
