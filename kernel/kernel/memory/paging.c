@@ -452,6 +452,88 @@ bool paging_is_mapped(uintptr_t virtual_address)
     return mapped;
 }
 
+bool paging_get_effective_flags(
+    uintptr_t virtual_address,
+    uint32_t *flags)
+{
+    if (flags == NULL)
+        return false;
+
+    size_t directory_index =
+        page_directory_index(virtual_address);
+
+    if (directory_index ==
+        RECURSIVE_DIRECTORY_INDEX)
+    {
+        return false;
+    }
+
+    size_t table_index =
+        page_table_index(virtual_address);
+
+    uint32_t irq_flags =
+        spin_lock_irqsave(&paging_lock);
+
+    uint32_t *directory =
+        recursive_page_directory();
+
+    uint32_t directory_entry =
+        directory[directory_index];
+
+    if ((directory_entry & PAGE_PRESENT) == 0)
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
+
+        return false;
+    }
+
+    uint32_t *page_table =
+        recursive_page_table(directory_index);
+
+    uint32_t page_entry =
+        page_table[table_index];
+
+    if ((page_entry & PAGE_PRESENT) == 0)
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
+
+        return false;
+    }
+
+    uint32_t effective =
+        PAGE_PRESENT;
+
+    /*
+     * User access requires U/S permission at both paging levels.
+     */
+    if ((directory_entry & PAGE_USER) != 0 &&
+        (page_entry & PAGE_USER) != 0)
+    {
+        effective |= PAGE_USER;
+    }
+
+    /*
+     * Write access similarly requires R/W at both levels.
+     */
+    if ((directory_entry & PAGE_WRITABLE) != 0 &&
+        (page_entry & PAGE_WRITABLE) != 0)
+    {
+        effective |= PAGE_WRITABLE;
+    }
+
+    *flags = effective;
+
+    spin_unlock_irqrestore(
+        &paging_lock,
+        irq_flags);
+
+    return true;
+}
+
 bool paging_identity_map_range(
     uintptr_t physical_address,
     size_t length,

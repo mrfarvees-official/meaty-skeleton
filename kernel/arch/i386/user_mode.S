@@ -72,57 +72,71 @@ arch_enter_user:
 
 u1_user_test_entry:
     /*
-     * ----------------------------------------------------------
-     * U2c test 1: unknown syscall error convention
-     * ----------------------------------------------------------
+     * Use two locations in the already-mapped writable user stack.
      */
-    movl $0xFFFF, %eax
-    int $0x80
+    movl $0x00401FE0, %edi
 
     /*
-     * Unknown syscalls must return -1.
+     * Write "MATE" at 0x401fe0.
      */
-    cmpl $-1, %eax
+    movb $'M', 0(%edi)
+    movb $'A', 1(%edi)
+    movb $'T', 2(%edi)
+    movb $'E', 3(%edi)
+
+    /*
+     * ----------------------------------------------------------
+     * U2d test 1:
+     * invalid user address must be rejected, not fault the kernel.
+     *
+     * EBX = invalid input
+     * ECX = valid output
+     * EDX = length
+     * ----------------------------------------------------------
+     */
+    movl $3,          %eax
+    movl $0xFFFFF000, %ebx
+    movl $0x00401FF0, %ecx
+    movl $4,          %edx
+    int $0x80
+
+    cmpl $-3, %eax
     jne 1f
 
     /*
      * ----------------------------------------------------------
-     * U2c test 2: first real kernel-facing syscall
+     * U2d test 2:
+     * valid copy from/to userspace.
      * ----------------------------------------------------------
-     *
-     * syscall 2 = gettid
      */
-    movl $2, %eax
+    movl $3,          %eax
+    movl $0x00401FE0, %ebx
+    movl $0x00401FF0, %ecx
+    movl $4,          %edx
     int $0x80
 
-    /*
-     * A task ID of zero belongs to the BSP bootstrap task.
-     * This probe runs in an allocated scheduler-owned task, so the
-     * returned ID must be positive.
-     */
-    testl %eax, %eax
-    jle 1f
-
-    /*
-     * Preserve the first result in EBX.
-     */
-    movl %eax, %ebx
-
-    /*
-     * Call GETTID again.  The identity must remain stable across
-     * syscall entry/return.
-     */
-    movl $2, %eax
-    int $0x80
-
-    cmpl %ebx, %eax
+    cmpl $4, %eax
     jne 1f
 
     /*
-     * Success trap.
-     *
-     * Leave the returned task ID in EAX so the kernel can compare
-     * it against task_current()->id.
+     * Verify the kernel copied "OKAY" back into our user page.
+     */
+    movl $0x00401FF0, %esi
+
+    cmpb $'O', 0(%esi)
+    jne 1f
+
+    cmpb $'K', 1(%esi)
+    jne 1f
+
+    cmpb $'A', 2(%esi)
+    jne 1f
+
+    cmpb $'Y', 3(%esi)
+    jne 1f
+
+    /*
+     * Leave EAX=4 for the success trap.
      */
     int3
 

@@ -183,7 +183,7 @@ static void breakpoint_handler(struct interrupt_frame *frame)
     if ((frame->cs & 3u) == 3u)
     {
         printf(
-            "=== U2c GETTID RETURN TRAP ===");
+            "\n=== U2d USERCOPY RETURN TRAP ===\n");
 
         printf(
             "Vector    : %lu\n",
@@ -228,17 +228,20 @@ static void breakpoint_handler(struct interrupt_frame *frame)
             "Current TID: %lu\n",
             (unsigned long)task->id);
 
-        if (frame->eax !=
-            (uint32_t)task->id)
+        printf(
+            "U2d: returned EAX=%ld\n",
+            (long)(int32_t)frame->eax);
+
+        if ((int32_t)frame->eax != 4)
         {
             printf(
-                "U2c: returned task ID FAILED\n");
+                "U2d: usercopy syscall result FAILED\n");
 
             interrupt_halt();
         }
 
         printf(
-            "U2c: GETTID returned real task identity to CPL3\n");
+            "U2d: user-memory copy returned to CPL3 successfully\n");
 
         interrupt_halt();
     }

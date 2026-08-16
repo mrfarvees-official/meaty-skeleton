@@ -62,6 +62,17 @@ bool paging_get_physical_address(
 
 bool paging_is_mapped(uintptr_t virtual_address);
 
+/*
+ * Return effective permissions for the mapping containing
+ * virtual_address.
+ *
+ * PAGE_PRESENT, PAGE_USER and PAGE_WRITABLE are reported only when
+ * both the PDE and PTE allow that access.
+ */
+bool paging_get_effective_flags(
+    uintptr_t virtual_address,
+    uint32_t *flags);
+
 bool paging_identity_map_range(
     uintptr_t physical_address,
     size_t length,

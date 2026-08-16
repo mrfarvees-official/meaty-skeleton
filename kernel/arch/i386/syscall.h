@@ -13,6 +13,10 @@
  * part of the active syscall ABI.
  */
 #define I386_SYSCALL_GETTID 2u
+/*
+ * Temporary U2d user-copy validation syscall.
+ */
+#define I386_SYSCALL_USERCOPY_TEST 3u
 
 /*
  * Syscall result convention:
@@ -24,6 +28,7 @@
  */
 #define I386_SYSCALL_ERROR_NO_SUCH_SYSCALL (-1)
 #define I386_SYSCALL_ERROR_INVALID_STATE   (-2)
+#define I386_SYSCALL_ERROR_BAD_ADDRESS     (-3)
 
 bool syscall_initialize(void);
 
