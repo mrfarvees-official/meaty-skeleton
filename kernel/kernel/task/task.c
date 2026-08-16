@@ -399,6 +399,31 @@ task_t *task_current(void)
     return cpu->current_task;
 }
 
+uintptr_t task_kernel_stack_top(
+    const task_t *task)
+{
+    if (task == NULL)
+        return 0;
+
+    if (task->stack_base == 0 ||
+        task->stack_size == 0)
+    {
+        return 0;
+    }
+
+    uintptr_t stack_top =
+        task->stack_base +
+        task->stack_size;
+
+    /*
+     * Match initialize_new_stack().
+     */
+    stack_top &=
+        ~(uintptr_t)0xFu;
+
+    return stack_top;
+}
+
 /*
  * --------------------------------------------------------------------------
  * INITIAL STACK

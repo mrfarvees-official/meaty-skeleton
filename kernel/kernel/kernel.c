@@ -434,6 +434,45 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	printf("SMP online CPUs: %u\n", (unsigned)smp_online_cpu_count());
 
 	/*
+	 * U1c diagnostic.
+	 *
+	 * By this point AP scheduling has run and managed kernel tasks have
+	 * been selected.  Print the TSS esp0 currently installed for every
+	 * online CPU.
+	 */
+	for (size_t i = 0;
+		 i < smp_cpu_count();
+		 ++i)
+	{
+		cpu_local_t *cpu =
+			cpu_get(i);
+
+		if (cpu == NULL ||
+			!cpu->online)
+		{
+			continue;
+		}
+
+		uintptr_t esp0 = 0;
+
+		if (!gdt_get_kernel_stack(
+				i,
+				&esp0))
+		{
+			printf(
+				"U1c: failed reading CPU %u esp0\n",
+				(unsigned)i);
+
+			halt_forever();
+		}
+
+		printf(
+			"U1c: CPU %u TSS esp0=0x%lx\n",
+			(unsigned)i,
+			(unsigned long)esp0);
+	}
+
+	/*
 	 * U1a ends inside the breakpoint handler after proving a CPL3
 	 * interrupt transition.
 	 *

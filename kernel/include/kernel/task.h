@@ -136,6 +136,15 @@ task_t *task_create_kernel_with_policy(
  */
 task_t *task_current(void);
 
+/*
+ * Return the top of this task's managed kernel stack.
+ *
+ * Returns 0 for bootstrap contexts because their stacks are not owned
+ * by the normal task allocator.
+ */
+uintptr_t task_kernel_stack_top(
+    const task_t *task);
+
 
 /*
  * Voluntarily yield the CPU.

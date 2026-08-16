@@ -8,6 +8,8 @@
 #include <kernel/smp.h>
 #include <kernel/spinlock.h>
 
+#include "../arch/i386/gdt.h"
+
 typedef struct
 {
     const scheduler_algorithm_t *algorithm;
@@ -309,6 +311,33 @@ static task_t *scheduler_pick_next(void)
     return scheduler_idle_task();
 }
 
+static void scheduler_update_kernel_entry_stack(
+    task_t *task)
+{
+    uintptr_t stack_top =
+        task_kernel_stack_top(task);
+
+    /*
+     * Bootstrap contexts do not own a normal allocated task stack.
+     *
+     * They execute only in CPL0 at this stage, so the TSS privilege
+     * transition stack is irrelevant while they are current.
+     */
+    if (stack_top == 0)
+        return;
+
+    if (!gdt_set_current_kernel_stack(
+            stack_top))
+    {
+        /*
+         * At this point CPU-local state must already exist.
+         * Failure means an architectural scheduler invariant broke.
+         */
+        for (;;)
+            __asm__ volatile("cli; hlt");
+    }
+}
+
 static void scheduler_notify_switch_in(task_t *task)
 {
     if (task == NULL)
@@ -411,6 +440,13 @@ void scheduler_schedule(void)
         scheduler_notify_switch_in(
             next);
 
+        /*
+         * Keep this CPU's TSS synchronized with the task the
+         * scheduler says is running.
+         */
+        scheduler_update_kernel_entry_stack(
+            next);
+
         cpu->reschedule_pending =
             false;
 
@@ -496,16 +532,18 @@ void scheduler_schedule(void)
     task_internal_set_current(
         next);
 
+    /*
+     * Install the incoming task's ring-0 stack before execution can
+     * continue as that task.
+     *
+     * This is intentionally done before changing ESP.
+     */
+    scheduler_update_kernel_entry_stack(
+        next);
+
     cpu->reschedule_pending =
         false;
 
-    /*
-     * DO NOT unlock scheduler_lock before this call.
-     *
-     * current may already be TASK_READY. Releasing the
-     * lock before leaving its stack would allow another
-     * CPU to run current simultaneously.
-     */
     arch_context_switch(
         &current->stack_pointer,
         next->stack_pointer);

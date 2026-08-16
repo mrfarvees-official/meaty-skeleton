@@ -52,6 +52,19 @@ bool gdt_set_kernel_stack(
     uintptr_t stack_pointer);
 
 /*
+ * Set esp0 for the CPU currently executing this code.
+ */
+bool gdt_set_current_kernel_stack(
+    uintptr_t stack_pointer);
+
+/*
+ * U1 diagnostic accessor.
+ */
+bool gdt_get_kernel_stack(
+    size_t cpu_index,
+    uintptr_t *stack_pointer);
+
+/*
  * Implemented in gdt_flush.S.
  *
  * Loads GDTR and reloads the 32-bit protected-mode segment registers.

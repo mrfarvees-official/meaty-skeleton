@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <kernel/cpu.h>
 #include <kernel/smp.h>
 
 #include "gdt.h"
@@ -267,6 +268,36 @@ bool gdt_set_kernel_stack(
 
     cpu_tss->esp0 =
         (uint32_t)stack_pointer;
+
+    return true;
+}
+
+bool gdt_set_current_kernel_stack(
+    uintptr_t stack_pointer)
+{
+    cpu_local_t *cpu =
+        cpu_current();
+
+    if (cpu == NULL)
+        return false;
+
+    return gdt_set_kernel_stack(
+        cpu->index,
+        stack_pointer);
+}
+
+bool gdt_get_kernel_stack(
+    size_t cpu_index,
+    uintptr_t *stack_pointer)
+{
+    if (stack_pointer == NULL)
+        return false;
+
+    if (cpu_index >= SMP_MAX_CPUS)
+        return false;
+
+    *stack_pointer =
+        (uintptr_t)tss_per_cpu[cpu_index].esp0;
 
     return true;
 }
