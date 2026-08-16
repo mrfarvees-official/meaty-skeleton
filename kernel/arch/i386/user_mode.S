@@ -72,32 +72,45 @@ arch_enter_user:
 
 u1_user_test_entry:
     /*
-     * Use two locations in the already-mapped writable user stack.
-     */
-    movl $0x00401FE0, %edi
-
-    /*
-     * Write "MATE" at 0x401fe0.
-     */
-    movb $'M', 0(%edi)
-    movb $'A', 1(%edi)
-    movb $'T', 2(%edi)
-    movb $'E', 3(%edi)
-
-    /*
-     * ----------------------------------------------------------
-     * U2d test 1:
-     * invalid user address must be rejected, not fault the kernel.
+     * Build "Hello from ring 3!\n" in the existing user stack page.
      *
-     * EBX = invalid input
-     * ECX = valid output
-     * EDX = length
-     * ----------------------------------------------------------
+     * Buffer address: 0x00401FC0
      */
-    movl $3,          %eax
+    movl $0x00401FC0, %edi
+
+    movb $'H',  0(%edi)
+    movb $'e',  1(%edi)
+    movb $'l',  2(%edi)
+    movb $'l',  3(%edi)
+    movb $'o',  4(%edi)
+    movb $' ',  5(%edi)
+    movb $'f',  6(%edi)
+    movb $'r',  7(%edi)
+    movb $'o',  8(%edi)
+    movb $'m',  9(%edi)
+    movb $' ', 10(%edi)
+    movb $'r', 11(%edi)
+    movb $'i', 12(%edi)
+    movb $'n', 13(%edi)
+    movb $'g', 14(%edi)
+    movb $' ', 15(%edi)
+    movb $'3', 16(%edi)
+    movb $'!', 17(%edi)
+    movb $'\n', 18(%edi)
+
+    /*
+     * ----------------------------------------------------------
+     * U2e test 1:
+     * invalid pointer must still be rejected.
+     * ----------------------------------------------------------
+     *
+     * syscall 4 = debug_write
+     * EBX = user buffer
+     * ECX = length
+     */
+    movl $4,          %eax
     movl $0xFFFFF000, %ebx
-    movl $0x00401FF0, %ecx
-    movl $4,          %edx
+    movl $4,          %ecx
     int $0x80
 
     cmpl $-3, %eax
@@ -105,38 +118,36 @@ u1_user_test_entry:
 
     /*
      * ----------------------------------------------------------
-     * U2d test 2:
-     * valid copy from/to userspace.
+     * U2e test 2:
+     * oversized write must be rejected.
      * ----------------------------------------------------------
      */
-    movl $3,          %eax
-    movl $0x00401FE0, %ebx
-    movl $0x00401FF0, %ecx
-    movl $4,          %edx
+    movl $4,          %eax
+    movl $0x00401FC0, %ebx
+    movl $129,        %ecx
     int $0x80
 
-    cmpl $4, %eax
+    cmpl $-4, %eax
     jne 1f
 
     /*
-     * Verify the kernel copied "OKAY" back into our user page.
+     * ----------------------------------------------------------
+     * U2e test 3:
+     * real userspace console output.
+     * ----------------------------------------------------------
      */
-    movl $0x00401FF0, %esi
+    movl $4,          %eax
+    movl $0x00401FC0, %ebx
+    movl $19,         %ecx
+    int $0x80
 
-    cmpb $'O', 0(%esi)
-    jne 1f
-
-    cmpb $'K', 1(%esi)
-    jne 1f
-
-    cmpb $'A', 2(%esi)
-    jne 1f
-
-    cmpb $'Y', 3(%esi)
+    cmpl $19, %eax
     jne 1f
 
     /*
-     * Leave EAX=4 for the success trap.
+     * Success trap.
+     *
+     * Preserve EAX=19 for kernel-side verification.
      */
     int3
 

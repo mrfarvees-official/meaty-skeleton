@@ -1,11 +1,14 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <kernel/tty.h>
 #include <kernel/task.h>
 #include <kernel/usercopy.h>
 
 #include "interrupts.h"
 #include "syscall.h"
+
+#define SYSCALL_DEBUG_WRITE_MAX 128u
 
 static int32_t syscall_dispatch(
     uint32_t number,
@@ -94,6 +97,51 @@ static int32_t syscall_dispatch(
             "U2d: copied 4 bytes from/to user memory\n");
 
         return 4;
+    }
+
+    case I386_SYSCALL_DEBUG_WRITE:
+    {
+        const void *user_buffer =
+            (const void *)(uintptr_t)arg0;
+
+        size_t length =
+            (size_t)arg1;
+
+        if (length == 0)
+            return 0;
+
+        if (length >
+            SYSCALL_DEBUG_WRITE_MAX)
+        {
+            return I386_SYSCALL_ERROR_INVALID_LENGTH;
+        }
+
+        char buffer[SYSCALL_DEBUG_WRITE_MAX];
+
+        if (!copy_from_user(
+                buffer,
+                user_buffer,
+                length))
+        {
+            printf(
+                "U2e: debug_write rejected user buffer 0x%lx\n",
+                (unsigned long)arg0);
+
+            return I386_SYSCALL_ERROR_BAD_ADDRESS;
+        }
+
+        /*
+         * Never pass the raw user pointer to terminal code.
+         */
+        terminal_write(
+            buffer,
+            length);
+
+        printf(
+            "\nU2e: debug_write accepted %lu bytes\n",
+            (unsigned long)length);
+
+        return (int32_t)length;
     }
 
     default:

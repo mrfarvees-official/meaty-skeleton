@@ -183,7 +183,7 @@ static void breakpoint_handler(struct interrupt_frame *frame)
     if ((frame->cs & 3u) == 3u)
     {
         printf(
-            "\n=== U2d USERCOPY RETURN TRAP ===\n");
+            "\n=== U2e DEBUG_WRITE RETURN TRAP ===\n");
 
         printf(
             "Vector    : %lu\n",
@@ -229,19 +229,19 @@ static void breakpoint_handler(struct interrupt_frame *frame)
             (unsigned long)task->id);
 
         printf(
-            "U2d: returned EAX=%ld\n",
+            "U2e: returned EAX=%ld\n",
             (long)(int32_t)frame->eax);
 
-        if ((int32_t)frame->eax != 4)
+        if ((int32_t)frame->eax != 19)
         {
             printf(
-                "U2d: usercopy syscall result FAILED\n");
+                "U2e: debug_write result FAILED\n");
 
             interrupt_halt();
         }
 
         printf(
-            "U2d: user-memory copy returned to CPL3 successfully\n");
+            "U2e: debug_write returned to CPL3 successfully\n");
 
         interrupt_halt();
     }

@@ -17,6 +17,13 @@
  * Temporary U2d user-copy validation syscall.
  */
 #define I386_SYSCALL_USERCOPY_TEST 3u
+/*
+ * Temporary direct debug-console output.
+ *
+ * This is deliberately not the future write(fd, buffer, length)
+ * interface.
+ */
+#define I386_SYSCALL_DEBUG_WRITE 4u
 
 /*
  * Syscall result convention:
@@ -29,6 +36,7 @@
 #define I386_SYSCALL_ERROR_NO_SUCH_SYSCALL (-1)
 #define I386_SYSCALL_ERROR_INVALID_STATE   (-2)
 #define I386_SYSCALL_ERROR_BAD_ADDRESS     (-3)
+#define I386_SYSCALL_ERROR_INVALID_LENGTH  (-4)
 
 bool syscall_initialize(void);
 
