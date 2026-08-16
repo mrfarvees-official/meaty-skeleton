@@ -42,6 +42,23 @@ void idt_initialize(void)
     }
 
     /*
+     * U1 ring-3 transition test.
+     *
+     * Vector 3 is deliberately callable from CPL3 so a tiny user-mode
+     * test can execute INT3 and prove that the interrupt frame records
+     * a ring-3 CS.
+     *
+     * 0xEE:
+     *     present
+     *     DPL = 3
+     *     32-bit interrupt gate
+     */
+    idt_set_gate(
+        3u,
+        (void (*)(void))isr_stub_table[3],
+        0xEEu);
+
+    /*
      * Legacy PIC hardware interrupts.
      *
      * IRQ0  -> 0x20
@@ -62,5 +79,5 @@ void idt_initialize(void)
 
 void idt_load(void)
 {
-    __asm__ volatile ("lidt %0" : : "m"(idtr));
+    __asm__ volatile("lidt %0" : : "m"(idtr));
 }

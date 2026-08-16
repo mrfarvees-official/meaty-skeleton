@@ -178,12 +178,51 @@ static __attribute__((noreturn)) void default_page_fault_handler(struct interrup
 
 static void breakpoint_handler(struct interrupt_frame *frame)
 {
+    if ((frame->cs & 3u) == 3u)
+    {
+        printf("\n=== U1 USER-MODE TRAP ===\n");
+
+        printf(
+            "Vector    : %lu\n",
+            (unsigned long)frame->vector);
+
+        printf(
+            "EIP       : 0x%lx\n",
+            (unsigned long)frame->eip);
+
+        printf(
+            "CS        : 0x%lx\n",
+            (unsigned long)frame->cs);
+
+        printf(
+            "CS RPL    : %lu\n",
+            (unsigned long)(frame->cs & 3u));
+
+        printf(
+            "User ESP  : 0x%lx\n",
+            (unsigned long)frame->user_esp);
+
+        printf(
+            "User SS   : 0x%lx\n",
+            (unsigned long)frame->user_ss);
+
+        printf("U1: CPL=3 trap confirmed\n");
+
+        /*
+         * This milestone intentionally stops here.
+         *
+         * We do not yet have a real user task lifecycle or syscall
+         * return path.
+         */
+        interrupt_halt();
+    }
+
     printf(
         "Breakpoint at EIP=0x%lx\n",
         (unsigned long)frame->eip);
 
     /*
-     * Returning resumes execution after the INT3 instruction.
+     * Kernel-mode INT3 remains recoverable as before.
      */
 }
 

@@ -61,6 +61,108 @@ void validate_multiboot_magic(uint32_t magic)
 	}
 }
 
+#define U1_USER_CODE_ADDRESS 0x00400000u
+#define U1_USER_STACK_ADDRESS 0x00401000u
+#define U1_USER_STACK_TOP 0x00402000u
+
+extern void arch_enter_user(
+	uintptr_t instruction_pointer,
+	uintptr_t stack_pointer)
+	__attribute__((noreturn));
+
+extern void u1_user_test_entry(void);
+
+/*
+ * One physical page that will be aliased into the user part of the
+ * current bootstrap address space.
+ */
+static uint8_t u1_user_stack[PAGE_SIZE]
+	__attribute__((aligned(PAGE_SIZE)));
+
+/*
+ * Temporary BSP-only privilege-transition stack.
+ *
+ * This is deliberately not pretending to be the final task kernel
+ * stack solution.  The next U1 milestone can hook esp0 to scheduled
+ * tasks and make the TSS per-CPU.
+ */
+static uint8_t u1_kernel_entry_stack[16u * 1024u]
+	__attribute__((aligned(16)));
+
+static void u1_ring3_test(void)
+	__attribute__((noreturn));
+
+static void u1_ring3_test(void)
+{
+	uintptr_t user_code_physical;
+	uintptr_t user_stack_physical;
+
+	if (((uintptr_t)u1_user_test_entry &
+		 (PAGE_SIZE - 1u)) != 0)
+	{
+		printf("U1: user test code is not page aligned\n");
+		halt_forever();
+	}
+
+	if (!paging_get_physical_address(
+			(uintptr_t)u1_user_test_entry,
+			&user_code_physical))
+	{
+		printf("U1: failed to resolve test-code physical page\n");
+		halt_forever();
+	}
+
+	if (!paging_get_physical_address(
+			(uintptr_t)u1_user_stack,
+			&user_stack_physical))
+	{
+		printf("U1: failed to resolve test-stack physical page\n");
+		halt_forever();
+	}
+
+	user_code_physical &=
+		~(uintptr_t)(PAGE_SIZE - 1u);
+
+	user_stack_physical &=
+		~(uintptr_t)(PAGE_SIZE - 1u);
+
+	if (!paging_map_page(
+			U1_USER_CODE_ADDRESS,
+			user_code_physical,
+			PAGE_USER))
+	{
+		printf("U1: failed to map user code\n");
+		halt_forever();
+	}
+
+	if (!paging_map_page(
+			U1_USER_STACK_ADDRESS,
+			user_stack_physical,
+			PAGE_USER | PAGE_WRITABLE))
+	{
+		printf("U1: failed to map user stack\n");
+		halt_forever();
+	}
+
+	uintptr_t kernel_stack_top =
+		(uintptr_t)u1_kernel_entry_stack +
+		sizeof(u1_kernel_entry_stack);
+
+	kernel_stack_top &=
+		~(uintptr_t)0xFu;
+
+	gdt_set_kernel_stack(kernel_stack_top);
+
+	printf(
+		"U1: entering user mode eip=0x%lx esp=0x%lx\n",
+		(unsigned long)U1_USER_CODE_ADDRESS,
+		(unsigned long)U1_USER_STACK_TOP);
+
+	arch_enter_user(
+		U1_USER_CODE_ADDRESS,
+		U1_USER_STACK_TOP);
+}
+
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
@@ -84,6 +186,15 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	paging_initialize();
 	printf("paging initialized\n");
+
+	/*
+	 * U1a ends inside the breakpoint handler after proving a CPL3
+	 * interrupt transition.
+	 *
+	 * Keep this before heap/SMP/device startup so only the BSP is
+	 * involved in the first privilege-transition test.
+	 */
+	u1_ring3_test();
 
 	heap_initialize();
 	printf("heap initialized\n");

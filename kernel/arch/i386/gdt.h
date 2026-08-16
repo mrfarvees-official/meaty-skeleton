@@ -1,6 +1,8 @@
 #ifndef ARCH_I386_GDT_H
 #define ARCH_I386_GDT_H
 
+#include <stdint.h>
+
 /*
  * Ring 0 selectors.
  */
@@ -32,6 +34,14 @@
 
 void gdt_initialize(void);
 void gdt_load(void);
+
+/*
+ * Set the ring-0 stack used when the CPU enters the kernel from CPL3.
+ *
+ * U1a uses this only for the BSP test.  Later U1 work must make the
+ * backing TSS per-CPU before userspace is allowed to run on APs.
+ */
+void gdt_set_kernel_stack(uintptr_t stack_pointer);
 
 /*
  * Implemented in gdt_flush.S.
