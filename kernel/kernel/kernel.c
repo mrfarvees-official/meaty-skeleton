@@ -20,6 +20,7 @@
 #include <kernel/keyboard.h>
 #include <kernel/vfs.h>
 #include <kernel/ramfs.h>
+#include <kernel/fd.h>
 #include <kernel/ata.h>
 #include <kernel/block_device.h>
 #include <kernel/partition.h>
@@ -317,112 +318,90 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	printf("hardware interrupts enabled\n");
 
 	{
-		char buffer[8];
-		size_t result;
+		int fd;
 
-		printf("\n=== fread byte test ===\n");
-		printf("Type exactly ABCD: ");
+		printf("\n=== file-backed stdio test ===\n");
 
-		result = fread(
-			buffer,
-			1,
-			4,
-			stdin);
+		fd = kernel_fd_open(
+			"/grow.txt",
+			KERNEL_FD_READ);
 
-		printf(
-			"\nresult=%u data=%c%c%c%c\n",
-			(unsigned int)result,
-			buffer[0],
-			buffer[1],
-			buffer[2],
-			buffer[3]);
-
-		printf("\n=== fread element test ===\n");
-		printf("Type exactly abcdef: ");
-
-		result = fread(
-			buffer,
-			2,
-			3,
-			stdin);
-
-		printf(
-			"\nresult=%u data=%c%c%c%c%c%c\n",
-			(unsigned int)result,
-			buffer[0],
-			buffer[1],
-			buffer[2],
-			buffer[3],
-			buffer[4],
-			buffer[5]);
-
-		printf("\n=== fread pushback test ===\n");
-		printf("Type X: ");
-
+		if (fd < 0)
 		{
-			int c;
+			printf("kernel_fd_open FAILED\n");
+		}
+		else
+		{
+			FILE file = {
+				.fd = fd,
+				.flags = _IO_READ,
+				.pushback = 0,
+				.has_pushback = 0,
+			};
 
-			c = getchar();
-			ungetc(c, stdin);
+			unsigned char buffer[1024];
+			size_t total = 0;
+			size_t result;
 
+			printf(
+				"opened /grow.txt fd=%d\n",
+				fd);
+
+			/*
+			 * The test file is 4096 bytes. Read four blocks.
+			 */
+			for (int i = 0; i < 4; i++)
+			{
+				result = fread(
+					buffer,
+					1,
+					sizeof(buffer),
+					&file);
+
+				total += result;
+
+				printf(
+					"read %d: result=%u total=%u "
+					"feof=%d ferror=%d\n",
+					i + 1,
+					(unsigned)result,
+					(unsigned)total,
+					feof(&file),
+					ferror(&file));
+			}
+
+			/*
+			 * Reading exactly to the end does not set EOF yet.
+			 *
+			 * EOF becomes known only when a read attempts to go
+			 * beyond the end.
+			 */
 			result = fread(
 				buffer,
 				1,
 				1,
-				stdin);
+				&file);
 
 			printf(
-				"\nresult=%u data=%c\n",
-				(unsigned int)result,
-				buffer[0]);
+				"past-end: result=%u total=%u "
+				"feof=%d ferror=%d\n",
+				(unsigned)result,
+				(unsigned)total,
+				feof(&file),
+				ferror(&file));
+
+			clearerr(&file);
+
+			printf(
+				"after clearerr: feof=%d ferror=%d\n",
+				feof(&file),
+				ferror(&file));
+
+			if (kernel_fd_close(fd) != 0)
+				printf("kernel_fd_close FAILED\n");
+			else
+				printf("kernel_fd_close passed\n");
 		}
-
-		printf("\n=== zero-size fread test ===\n");
-
-		result = fread(
-			buffer,
-			0,
-			10,
-			stdin);
-
-		printf(
-			"size-zero result=%u\n",
-			(unsigned int)result);
-
-		result = fread(
-			buffer,
-			10,
-			0,
-			stdin);
-
-		printf(
-			"nmemb-zero result=%u\n",
-			(unsigned int)result);
-
-		printf("\n=== stream status test ===\n");
-
-		printf(
-			"stdin: feof=%d ferror=%d\n",
-			feof(stdin),
-			ferror(stdin));
-
-		/*
-		 * stdout is not readable. Your current fgetc() marks
-		 * _IO_ERROR in this case.
-		 */
-		(void)fgetc(stdout);
-
-		printf(
-			"stdout after invalid read: feof=%d ferror=%d\n",
-			feof(stdout),
-			ferror(stdout));
-
-		clearerr(stdout);
-
-		printf(
-			"stdout after clearerr: feof=%d ferror=%d\n",
-			feof(stdout),
-			ferror(stdout));
 	}
 
 	yield_forever();

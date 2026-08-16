@@ -191,7 +191,7 @@ int vfs_open(const char *path, uint32_t flags, file_t **result)
     if (node->type != VNODE_REGULAR)
     {
         vnode_unref(node);
-        result - 1;
+        return - 1;
     }
 
     file_t *file = kmalloc(sizeof(file_t));
@@ -228,7 +228,15 @@ int vfs_read(file_t *file, void *buffer, size_t size, size_t *bytes_read)
 
     size_t count = 0;
 
-    int result = node->ops->read(node, file->offset, buffer, size, &count);
+    int result = node->ops->read(
+        node, 
+        file->offset, 
+        buffer, 
+        size, 
+        &count);
+
+    if (result != 0)
+        return result;
 
     file->offset += count;
 

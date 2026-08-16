@@ -3,6 +3,7 @@
 
 #if defined(__is_libk)
 #include <kernel/keyboard.h>
+#include <kernel/fd.h>
 #endif
 
 int fgetc(FILE *stream)
@@ -41,6 +42,37 @@ int fgetc(FILE *stream)
         }
 
         return (unsigned char)character;
+    }
+
+    /**
+     * Descriptors >= 3 are VFS-backed regular files
+     */
+    if (stream->fd >= KERNEL_FD_FIRST)
+    {
+        unsigned char character;
+        size_t bytes_read = 0;
+
+        if (kernel_fd_read(
+                stream->fd,
+                &character,
+                1,
+                &bytes_read) != 0)
+        {
+            stream->flags |= _IO_ERROR;
+            return EOF;
+        }
+
+        /**
+         * A successful zero-byte VFS read means that the file
+         * offset has reached end-of-file.
+         */
+        if (bytes_read == 0)
+        {
+            stream->flags |= _IO_EOF;
+            return EOF;
+        }
+
+        return (int)character;
     }
 
 #endif
