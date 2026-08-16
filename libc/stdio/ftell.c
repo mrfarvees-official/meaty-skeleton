@@ -37,13 +37,13 @@ long ftell(FILE *stream)
      * even though the fd offset has not advanced yet.
      */
     if (stream->write_buffer_used >
-        (size_t)LONG_MAX - position)
+        (size_t)LONG_MAX - pos)
     {
         stream->flags |= _IO_ERROR;
         return -1L;
     }
 
-    position +=
+    pos +=
         stream->write_buffer_used;
 
     /**

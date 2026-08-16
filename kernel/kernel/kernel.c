@@ -319,12 +319,12 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	{
 		printf(
-			"\n=== fflush test ===\n");
+			"\n=== stdio output buffering test ===\n");
 
 		FILE *file =
 			fopen(
-				"/stdio-flush.txt",
-				"w");
+				"/stdio-buffer.txt",
+				"w+");
 
 		printf(
 			"open=%d\n",
@@ -334,71 +334,128 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		{
 			size_t written =
 				fwrite(
-					"FLUSH",
+					"BUFFER",
 					1,
-					5,
+					6,
 					file);
 
 			printf(
-				"write=%u error=%d\n",
+				"write=%u pos=%ld error=%d\n",
 				(unsigned)written,
+				ftell(file),
 				ferror(file));
 
-			int flush_result =
-				fflush(file);
+			/*
+			 * A second descriptor should still see the underlying file
+			 * as empty before fflush().
+			 */
+			FILE *reader =
+				fopen(
+					"/stdio-buffer.txt",
+					"r");
+
+			if (reader != NULL)
+			{
+				char buffer[8] = {0};
+
+				size_t read =
+					fread(
+						buffer,
+						1,
+						6,
+						reader);
+
+				printf(
+					"before flush read=%u eof=%d\n",
+					(unsigned)read,
+					feof(reader));
+
+				fclose(reader);
+			}
 
 			printf(
-				"fflush file=%d error=%d\n",
-				flush_result,
+				"flush=%d pos=%ld error=%d\n",
+				fflush(file),
+				ftell(file),
 				ferror(file));
 
+			FILE *reader2 =
+				fopen(
+					"/stdio-buffer.txt",
+					"r");
+
+			if (reader2 != NULL)
+			{
+				char buffer[8] = {0};
+
+				size_t read =
+					fread(
+						buffer,
+						1,
+						6,
+						reader2);
+
+				printf(
+					"after flush read=%u data=%s\n",
+					(unsigned)read,
+					buffer);
+
+				fclose(reader2);
+			}
+
+			/*
+			 * fseek must flush pending output before moving.
+			 */
+			fwrite(
+				"XY",
+				1,
+				2,
+				file);
+
 			printf(
-				"fclose=%d\n",
-				fclose(file));
+				"pending pos=%ld\n",
+				ftell(file));
+
+			int seek_result =
+				fseek(
+					file,
+					0,
+					SEEK_SET);
+
+			printf(
+				"seek=%d pos=%ld\n",
+				seek_result,
+				ftell(file));
+
+			fclose(file);
 		}
 
+		/*
+		 * Verify the two pending bytes survived the fseek flush.
+		 */
 		file =
 			fopen(
-				"/stdio-flush.txt",
+				"/stdio-buffer.txt",
 				"r");
 
 		if (file != NULL)
 		{
-			char buffer[6] = {0};
+			char buffer[9] = {0};
 
 			size_t read =
 				fread(
 					buffer,
 					1,
-					5,
+					8,
 					file);
 
 			printf(
-				"read=%u data=%s\n",
+				"final read=%u data=%s\n",
 				(unsigned)read,
 				buffer);
 
-			/*
-			 * Current policy: fflush on a non-output stream fails.
-			 */
-			int flush_result =
-				fflush(file);
-
-			printf(
-				"fflush read=%d error=%d\n",
-				flush_result,
-				ferror(file));
-
 			fclose(file);
 		}
-
-		printf(
-			"fflush NULL=%d\n",
-			fflush(NULL));
-
-		printf(
-			"fflush stdout=%d\n",
-			fflush(stdout));
 	}
 
 	yield_forever();
