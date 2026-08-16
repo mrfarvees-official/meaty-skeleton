@@ -18,7 +18,7 @@ int fclose(FILE *stream)
     /**
      * stdin, stdout, and stderr are static FILE objects from
      * stream.c They must not be freed here.
-     * 
+     *
      * This first fclose implementation is for dynamically opened
      * regular-file streams only.
      */
@@ -36,6 +36,11 @@ int fclose(FILE *stream)
     {
         stream->flags |= _IO_ERROR;
         return EOF;
+    }
+
+    if ((stream->flags & _IO_BUFFER_OWNED) && stream->write_buffer != NULL)
+    {
+        kfree(stream->write_buffer);
     }
 
     kfree(stream);
