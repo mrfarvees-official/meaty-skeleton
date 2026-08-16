@@ -319,105 +319,181 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	{
 		printf(
-			"\n=== kernel fd truncate test ===\n");
+			"\n=== fopen a test ===\n");
 
-		int fd =
-			kernel_fd_open(
-				"/grow.txt",
-				KERNEL_FD_WRITE |
-					KERNEL_FD_TRUNC);
+		/*
+		 * Establish a known existing file.
+		 */
+		FILE *file =
+			fopen(
+				"/stdio-a.txt",
+				"w");
 
-		printf(
-			"truncate open fd=%d\n",
-			fd);
-
-		if (fd >= 0)
+		if (file != NULL)
 		{
-			printf(
-				"truncate close=%d\n",
-				kernel_fd_close(fd));
-		}
+			fwrite(
+				"BASE",
+				1,
+				4,
+				file);
 
-		fd =
-			kernel_fd_open(
-				"/grow.txt",
-				KERNEL_FD_READ);
-
-		if (fd >= 0)
-		{
-			char c = 0;
-			size_t read = 0;
-
-			int result =
-				kernel_fd_read(
-					fd,
-					&c,
-					1,
-					&read);
-
-			printf(
-				"after truncate read=%d bytes=%u\n",
-				result,
-				(unsigned)read);
-
-			kernel_fd_close(fd);
+			fclose(file);
 		}
 
 		/*
-		 * Verify writes restart at offset zero and grow the now-empty
-		 * inode normally.
+		 * Append to existing file.
 		 */
-		fd =
-			kernel_fd_open(
-				"/grow.txt",
-				KERNEL_FD_WRITE);
+		file =
+			fopen(
+				"/stdio-a.txt",
+				"a");
 
-		if (fd >= 0)
+		printf(
+			"existing a open=%d\n",
+			file != NULL);
+
+		if (file != NULL)
 		{
-			size_t written = 0;
-
-			int result =
-				kernel_fd_write(
-					fd,
-					"XYZ",
-					3,
-					&written);
+			size_t written =
+				fwrite(
+					"-APPEND",
+					1,
+					7,
+					file);
 
 			printf(
-				"rewrite=%d written=%u\n",
-				result,
-				(unsigned)written);
+				"existing a write=%u error=%d\n",
+				(unsigned)written,
+				ferror(file));
 
-			kernel_fd_close(fd);
+			fclose(file);
 		}
 
-		fd =
-			kernel_fd_open(
-				"/grow.txt",
-				KERNEL_FD_READ);
+		file =
+			fopen(
+				"/stdio-a.txt",
+				"r");
 
-		if (fd >= 0)
+		if (file != NULL)
 		{
-			char buffer[4];
-			size_t read = 0;
+			char buffer[16];
+			size_t read;
 
 			memset(
 				buffer,
 				0,
 				sizeof(buffer));
 
-			kernel_fd_read(
-				fd,
-				buffer,
-				3,
-				&read);
+			read =
+				fread(
+					buffer,
+					1,
+					11,
+					file);
 
 			printf(
-				"rewrite read=%u data=%s\n",
+				"existing a read=%u data=%s\n",
 				(unsigned)read,
 				buffer);
 
-			kernel_fd_close(fd);
+			fclose(file);
+		}
+
+		/*
+		 * Missing file must be created.
+		 */
+		file =
+			fopen(
+				"/stdio-a-new.txt",
+				"a");
+
+		printf(
+			"missing a open=%d\n",
+			file != NULL);
+
+		if (file != NULL)
+		{
+			size_t written =
+				fwrite(
+					"NEW",
+					1,
+					3,
+					file);
+
+			printf(
+				"missing a write=%u error=%d\n",
+				(unsigned)written,
+				ferror(file));
+
+			fclose(file);
+		}
+
+		file =
+			fopen(
+				"/stdio-a-new.txt",
+				"r");
+
+		if (file != NULL)
+		{
+			char buffer[8];
+			size_t read;
+
+			memset(
+				buffer,
+				0,
+				sizeof(buffer));
+
+			read =
+				fread(
+					buffer,
+					1,
+					3,
+					file);
+
+			printf(
+				"missing a read=%u data=%s\n",
+				(unsigned)read,
+				buffer);
+
+			fclose(file);
+		}
+
+		/*
+		 * a+ should start readable from offset zero,
+		 * while still forcing writes to EOF.
+		 */
+		file =
+			fopen(
+				"/stdio-a.txt",
+				"a+");
+
+		printf(
+			"a+ open=%d\n",
+			file != NULL);
+
+		if (file != NULL)
+		{
+			char buffer[5];
+			size_t read;
+
+			memset(
+				buffer,
+				0,
+				sizeof(buffer));
+
+			read =
+				fread(
+					buffer,
+					1,
+					4,
+					file);
+
+			printf(
+				"a+ initial read=%u data=%s\n",
+				(unsigned)read,
+				buffer);
+
+			fclose(file);
 		}
 	}
 
