@@ -319,147 +319,153 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	{
 		printf(
-			"\n=== kernel fd seek test ===\n");
+			"\n=== stdio positioning test ===\n");
 
-		int fd =
-			kernel_fd_open(
-				"/seek-test.txt",
-				KERNEL_FD_WRITE |
-					KERNEL_FD_CREATE |
-					KERNEL_FD_TRUNC);
+		FILE *file =
+			fopen(
+				"/stdio-seek.txt",
+				"w+");
 
-		if (fd >= 0)
+		if (file == NULL)
 		{
-			size_t written = 0;
-
-			kernel_fd_write(
-				fd,
+			printf("open FAILED\n");
+		}
+		else
+		{
+			fwrite(
 				"0123456789",
+				1,
 				10,
-				&written);
+				file);
 
 			printf(
-				"prepare written=%u\n",
-				(unsigned)written);
-
-			kernel_fd_close(fd);
-		}
-
-		fd =
-			kernel_fd_open(
-				"/seek-test.txt",
-				KERNEL_FD_READ);
-
-		if (fd >= 0)
-		{
-			size_t position = 0;
-			char buffer[5];
-
-			memset(
-				buffer,
-				0,
-				sizeof(buffer));
+				"after write pos=%ld\n",
+				ftell(file));
 
 			int result =
-				kernel_fd_seek(
-					fd,
+				fseek(
+					file,
 					4,
-					KERNEL_FD_SEEK_SET,
-					&position);
+					SEEK_SET);
 
 			printf(
-				"set result=%d pos=%u\n",
+				"seek set=%d pos=%ld\n",
 				result,
-				(unsigned)position);
+				ftell(file));
 
-			size_t read = 0;
+			char buffer[4] = {0};
 
-			kernel_fd_read(
-				fd,
-				buffer,
-				3,
-				&read);
+			size_t read =
+				fread(
+					buffer,
+					1,
+					3,
+					file);
 
 			printf(
-				"set read=%u data=%s\n",
+				"read=%u data=%s pos=%ld\n",
 				(unsigned)read,
-				buffer);
+				buffer,
+				ftell(file));
 
 			result =
-				kernel_fd_seek(
-					fd,
+				fseek(
+					file,
 					-2,
-					KERNEL_FD_SEEK_CUR,
-					&position);
+					SEEK_CUR);
 
 			printf(
-				"cur result=%d pos=%u\n",
+				"seek cur=%d pos=%ld\n",
 				result,
-				(unsigned)position);
+				ftell(file));
 
 			memset(
 				buffer,
 				0,
 				sizeof(buffer));
 
-			read = 0;
-
-			kernel_fd_read(
-				fd,
-				buffer,
-				2,
-				&read);
+			read =
+				fread(
+					buffer,
+					1,
+					2,
+					file);
 
 			printf(
-				"cur read=%u data=%s\n",
+				"cur read=%u data=%s pos=%ld\n",
 				(unsigned)read,
-				buffer);
+				buffer,
+				ftell(file));
 
 			result =
-				kernel_fd_seek(
-					fd,
+				fseek(
+					file,
 					-2,
-					KERNEL_FD_SEEK_END,
-					&position);
+					SEEK_END);
 
 			printf(
-				"end result=%d pos=%u\n",
+				"seek end=%d pos=%ld\n",
 				result,
-				(unsigned)position);
+				ftell(file));
 
 			memset(
 				buffer,
 				0,
 				sizeof(buffer));
 
-			read = 0;
-
-			kernel_fd_read(
-				fd,
-				buffer,
-				2,
-				&read);
+			read =
+				fread(
+					buffer,
+					1,
+					3,
+					file);
 
 			printf(
-				"end read=%u data=%s\n",
+				"end read=%u data=%s eof=%d pos=%ld\n",
 				(unsigned)read,
-				buffer);
+				buffer,
+				feof(file),
+				ftell(file));
+
+			rewind(file);
+
+			printf(
+				"rewind pos=%ld eof=%d error=%d\n",
+				ftell(file),
+				feof(file),
+				ferror(file));
 
 			/*
-			 * Must reject a position before byte zero.
+			 * Pushback positioning check.
 			 */
-			result =
-				kernel_fd_seek(
-					fd,
-					-20,
-					KERNEL_FD_SEEK_SET,
-					&position);
+			int c =
+				fgetc(file);
+
+			long before_pushback =
+				ftell(file);
+
+			ungetc(c, file);
+
+			long after_pushback =
+				ftell(file);
 
 			printf(
-				"negative result=%d\n",
-				result);
+				"pushback before=%ld after=%ld\n",
+				before_pushback,
+				after_pushback);
 
-			kernel_fd_close(fd);
+			result =
+				fseek(
+					file,
+					2,
+					SEEK_CUR);
+
+			printf(
+				"pushback seek=%d pos=%ld\n",
+				result,
+				ftell(file));
+
+			fclose(file);
 		}
 	}
 

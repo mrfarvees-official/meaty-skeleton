@@ -32,6 +32,9 @@ $(ARCH_FREEOBJS) 	\
 stdio/printf.o 		\
 stdio/fopen.o 		\
 stdio/fclose.o 		\
+stdio/fseek.o       \
+stdio/ftell.o 		\
+stdio/rewind.o 		\
 stdio/fread.o 		\
 stdio/feof.o 		\
 stdio/ferror.o 		\

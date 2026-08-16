@@ -12,6 +12,10 @@
 #define _IO_EOF    (1U << 2)
 #define _IO_ERROR  (1U << 3)
 
+#define SEEK_SET   0
+#define SEEK_CUR   1
+#define SEEK_END   2
+
 typedef struct FILE {
 	int fd;
 	unsigned int flags;
@@ -30,6 +34,10 @@ extern FILE *stderr;
 
 FILE *fopen(const char *path, const char *mode);
 int fclose(FILE *stream);
+
+int fseek(FILE *stream, long offset, int whence);
+long ftell(FILE *stream);
+void rewind(FILE *stream);
 
 int fgetc(FILE *stream);
 int getchar(void);
