@@ -37,15 +37,28 @@ char *fgets(char *str, int size, FILE *stream);
 int fputc(int, FILE *);
 int putchar(int);
 
+size_t fread(
+	void *ptr,
+	size_t size,
+	size_t nmemb,
+	FILE *stream);
+
 size_t fwrite(
 	const void *ptr,
 	size_t size,
 	size_t nmemb,
-	FILE *stream
-);
+	FILE *stream);
+
+int feof(FILE *stream);
+int ferror(FILE *stream);
+void clearerr(FILE *stream);
 
 int fputs(const char *, FILE *);
 int puts(const char *);
+
+int vfscanf(FILE *, const char *, va_list);
+int fscanf(FILE *, const char *, ...);
+int scanf(const char *, ...);
 
 int vfprintf(FILE *, const char *, va_list);
 int fprintf(FILE *, const char *, ...);

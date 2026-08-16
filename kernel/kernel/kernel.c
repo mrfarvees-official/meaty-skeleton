@@ -316,28 +316,114 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
 
-	int c1;
-	int c2;
-	int c3;
+	{
+		char buffer[8];
+		size_t result;
 
-	printf("type one key: ");
+		printf("\n=== fread byte test ===\n");
+		printf("Type exactly ABCD: ");
 
-	c1 = getchar();
+		result = fread(
+			buffer,
+			1,
+			4,
+			stdin);
 
-	ungetc(c1, stdin);
+		printf(
+			"\nresult=%u data=%c%c%c%c\n",
+			(unsigned int)result,
+			buffer[0],
+			buffer[1],
+			buffer[2],
+			buffer[3]);
 
-	c2 = getchar();
+		printf("\n=== fread element test ===\n");
+		printf("Type exactly abcdef: ");
 
-	printf(
-		"\nfirst=%c pushed-back=%c\n",
-		c1,
-		c2);
+		result = fread(
+			buffer,
+			2,
+			3,
+			stdin);
 
-	printf("type another key: ");
+		printf(
+			"\nresult=%u data=%c%c%c%c%c%c\n",
+			(unsigned int)result,
+			buffer[0],
+			buffer[1],
+			buffer[2],
+			buffer[3],
+			buffer[4],
+			buffer[5]);
 
-	c3 = getchar();
+		printf("\n=== fread pushback test ===\n");
+		printf("Type X: ");
 
-	printf("\nnext=%c\n", c3);
+		{
+			int c;
+
+			c = getchar();
+			ungetc(c, stdin);
+
+			result = fread(
+				buffer,
+				1,
+				1,
+				stdin);
+
+			printf(
+				"\nresult=%u data=%c\n",
+				(unsigned int)result,
+				buffer[0]);
+		}
+
+		printf("\n=== zero-size fread test ===\n");
+
+		result = fread(
+			buffer,
+			0,
+			10,
+			stdin);
+
+		printf(
+			"size-zero result=%u\n",
+			(unsigned int)result);
+
+		result = fread(
+			buffer,
+			10,
+			0,
+			stdin);
+
+		printf(
+			"nmemb-zero result=%u\n",
+			(unsigned int)result);
+
+		printf("\n=== stream status test ===\n");
+
+		printf(
+			"stdin: feof=%d ferror=%d\n",
+			feof(stdin),
+			ferror(stdin));
+
+		/*
+		 * stdout is not readable. Your current fgetc() marks
+		 * _IO_ERROR in this case.
+		 */
+		(void)fgetc(stdout);
+
+		printf(
+			"stdout after invalid read: feof=%d ferror=%d\n",
+			feof(stdout),
+			ferror(stdout));
+
+		clearerr(stdout);
+
+		printf(
+			"stdout after clearerr: feof=%d ferror=%d\n",
+			feof(stdout),
+			ferror(stdout));
+	}
 
 	yield_forever();
 }

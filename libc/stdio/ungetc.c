@@ -18,7 +18,8 @@ int ungetc(int c, FILE *stream)
     if (stream->has_pushback)
         return EOF;
 
-    stream->pushback = 1;
+    stream->pushback = c;
+    stream->has_pushback = 1;
     stream->flags &= ~_IO_EOF;
 
     return stream->pushback;
