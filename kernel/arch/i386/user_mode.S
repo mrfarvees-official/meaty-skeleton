@@ -72,34 +72,57 @@ arch_enter_user:
 
 u1_user_test_entry:
     /*
-     * U2b syscall ABI test.
-     *
-     * EAX = syscall number
-     * EBX = arg0
-     * ECX = arg1
-     * EDX = arg2
-     * ESI = arg3
-     * EDI = arg4
+     * ----------------------------------------------------------
+     * U2c test 1: unknown syscall error convention
+     * ----------------------------------------------------------
      */
-    movl $1,    %eax
-    movl $0x11, %ebx
-    movl $0x22, %ecx
-    movl $0x33, %edx
-    movl $0x44, %esi
-    movl $0x55, %edi
-
+    movl $0xFFFF, %eax
     int $0x80
 
     /*
-     * Kernel should return the ABI-test result in EAX.
+     * Unknown syscalls must return -1.
      */
-    cmpl $0x11223355, %eax
+    cmpl $-1, %eax
     jne 1f
 
     /*
-     * Deliberate success trap.
+     * ----------------------------------------------------------
+     * U2c test 2: first real kernel-facing syscall
+     * ----------------------------------------------------------
      *
-     * EAX must remain untouched so the kernel can verify it again.
+     * syscall 2 = gettid
+     */
+    movl $2, %eax
+    int $0x80
+
+    /*
+     * A task ID of zero belongs to the BSP bootstrap task.
+     * This probe runs in an allocated scheduler-owned task, so the
+     * returned ID must be positive.
+     */
+    testl %eax, %eax
+    jle 1f
+
+    /*
+     * Preserve the first result in EBX.
+     */
+    movl %eax, %ebx
+
+    /*
+     * Call GETTID again.  The identity must remain stable across
+     * syscall entry/return.
+     */
+    movl $2, %eax
+    int $0x80
+
+    cmpl %ebx, %eax
+    jne 1f
+
+    /*
+     * Success trap.
+     *
+     * Leave the returned task ID in EAX so the kernel can compare
+     * it against task_current()->id.
      */
     int3
 

@@ -7,23 +7,23 @@
 #define I386_SYSCALL_VECTOR       0x80u
 
 /*
- * i386 syscall register ABI:
+ * Syscall numbers.
  *
- *     EAX = syscall number
- *
- *     EBX = argument 0
- *     ECX = argument 1
- *     EDX = argument 2
- *     ESI = argument 3
- *     EDI = argument 4
- *
- *     EAX = return value
+ * 0 and 1 were U2 bring-up probes and are intentionally no longer
+ * part of the active syscall ABI.
  */
-#define I386_SYSCALL_TEST_SIMPLE      0u
-#define I386_SYSCALL_TEST_ARGUMENTS   1u
+#define I386_SYSCALL_GETTID 2u
 
-#define I386_SYSCALL_TEST_RESULT      0xC0DEFACEu
-#define I386_SYSCALL_ARGUMENT_RESULT  0x11223355u
+/*
+ * Syscall result convention:
+ *
+ *     EAX >= 0    success
+ *     EAX <  0    error
+ *
+ * Keep the initial error namespace deliberately tiny.
+ */
+#define I386_SYSCALL_ERROR_NO_SUCH_SYSCALL (-1)
+#define I386_SYSCALL_ERROR_INVALID_STATE   (-2)
 
 bool syscall_initialize(void);
 

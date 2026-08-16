@@ -6,6 +6,7 @@
 #include "interrupts.h"
 #include "syscall.h"
 
+#include <kernel/task.h>
 #include <kernel/scheduler.h>
 
 static interrupt_handler_t interrupt_handlers[INTERRUPT_VECTOR_COUNT];
@@ -182,7 +183,7 @@ static void breakpoint_handler(struct interrupt_frame *frame)
     if ((frame->cs & 3u) == 3u)
     {
         printf(
-            "\n=== U2 USER-MODE RETURN TRAP ===\n");
+            "=== U2c GETTID RETURN TRAP ===");
 
         printf(
             "Vector    : %lu\n",
@@ -212,17 +213,32 @@ static void breakpoint_handler(struct interrupt_frame *frame)
             "User SS   : 0x%lx\n",
             (unsigned long)frame->user_ss);
 
-        if (frame->eax !=
-            I386_SYSCALL_ARGUMENT_RESULT)
+        task_t *task =
+            task_current();
+
+        if (task == NULL)
         {
             printf(
-                "U2: syscall return value FAILED\n");
+                "U2c: no current task at return trap\n");
 
             interrupt_halt();
         }
 
         printf(
-            "U2b: syscall ABI returned to CPL3 successfully\n");
+            "Current TID: %lu\n",
+            (unsigned long)task->id);
+
+        if (frame->eax !=
+            (uint32_t)task->id)
+        {
+            printf(
+                "U2c: returned task ID FAILED\n");
+
+            interrupt_halt();
+        }
+
+        printf(
+            "U2c: GETTID returned real task identity to CPL3\n");
 
         interrupt_halt();
     }

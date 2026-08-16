@@ -1,10 +1,12 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <kernel/task.h>
+
 #include "interrupts.h"
 #include "syscall.h"
 
-static uint32_t syscall_dispatch(
+static int32_t syscall_dispatch(
     uint32_t number,
     uint32_t arg0,
     uint32_t arg1,
@@ -12,38 +14,35 @@ static uint32_t syscall_dispatch(
     uint32_t arg3,
     uint32_t arg4)
 {
+    /*
+     * Arguments are unused by GETTID, but keep the dispatcher
+     * signature matching the ABI we proved in U2b.
+     */
+    (void)arg0;
+    (void)arg1;
+    (void)arg2;
+    (void)arg3;
+    (void)arg4;
+
     switch (number)
     {
-    case I386_SYSCALL_TEST_SIMPLE:
-        return I386_SYSCALL_TEST_RESULT;
+    case I386_SYSCALL_GETTID:
+    {
+        task_t *task =
+            task_current();
 
-    case I386_SYSCALL_TEST_ARGUMENTS:
+        if (task == NULL)
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+
         printf(
-            "U2b: args "
-            "ebx=0x%lx ecx=0x%lx edx=0x%lx "
-            "esi=0x%lx edi=0x%lx\n",
-            (unsigned long)arg0,
-            (unsigned long)arg1,
-            (unsigned long)arg2,
-            (unsigned long)arg3,
-            (unsigned long)arg4);
+            "U2c: gettid -> %lu\n",
+            (unsigned long)task->id);
 
-        if (arg0 != 0x11u ||
-            arg1 != 0x22u ||
-            arg2 != 0x33u ||
-            arg3 != 0x44u ||
-            arg4 != 0x55u)
-        {
-            printf("U2b: argument ABI FAILED\n");
-            return UINT32_MAX;
-        }
-
-        printf("U2b: argument ABI confirmed\n");
-
-        return I386_SYSCALL_ARGUMENT_RESULT;
+        return (int32_t)task->id;
+    }
 
     default:
-        return UINT32_MAX;
+        return I386_SYSCALL_ERROR_NO_SUCH_SYSCALL;
     }
 }
 
@@ -62,7 +61,8 @@ static void syscall_handler(
             "U2: rejected syscall from CS=0x%lx\n",
             (unsigned long)frame->cs);
 
-        frame->eax = UINT32_MAX;
+        frame->eax =
+            (uint32_t)I386_SYSCALL_ERROR_INVALID_STATE;
         return;
     }
 
@@ -75,7 +75,7 @@ static void syscall_handler(
         (unsigned long)frame->cs,
         (unsigned long)(frame->cs & 3u));
 
-    uint32_t result =
+    int32_t result =
         syscall_dispatch(
             frame->eax,
             frame->ebx,
@@ -85,12 +85,12 @@ static void syscall_handler(
             frame->edi);
 
     frame->eax =
-        result;
+        (uint32_t)result;
 
     printf(
-        "U2: syscall %lu returning EAX=0x%lx\n",
+        "U2: syscall %lu returning %ld\n",
         (unsigned long)number,
-        (unsigned long)frame->eax);
+        (long)result);
 }
 
 bool syscall_initialize(void)
