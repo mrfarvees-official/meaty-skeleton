@@ -5,6 +5,9 @@ static FILE __stdin = {
 	.flags = _IO_READ,
 	.pushback = 0,
 	.has_pushback = 0,
+	.write_buffer = NULL,
+	.write_buffer_size = 0,
+	.write_buffer_used = 0,
 };
 
 static FILE __stdout = {
@@ -12,6 +15,9 @@ static FILE __stdout = {
 	.flags = _IO_WRITE,
 	.pushback = 0,
 	.has_pushback = 0,
+	.write_buffer = NULL,
+	.write_buffer_size = 0,
+	.write_buffer_used = 0,
 };
 
 static FILE __stderr = {
@@ -19,6 +25,9 @@ static FILE __stderr = {
 	.flags = _IO_WRITE,
 	.pushback = 0,
 	.has_pushback = 0,
+	.write_buffer = NULL,
+	.write_buffer_size = 0,
+	.write_buffer_used = 0,
 };
 
 FILE *stdin  = &__stdin;

@@ -28,30 +28,30 @@ int fseek(
 
     int kernel_whence;
 
-    switch(whence)
+    switch (whence)
     {
-        case SEEK_SET:
-            kernel_whence = KERNEL_FD_SEEK_SET;
-            break;
-        
-        case SEEK_CUR:
-            kernel_whence = KERNEL_FD_SEEK_CUR;
-            break;
+    case SEEK_SET:
+        kernel_whence = KERNEL_FD_SEEK_SET;
+        break;
 
-        case SEEK_END:
-            kernel_whence = KERNEL_FD_SEEK_END;
-            break;
+    case SEEK_CUR:
+        kernel_whence = KERNEL_FD_SEEK_CUR;
+        break;
 
-        default:
-            stream->flags |= _IO_ERROR;
-            return -1;
+    case SEEK_END:
+        kernel_whence = KERNEL_FD_SEEK_END;
+        break;
+
+    default:
+        stream->flags |= _IO_ERROR;
+        return -1;
     }
 
     int64_t kernel_offset = (int64_t)offset;
 
     /**
      * ungetc() does not move the underlying fd offset backwards.
-     * 
+     *
      * If one pushed-back byte is pending, the logical stream
      * position is one byte before the underlying descriptor
      * position. Account for that when SEEK_CUR is requested.
@@ -71,6 +71,17 @@ int fseek(
     {
         stream->flags |= _IO_ERROR;
         return -1;
+    }
+
+    /*
+     * Pending output must be written at the old position before
+     * repositioning the underlying descriptor.
+     */
+    if ((stream->flags & _IO_WRITE) &&
+        stream->write_buffer_used != 0)
+    {
+        if (fflush(stream) == EOF)
+            return -1;
     }
 
     (void)new_offset;

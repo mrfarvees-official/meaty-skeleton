@@ -24,13 +24,27 @@ long ftell(FILE *stream)
 
     if (kernel_fd_seek(
             stream->fd,
-            0, 
+            0,
             KERNEL_FD_SEEK_CUR,
             &pos) != 0)
     {
         stream->flags |= _IO_ERROR;
         return -1L;
     }
+
+    /*
+     * Pending buffered output is part of the logical stdio position
+     * even though the fd offset has not advanced yet.
+     */
+    if (stream->write_buffer_used >
+        (size_t)LONG_MAX - position)
+    {
+        stream->flags |= _IO_ERROR;
+        return -1L;
+    }
+
+    position +=
+        stream->write_buffer_used;
 
     /**
      * A pending pushed-back character logically moves the stream

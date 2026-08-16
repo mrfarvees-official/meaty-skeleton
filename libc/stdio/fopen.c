@@ -78,10 +78,10 @@ static int fopen_parse_mode(
      * w+
      * wb+
      * w+b
-     * 
+     *
      * Existing file:
      *      truncate to zero
-     * 
+     *
      * Missing file:
      *      create it
      */
@@ -131,13 +131,13 @@ static int fopen_parse_mode(
      * a+
      * ab+
      * a+b
-     * 
+     *
      * Existing file:
      *      preserve contents.
-     * 
+     *
      * Missing file:
      *      create it.
-     * 
+     *
      * Every write:
      *      goes to current EOF.
      */
@@ -220,6 +220,30 @@ FILE *fopen(
     stream->flags = stdio_flags;
     stream->pushback = 0;
     stream->has_pushback = 0;
+    stream->write_buffer = NULL;
+    stream->write_buffer_size = 0;
+    stream->write_buffer_used = 0;
+
+    if (stdio_flags & _IO_WRITE)
+    {
+        stream->write_buffer =
+            kmalloc(BUFSIZ);
+
+        if (stream->write_buffer == NULL)
+        {
+            kernel_fd_close(fd);
+            kfree(stream);
+            return NULL;
+        }
+
+        stream->write_buffer_size =
+            BUFSIZ;
+
+        stream->write_buffer_used = 0;
+
+        stream->flags |=
+            _IO_BUFFER_OWNED;
+    }
 
     return stream;
 

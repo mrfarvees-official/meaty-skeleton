@@ -5,16 +5,20 @@
 #include <stdarg.h>
 #include <stddef.h>
 
-#define EOF (-1)
+#define EOF 				(-1)
 
-#define _IO_READ   (1U << 0)
-#define _IO_WRITE  (1U << 1)
-#define _IO_EOF    (1U << 2)
-#define _IO_ERROR  (1U << 3)
+#define _IO_READ   			(1U << 0)
+#define _IO_WRITE  			(1U << 1)
+#define _IO_EOF    			(1U << 2)
+#define _IO_ERROR  			(1U << 3)
 
-#define SEEK_SET   0
-#define SEEK_CUR   1
-#define SEEK_END   2
+#define SEEK_SET   			0
+#define SEEK_CUR   			1
+#define SEEK_END   			2
+
+#define BUFSIZ	   			1024
+
+#define _IO_BUFFER_OWNED 	(1U << 4)
 
 typedef struct FILE {
 	int fd;
@@ -22,6 +26,10 @@ typedef struct FILE {
 
 	int pushback;
 	int has_pushback;
+
+	unsigned char *write_buffer;
+	size_t write_buffer_size;
+	size_t write_buffer_used;
 } FILE;
 
 #ifdef __cplusplus

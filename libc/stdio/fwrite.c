@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stddef.h>
+#include <string.h>
 
 #if defined(__is_libk)
 #include <kernel/fd.h>
@@ -11,14 +12,18 @@ size_t fwrite(
     size_t nmemb,
     FILE *stream)
 {
-    if (size == 0 || nmemb == 0) 
+    if (size == 0 ||
+        nmemb == 0)
+    {
         return 0;
+    }
 
-    if (ptr == NULL || stream == NULL)
+    if (ptr == NULL ||
+        stream == NULL)
     {
         if (stream != NULL)
             stream->flags |= _IO_ERROR;
-        
+
         return 0;
     }
 
@@ -28,22 +33,71 @@ size_t fwrite(
         return 0;
     }
 
-    /**
-     * Prevent overflow when calculating the complete byte count.
-     */
-    if (nmemb > ((size_t)-1) / size)
+    if (nmemb >
+        ((size_t)-1) / size)
     {
         stream->flags |= _IO_ERROR;
         return 0;
     }
 
-    size_t total_bytes = size * nmemb;
+    size_t total_bytes =
+        size * nmemb;
 
 #if defined(__is_libk)
 
-    /**
-     * Regular VFS-backed files can transfer the entire fwrite()
-     * request in one kernel fd write
+    /*
+     * Buffered regular-file path.
+     */
+    if (stream->fd >= KERNEL_FD_FIRST &&
+        stream->write_buffer != NULL &&
+        stream->write_buffer_size != 0)
+    {
+        const unsigned char *data =
+            (const unsigned char *)ptr;
+
+        size_t consumed = 0;
+
+        while (consumed < total_bytes)
+        {
+            size_t available =
+                stream->write_buffer_size -
+                stream->write_buffer_used;
+
+            if (available == 0)
+            {
+                if (fflush(stream) == EOF)
+                    return consumed / size;
+
+                available =
+                    stream->write_buffer_size;
+            }
+
+            size_t remaining =
+                total_bytes - consumed;
+
+            size_t chunk =
+                remaining < available
+                    ? remaining
+                    : available;
+
+            memcpy(
+                stream->write_buffer +
+                    stream->write_buffer_used,
+                data + consumed,
+                chunk);
+
+            stream->write_buffer_used +=
+                chunk;
+
+            consumed +=
+                chunk;
+        }
+
+        return nmemb;
+    }
+
+    /*
+     * Fallback direct file write.
      */
     if (stream->fd >= KERNEL_FD_FIRST)
     {
@@ -59,22 +113,15 @@ size_t fwrite(
             return 0;
         }
 
-        /**
-         * The kernel should never report more bytes than requested.
-         */
-        if (bytes_written > total_bytes)
+        if (bytes_written >
+            total_bytes)
         {
             stream->flags |= _IO_ERROR;
             return 0;
         }
 
-        /**
-         * fwrite() returns complete elements, not bytes.
-         * 
-         * A short write is considered an output error in the 
-         * current unbuffered stdio implementation.
-         */
-        if (bytes_written < total_bytes)
+        if (bytes_written <
+            total_bytes)
         {
             stream->flags |= _IO_ERROR;
         }
@@ -84,24 +131,32 @@ size_t fwrite(
 
 #endif
 
-    /**
-     * stdout/stderr still use the character output path.
-     * 
-     * Keep this fallback rather than mixing terminal details into
-     * fwrite().
+    /*
+     * stdout/stderr fallback.
      */
-    const unsigned char *data = (const unsigned char *)ptr;
+    const unsigned char *data =
+        (const unsigned char *)ptr;
 
     size_t completed = 0;
 
-    for (size_t element = 0; element < nmemb; ++element)
+    for (size_t element = 0;
+         element < nmemb;
+         ++element)
     {
-        for (size_t byte = 0; byte < size; ++byte)
+        for (size_t byte = 0;
+             byte < size;
+             ++byte)
         {
-            size_t offset = element * size + byte;
+            size_t offset =
+                element * size +
+                byte;
 
-            if (fputc(data[offset], stream) == EOF)
-                return EOF;
+            if (fputc(
+                    data[offset],
+                    stream) == EOF)
+            {
+                return completed;
+            }
         }
 
         ++completed;

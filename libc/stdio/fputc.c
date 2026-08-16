@@ -42,19 +42,11 @@ int fputc(int ic, FILE *stream)
      */
     if (stream->fd >= KERNEL_FD_FIRST)
     {
-        size_t bytes_written = 0;
-
-        if (kernel_fd_write(
-                stream->fd,
+        if (fwrite(
                 &c,
                 1,
-                &bytes_written) != 0)
-        {
-            stream->flags |= _IO_ERROR;
-            return EOF;
-        }
-
-        if (bytes_written != 1)
+                1,
+                stream) != 1)
         {
             stream->flags |= _IO_ERROR;
             return EOF;
