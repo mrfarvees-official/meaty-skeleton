@@ -72,38 +72,38 @@ arch_enter_user:
 
 u1_user_test_entry:
     /*
-     * U2a ABI:
+     * U2b syscall ABI test.
      *
      * EAX = syscall number
-     * INT 0x80
-     * EAX = return value
+     * EBX = arg0
+     * ECX = arg1
+     * EDX = arg2
+     * ESI = arg3
+     * EDI = arg4
      */
-    movl $0, %eax
+    movl $1,    %eax
+    movl $0x11, %ebx
+    movl $0x22, %ecx
+    movl $0x33, %edx
+    movl $0x44, %esi
+    movl $0x55, %edi
+
     int $0x80
 
     /*
-     * If we reached here, the kernel IRET successfully returned
-     * execution to CPL3.
+     * Kernel should return the ABI-test result in EAX.
      */
-    cmpl $0xC0DEFACE, %eax
+    cmpl $0x11223355, %eax
     jne 1f
 
     /*
-     * Preserve returned EAX and deliberately trap again.
+     * Deliberate success trap.
      *
-     * The breakpoint handler can now verify:
-     *
-     *   - CS.RPL is still 3
-     *   - EAX contains the syscall result
+     * EAX must remain untouched so the kernel can verify it again.
      */
     int3
 
 1:
-    /*
-     * Bad syscall return value.
-     *
-     * Generate an invalid opcode from CPL3 so failure is obvious.
-     */
     ud2
 
 2:

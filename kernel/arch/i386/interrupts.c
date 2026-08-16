@@ -213,7 +213,7 @@ static void breakpoint_handler(struct interrupt_frame *frame)
             (unsigned long)frame->user_ss);
 
         if (frame->eax !=
-            I386_SYSCALL_TEST_RESULT)
+            I386_SYSCALL_ARGUMENT_RESULT)
         {
             printf(
                 "U2: syscall return value FAILED\n");
@@ -222,7 +222,7 @@ static void breakpoint_handler(struct interrupt_frame *frame)
         }
 
         printf(
-            "U2: syscall returned to CPL3 successfully\n");
+            "U2b: syscall ABI returned to CPL3 successfully\n");
 
         interrupt_halt();
     }
