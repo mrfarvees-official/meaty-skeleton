@@ -176,4 +176,10 @@ bool ext2_mount(
     block_device_t *device, 
     ext2_fs_t *fs);
 
+bool ext2_link_new_regular_file(
+    ext2_fs_t *fs,
+    uint32_t directory_inode_number,
+    const char *name,
+    uint32_t inode_number);
+
 #endif

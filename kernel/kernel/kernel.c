@@ -318,137 +318,106 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	printf("hardware interrupts enabled\n");
 
 	{
-		FILE *file;
-		char buffer[32];
-		size_t written;
-		size_t read;
+		printf(
+			"\n=== kernel fd truncate test ===\n");
 
-		printf("\n=== file-backed fwrite test ===\n");
+		int fd =
+			kernel_fd_open(
+				"/grow.txt",
+				KERNEL_FD_WRITE |
+					KERNEL_FD_TRUNC);
 
-		file = fopen(
-			"/grow.txt",
-			"r+");
+		printf(
+			"truncate open fd=%d\n",
+			fd);
 
-		if (file == NULL)
+		if (fd >= 0)
 		{
-			printf("fopen r+ FAILED\n");
+			printf(
+				"truncate close=%d\n",
+				kernel_fd_close(fd));
 		}
-		else
-		{
-			static const char message[] =
-				"stdio-write-test";
 
-			written = fwrite(
-				message,
-				1,
-				sizeof(message) - 1,
-				file);
+		fd =
+			kernel_fd_open(
+				"/grow.txt",
+				KERNEL_FD_READ);
+
+		if (fd >= 0)
+		{
+			char c = 0;
+			size_t read = 0;
+
+			int result =
+				kernel_fd_read(
+					fd,
+					&c,
+					1,
+					&read);
 
 			printf(
-				"fwrite result=%u ferror=%d\n",
-				(unsigned)written,
-				ferror(file));
+				"after truncate read=%d bytes=%u\n",
+				result,
+				(unsigned)read);
+
+			kernel_fd_close(fd);
+		}
+
+		/*
+		 * Verify writes restart at offset zero and grow the now-empty
+		 * inode normally.
+		 */
+		fd =
+			kernel_fd_open(
+				"/grow.txt",
+				KERNEL_FD_WRITE);
+
+		if (fd >= 0)
+		{
+			size_t written = 0;
+
+			int result =
+				kernel_fd_write(
+					fd,
+					"XYZ",
+					3,
+					&written);
 
 			printf(
-				"fclose write=%d\n",
-				fclose(file));
+				"rewrite=%d written=%u\n",
+				result,
+				(unsigned)written);
+
+			kernel_fd_close(fd);
 		}
 
-		printf("\n=== file readback test ===\n");
+		fd =
+			kernel_fd_open(
+				"/grow.txt",
+				KERNEL_FD_READ);
 
-		file = fopen(
-			"/grow.txt",
-			"r");
+		if (fd >= 0)
+		{
+			char buffer[4];
+			size_t read = 0;
 
-		if (file == NULL)
-		{
-			printf("readback fopen FAILED\n");
-		}
-		else
-		{
-			read = fread(
+			memset(
 				buffer,
-				1,
-				16,
-				file);
+				0,
+				sizeof(buffer));
 
-			if (read < sizeof(buffer))
-				buffer[read] = '\0';
+			kernel_fd_read(
+				fd,
+				buffer,
+				3,
+				&read);
 
 			printf(
-				"read=%u data=%s\n",
+				"rewrite read=%u data=%s\n",
 				(unsigned)read,
 				buffer);
 
-			printf(
-				"feof=%d ferror=%d\n",
-				feof(file),
-				ferror(file));
-
-			printf(
-				"fclose read=%d\n",
-				fclose(file));
-		}
-
-		printf("\n=== fputc file test ===\n");
-
-		file = fopen(
-			"/grow.txt",
-			"r+");
-
-		if (file == NULL)
-		{
-			printf("fputc fopen FAILED\n");
-		}
-		else
-		{
-			int result;
-
-			result = fputc(
-				'X',
-				file);
-
-			printf(
-				"fputc result=%c ferror=%d\n",
-				result,
-				ferror(file));
-
-			fclose(file);
-		}
-
-		file = fopen(
-			"/grow.txt",
-			"r");
-
-		if (file != NULL)
-		{
-			int c = fgetc(file);
-
-			printf(
-				"first byte after fputc=%c\n",
-				c);
-
-			fclose(file);
-		}
-
-		printf("\n=== write protection test ===\n");
-
-		file = fopen(
-			"/grow.txt",
-			"r");
-
-		if (file != NULL)
-		{
-			int result =
-				fputc('!', file);
-
-			printf(
-				"write to r stream: result=%d "
-				"ferror=%d\n",
-				result,
-				ferror(file));
-
-			fclose(file);
+			kernel_fd_close(fd);
 		}
 	}
 

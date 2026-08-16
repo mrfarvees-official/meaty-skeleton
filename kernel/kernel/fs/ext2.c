@@ -47,6 +47,88 @@ static bool ext2_write_block(
     uint32_t block_number,
     const void *buffer);
 
+static int ext2_vnode_truncate(
+    vnode_t *node,
+    size_t size);
+
+static int ext2_vnode_lookup(
+    vnode_t *directory,
+    const char *name,
+    vnode_t **result);
+
+static int ext2_vnode_read(
+    vnode_t *node,
+    size_t offset,
+    void *buffer,
+    size_t size,
+    size_t *bytes_read);
+
+static int ext2_vnode_write(
+    vnode_t *node,
+    size_t offset,
+    const void *buffer,
+    size_t size,
+    size_t *bytes_written);
+
+static bool ext2_get_data_block(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *inode,
+    uint32_t logical_block,
+    uint32_t *physical_block,
+    ext2_block_cache_t *cache);
+
+static bool ext2_read_file_cached(
+    block_device_t *device,
+    const ext2_superblock_t *superblock,
+    const ext2_inode_t *inode, size_t offset,
+    void *buffer,
+    size_t buffer_size,
+    size_t *bytes_read,
+    ext2_block_cache_t *cache);
+
+static int ext2_vnode_create(
+    vnode_t *directory,
+    const char *name,
+    vnode_t **result);
+
+static bool ext2_read_block(
+    block_device_t *device,
+    uint32_t block_size,
+    uint32_t block_number,
+    void *buffer);
+
+static bool ext2_write_block(
+    block_device_t *device,
+    uint32_t block_size,
+    uint32_t block_number,
+    const void *buffer);
+
+static bool ext2_write_superblock(
+    block_device_t *device,
+    const ext2_superblock_t *superblock);
+
+static const vnode_ops_t ext2_directory_ops;
+static const vnode_ops_t ext2_file_ops;
+
+static const vnode_ops_t ext2_directory_ops =
+    {
+        .lookup = ext2_vnode_lookup,
+        .create = ext2_vnode_create,
+        .write = NULL,
+        .read = NULL,
+        .truncate = NULL,
+};
+
+static const vnode_ops_t ext2_file_ops =
+    {
+        .lookup = NULL,
+        .create = NULL,
+        .read = ext2_vnode_read,
+        .write = ext2_vnode_write,
+        .truncate = ext2_vnode_truncate,
+};
+
 static bool ext2_flush_allocation_context(
     ext2_allocation_context_t *context)
 {
@@ -87,6 +169,119 @@ static bool ext2_flush_allocation_context(
     }
 
     context->dirty = false;
+
+    return true;
+}
+
+static bool ext2_free_block(
+    ext2_fs_t *fs,
+    uint32_t block_number)
+{
+    if (fs == NULL ||
+        fs->device == NULL ||
+        block_number == 0)
+    {
+        return false;
+    }
+
+    ext2_superblock_t *superblock =
+        &fs->superblock;
+
+    uint32_t block_size =
+        1024u << superblock->log_block_size;
+
+    if (block_size == 0 ||
+        block_size > 4096 ||
+        superblock->blocks_per_group == 0)
+    {
+        return false;
+    }
+
+    if (block_number <
+            superblock->first_data_block ||
+        block_number >=
+            superblock->block_count)
+    {
+        return false;
+    }
+
+    uint32_t relative =
+        block_number -
+        superblock->first_data_block;
+
+    uint32_t group =
+        relative /
+        superblock->blocks_per_group;
+
+    uint32_t bit =
+        relative %
+        superblock->blocks_per_group;
+
+    ext2_block_group_descriptor_t descriptor;
+
+    if (!ext2_read_group_descriptor(
+            fs->device,
+            superblock,
+            group,
+            &descriptor))
+    {
+        return false;
+    }
+
+    uint8_t bitmap[4096];
+
+    if (!ext2_read_block(
+            fs->device,
+            block_size,
+            descriptor.block_bitmap,
+            bitmap))
+    {
+        return false;
+    }
+
+    uint32_t byte_index =
+        bit / 8u;
+
+    uint8_t bit_mask =
+        (uint8_t)(1u << (bit % 8u));
+
+    /*
+     * Refuse to "free" a block which is already free.
+     */
+    if ((bitmap[byte_index] & bit_mask) == 0)
+        return false;
+
+    bitmap[byte_index] &=
+        (uint8_t)~bit_mask;
+
+    if (!ext2_write_block(
+            fs->device,
+            block_size,
+            descriptor.block_bitmap,
+            bitmap))
+    {
+        return false;
+    }
+
+    descriptor.free_blocks_count++;
+
+    if (!ext2_write_group_descriptor(
+            fs->device,
+            superblock,
+            group,
+            &descriptor))
+    {
+        return false;
+    }
+
+    superblock->free_block_count++;
+
+    if (!ext2_write_superblock(
+            fs->device,
+            superblock))
+    {
+        return false;
+    }
 
     return true;
 }
@@ -154,57 +349,6 @@ static bool ext2_flush_block_cache(
 
     return true;
 }
-
-static int ext2_vnode_lookup(
-    vnode_t *directory,
-    const char *name,
-    vnode_t **result);
-
-static int ext2_vnode_read(
-    vnode_t *node,
-    size_t offset,
-    void *buffer,
-    size_t size,
-    size_t *bytes_read);
-
-static int ext2_vnode_write(
-    vnode_t *node,
-    size_t offset,
-    const void *buffer,
-    size_t size,
-    size_t *bytes_written);
-
-static bool ext2_get_data_block(
-    block_device_t *device,
-    const ext2_superblock_t *superblock,
-    const ext2_inode_t *inode,
-    uint32_t logical_block,
-    uint32_t *physical_block,
-    ext2_block_cache_t *cache);
-
-static bool ext2_read_file_cached(
-    block_device_t *device,
-    const ext2_superblock_t *superblock,
-    const ext2_inode_t *inode, size_t offset,
-    void *buffer,
-    size_t buffer_size,
-    size_t *bytes_read,
-    ext2_block_cache_t *cache);
-
-static const vnode_ops_t ext2_directory_ops;
-static const vnode_ops_t ext2_file_ops;
-
-static const vnode_ops_t ext2_directory_ops =
-    {
-        .lookup = ext2_vnode_lookup,
-        .read = NULL,
-        .write = NULL};
-
-static const vnode_ops_t ext2_file_ops =
-    {
-        .lookup = NULL,
-        .read = ext2_vnode_read,
-        .write = ext2_vnode_write};
 
 bool ext2_read_superblock(
     block_device_t *device,
@@ -1499,6 +1643,304 @@ bool ext2_allocate_inode(
     return false;
 }
 
+static uint16_t ext2_directory_entry_size(
+    uint8_t name_length)
+{
+    uint16_t size =
+        (uint16_t)(8u + name_length);
+
+    return (uint16_t)((size + 3u) & ~3u);
+}
+
+bool ext2_link_new_regular_file(
+    ext2_fs_t *fs,
+    uint32_t directory_inode_number,
+    const char *name,
+    uint32_t inode_number)
+{
+    if (fs == NULL ||
+        fs->device == NULL ||
+        name == NULL)
+    {
+        return false;
+    }
+
+    size_t name_length =
+        strlen(name);
+
+    if (name_length == 0 ||
+        name_length > 255)
+    {
+        return false;
+    }
+
+    ext2_inode_t directory;
+
+    if (!ext2_read_inode(
+            fs->device,
+            &fs->superblock,
+            directory_inode_number,
+            &directory))
+    {
+        return false;
+    }
+
+    if ((directory.mode & EXT2_S_IFMT) !=
+        EXT2_S_IFDIR)
+    {
+        return false;
+    }
+
+    ext2_inode_t child;
+
+    if (!ext2_read_inode(
+            fs->device,
+            &fs->superblock,
+            inode_number,
+            &child))
+    {
+        return false;
+    }
+
+    if ((child.mode & EXT2_S_IFMT) !=
+        EXT2_S_IFREG)
+    {
+        return false;
+    }
+
+    /*
+     * This helper is specifically for establishing the first
+     * directory link of a newly allocated regular inode.
+     */
+    if (child.link_count != 0)
+        return false;
+
+    uint32_t block_size =
+        1024u << fs->superblock.log_block_size;
+
+    if (block_size == 0 ||
+        block_size > 4096)
+    {
+        return false;
+    }
+
+    uint16_t needed =
+        ext2_directory_entry_size(
+            (uint8_t)name_length);
+
+    uint8_t block[4096];
+
+    /*
+     * For this phase, use free space in an already allocated
+     * direct directory block.
+     *
+     * Allocating a brand-new directory data block is a later
+     * extension. Failure because the directory is full is real
+     * failure, not fake creation semantics.
+     */
+    for (unsigned i = 0; i < 12; i++)
+    {
+        uint32_t block_number =
+            directory.block[i];
+
+        if (block_number == 0)
+            continue;
+
+        if (!ext2_read_block(
+                fs->device,
+                block_size,
+                block_number,
+                block))
+        {
+            return false;
+        }
+
+        size_t offset = 0;
+
+        while (offset < block_size)
+        {
+            ext2_directory_entry_t *entry =
+                (ext2_directory_entry_t *)(block + offset);
+
+            if (entry->record_length < 8)
+                return false;
+
+            if (offset +
+                    entry->record_length >
+                block_size)
+            {
+                return false;
+            }
+
+            if (entry->name_length >
+                entry->record_length - 8)
+            {
+                return false;
+            }
+
+            /*
+             * Reject an existing name.
+             */
+            if (entry->inode != 0 &&
+                entry->name_length ==
+                    name_length &&
+                memcmp(
+                    entry->name,
+                    name,
+                    name_length) == 0)
+            {
+                return false;
+            }
+
+            /*
+             * Case 1:
+             *
+             * Entire directory record is unused.
+             */
+            if (entry->inode == 0 &&
+                entry->record_length >= needed)
+            {
+                uint16_t record_length =
+                    entry->record_length;
+
+                entry->inode =
+                    inode_number;
+
+                entry->record_length =
+                    record_length;
+
+                entry->name_length =
+                    (uint8_t)name_length;
+
+                entry->file_type =
+                    EXT2_FT_REG_FILE;
+
+                memcpy(
+                    entry->name,
+                    name,
+                    name_length);
+
+                /*
+                 * Establish link count before publishing the
+                 * directory entry.
+                 */
+                child.link_count = 1;
+
+                if (!ext2_write_inode(
+                        fs->device,
+                        &fs->superblock,
+                        inode_number,
+                        &child))
+                {
+                    return false;
+                }
+
+                if (!ext2_write_block(
+                        fs->device,
+                        block_size,
+                        block_number,
+                        block))
+                {
+                    /*
+                     * Best-effort rollback.
+                     */
+                    child.link_count = 0;
+
+                    ext2_write_inode(
+                        fs->device,
+                        &fs->superblock,
+                        inode_number,
+                        &child);
+
+                    return false;
+                }
+
+                return true;
+            }
+
+            /*
+             * Case 2:
+             *
+             * A live entry owns more record space than its
+             * name actually requires. Split that record and
+             * place the new entry in the slack.
+             */
+            if (entry->inode != 0)
+            {
+                uint16_t actual =
+                    ext2_directory_entry_size(
+                        entry->name_length);
+
+                if (entry->record_length >=
+                    actual + needed)
+                {
+                    uint16_t old_length =
+                        entry->record_length;
+
+                    entry->record_length =
+                        actual;
+
+                    ext2_directory_entry_t *new_entry =
+                        (ext2_directory_entry_t *)(block +
+                                                   offset +
+                                                   actual);
+
+                    new_entry->inode =
+                        inode_number;
+
+                    new_entry->record_length =
+                        old_length - actual;
+
+                    new_entry->name_length =
+                        (uint8_t)name_length;
+
+                    new_entry->file_type =
+                        EXT2_FT_REG_FILE;
+
+                    memcpy(
+                        new_entry->name,
+                        name,
+                        name_length);
+
+                    child.link_count = 1;
+
+                    if (!ext2_write_inode(
+                            fs->device,
+                            &fs->superblock,
+                            inode_number,
+                            &child))
+                    {
+                        return false;
+                    }
+
+                    if (!ext2_write_block(
+                            fs->device,
+                            block_size,
+                            block_number,
+                            block))
+                    {
+                        child.link_count = 0;
+
+                        ext2_write_inode(
+                            fs->device,
+                            &fs->superblock,
+                            inode_number,
+                            &child);
+
+                        return false;
+                    }
+
+                    return true;
+                }
+            }
+
+            offset += entry->record_length;
+        }
+    }
+
+    return false;
+}
+
 bool ext2_list_directory(
     block_device_t *device,
     const ext2_superblock_t *superblock,
@@ -2330,6 +2772,73 @@ static int ext2_vnode_write(
     return 0;
 }
 
+static int ext2_vnode_create(
+    vnode_t *directory,
+    const char *name,
+    vnode_t **result)
+{
+    if (directory == NULL ||
+        name == NULL ||
+        result == NULL)
+    {
+        return -1;
+    }
+
+    if (directory->type != VNODE_DIRECTORY)
+        return -1;
+
+    ext2_vnode_data_t *data =
+        (ext2_vnode_data_t *)
+            directory->private_data;
+
+    if (data == NULL ||
+        data->fs == NULL)
+    {
+        return -1;
+    }
+
+    /*
+     * Do not create over an existing name.
+     */
+    vnode_t *existing = NULL;
+
+    if (ext2_vnode_lookup(
+            directory,
+            name,
+            &existing) == 0)
+    {
+        vnode_unref(existing);
+        return -1;
+    }
+
+    uint32_t inode_number = 0;
+
+    if (!ext2_allocate_inode(
+            data->fs,
+            &inode_number))
+    {
+        return -1;
+    }
+
+    if (!ext2_link_new_regular_file(
+            data->fs,
+            data->inode_number,
+            name,
+            inode_number))
+    {
+        return -1;
+    }
+
+    /*
+     * Go back through ordinary lookup so vnode construction
+     * remains in one place.
+     */
+    return ext2_vnode_lookup(
+        directory,
+        name,
+        result);
+}
+
 bool ext2_mount(block_device_t *device, ext2_fs_t *fs)
 {
     if (device == NULL || fs == NULL)
@@ -2539,4 +3048,261 @@ static bool ext2_get_data_block(
      * Triple indirect is not supported yet.
      */
     return false;
+}
+
+static int ext2_vnode_truncate(
+    vnode_t *node,
+    size_t size)
+{
+    if (node == NULL)
+        return -1;
+
+    /*
+     * This phase only needs fopen("w") semantics.
+     * Arbitrary truncate sizes are intentionally unsupported.
+     */
+    if (size != 0)
+        return -1;
+
+    if (node->type != VNODE_REGULAR)
+        return -1;
+
+    ext2_vnode_data_t *data =
+        (ext2_vnode_data_t *)
+            node->private_data;
+
+    if (data == NULL ||
+        data->fs == NULL)
+    {
+        return -1;
+    }
+
+    ext2_fs_t *fs =
+        data->fs;
+
+    uint32_t block_size =
+        1024u << fs->superblock.log_block_size;
+
+    if (block_size == 0 ||
+        block_size > 4096)
+    {
+        return -1;
+    }
+
+    uint32_t entries_per_block =
+        block_size /
+        sizeof(uint32_t);
+
+    if (entries_per_block == 0)
+        return -1;
+
+    uint8_t *block = kmalloc(block_size);
+    uint8_t *root_block = kmalloc(block_size);
+    uint8_t *leaf_block = kmalloc(block_size);
+
+    if (block == NULL ||
+        root_block == NULL ||
+        leaf_block == NULL)
+    {
+        kfree(block);
+        kfree(root_block);
+        kfree(leaf_block);
+        return -1;
+    }
+
+    /*
+     * ======================================================
+     * Direct data blocks
+     * ======================================================
+     */
+    for (unsigned i = 0; i < 12; i++)
+    {
+        uint32_t block_number =
+            data->inode.block[i];
+
+        if (block_number == 0)
+            continue;
+
+        if (!ext2_free_block(
+                fs,
+                block_number))
+        {
+            return -1;
+        }
+
+        data->inode.block[i] = 0;
+    }
+
+    /*
+     * ======================================================
+     * Single indirect
+     * ======================================================
+     */
+    uint32_t single =
+        data->inode.block[12];
+
+    if (single != 0)
+    {
+        if (!ext2_read_block(
+                fs->device,
+                block_size,
+                single,
+                block))
+        {
+            return -1;
+        }
+
+        uint32_t *entries =
+            (uint32_t *)block;
+
+        for (uint32_t i = 0;
+             i < entries_per_block;
+             i++)
+        {
+            if (entries[i] == 0)
+                continue;
+
+            if (!ext2_free_block(
+                    fs,
+                    entries[i]))
+            {
+                return -1;
+            }
+        }
+
+        /*
+         * Free the pointer table itself.
+         */
+        if (!ext2_free_block(
+                fs,
+                single))
+        {
+            return -1;
+        }
+
+        data->inode.block[12] = 0;
+    }
+
+    /*
+     * ======================================================
+     * Double indirect
+     * ======================================================
+     */
+    uint32_t double_root =
+        data->inode.block[13];
+
+    if (double_root != 0)
+    {
+        if (!ext2_read_block(
+                fs->device,
+                block_size,
+                double_root,
+                root_block))
+        {
+            return -1;
+        }
+
+        uint32_t *root_entries =
+            (uint32_t *)root_block;
+
+        for (uint32_t root_index = 0;
+             root_index < entries_per_block;
+             root_index++)
+        {
+            uint32_t leaf_block_number =
+                root_entries[root_index];
+
+            if (leaf_block_number == 0)
+                continue;
+
+            if (!ext2_read_block(
+                    fs->device,
+                    block_size,
+                    leaf_block_number,
+                    leaf_block))
+            {
+                return -1;
+            }
+
+            uint32_t *leaf_entries =
+                (uint32_t *)leaf_block;
+
+            for (uint32_t leaf_index = 0;
+                 leaf_index < entries_per_block;
+                 leaf_index++)
+            {
+                if (leaf_entries[leaf_index] == 0)
+                    continue;
+
+                if (!ext2_free_block(
+                        fs,
+                        leaf_entries[leaf_index]))
+                {
+                    return -1;
+                }
+            }
+
+            /*
+             * Free this second-level pointer table.
+             */
+            if (!ext2_free_block(
+                    fs,
+                    leaf_block_number))
+            {
+                return -1;
+            }
+        }
+
+        /*
+         * Free the double-indirect root table.
+         */
+        if (!ext2_free_block(
+                fs,
+                double_root))
+        {
+            return -1;
+        }
+
+        data->inode.block[13] = 0;
+    }
+
+    /*
+     * Triple indirect isn't supported by your current writer.
+     * Refuse unexpected state rather than silently leaking it.
+     */
+    if (data->inode.block[14] != 0)
+        return -1;
+
+    data->inode.size_low = 0;
+    data->inode.size_high = 0;
+    data->inode.sector_count = 0;
+
+    if (!ext2_write_inode(
+            fs->device,
+            &fs->superblock,
+            data->inode_number,
+            &data->inode))
+    {
+        return -1;
+    }
+
+    node->size = 0;
+
+    /*
+     * Any indirect-block contents cached for the old file are
+     * now invalid.
+     */
+    if (data->block_cache != NULL)
+    {
+        memset(
+            data->block_cache,
+            0,
+            sizeof(ext2_block_cache_t));
+    }
+
+    kfree(block);
+    kfree(root_block);
+    kfree(leaf_block);
+
+    return 0;
 }

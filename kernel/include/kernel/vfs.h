@@ -31,12 +31,25 @@ typedef struct vnode_ops
      *
      * Returns the vnode for /etc/config.
      */
-    int (*lookup)(vnode_t *directory, const char *name, vnode_t **result);
+    int (*lookup)(
+        vnode_t *directory, 
+        const char *name, 
+        vnode_t **result);
+
+    int (*create)(
+        vnode_t *directory,
+        const char *name,
+        vnode_t **result);
 
     /*
      * Read bytes from a regular file.
      */
-    int (*read)(vnode_t *node, size_t offset, void *buffer, size_t size, size_t *bytes_read);
+    int (*read)(
+        vnode_t *node, 
+        size_t offset, 
+        void *buffer, 
+        size_t size, 
+        size_t *bytes_read);
 
     /*
      * Write bytes to a regular file.
@@ -44,7 +57,16 @@ typedef struct vnode_ops
      * We won't use this immediately,
      * but putting it into the interface now is useful.
      */
-    int (*write)(vnode_t *node, size_t offset, const void *buffer, size_t size, size_t *bytes_written);
+    int (*write)(
+        vnode_t *node, 
+        size_t offset, 
+        const void *buffer, 
+        size_t size, 
+        size_t *bytes_written);
+
+    int (*truncate)(
+        vnode_t *node,
+        size_t size);
 } vnode_ops_t;
 
 struct vnode
@@ -123,5 +145,8 @@ void vfs_close(file_t *file);
 
 #define VFS_OPEN_READ   0x0001u
 #define VFS_OPEN_WRITE  0x0002u
+#define VFS_OPEN_APPEND 0x0004u
+#define VFS_OPEN_CREATE 0x0008u
+#define VFS_OPEN_TRUNC  0x0010u
 
 #endif

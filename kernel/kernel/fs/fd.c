@@ -35,6 +35,24 @@ int kernel_fd_open(
     if (flags & KERNEL_FD_WRITE)
         vfs_flags |= VFS_OPEN_WRITE;
 
+    if ((flags & KERNEL_FD_APPEND) && !(flags & KERNEL_FD_WRITE))
+        return -1;
+
+    if ((flags & KERNEL_FD_CREATE) && !(flags & KERNEL_FD_WRITE))
+        return -1;
+
+    if ((flags & KERNEL_FD_TRUNC) && !(flags & KERNEL_FD_WRITE))
+        return -1;
+
+    if (flags & KERNEL_FD_APPEND)
+        vfs_flags |= VFS_OPEN_APPEND;
+
+    if (flags & KERNEL_FD_CREATE)
+        vfs_flags |= VFS_OPEN_CREATE;
+
+    if (flags & KERNEL_FD_TRUNC)
+        vfs_flags |= VFS_OPEN_TRUNC;
+
     if (vfs_flags == 0)
         return -1;
 
