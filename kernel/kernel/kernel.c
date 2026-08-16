@@ -34,6 +34,7 @@
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
 #include "../arch/i386/interrupts.h"
+#include "../arch/i386/syscall.h"
 #include "../arch/i386/pic.h"
 #include "../arch/i386/pit.h"
 
@@ -246,6 +247,14 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	interrupt_initialization();
 	printf("interrupts initialized\n");
+
+	if (!syscall_initialize())
+	{
+		printf("U2: syscall initialization failed\n");
+		halt_forever();
+	}
+
+	printf("U2: syscall gate initialized\n");
 
 	pic_initialize();
 	printf("pic initialized\n");

@@ -4,6 +4,7 @@
 
 #include "pic.h"
 #include "interrupts.h"
+#include "syscall.h"
 
 #include <kernel/scheduler.h>
 
@@ -180,7 +181,8 @@ static void breakpoint_handler(struct interrupt_frame *frame)
 {
     if ((frame->cs & 3u) == 3u)
     {
-        printf("\n=== U1 USER-MODE TRAP ===\n");
+        printf(
+            "\n=== U2 USER-MODE RETURN TRAP ===\n");
 
         printf(
             "Vector    : %lu\n",
@@ -199,6 +201,10 @@ static void breakpoint_handler(struct interrupt_frame *frame)
             (unsigned long)(frame->cs & 3u));
 
         printf(
+            "EAX       : 0x%lx\n",
+            (unsigned long)frame->eax);
+
+        printf(
             "User ESP  : 0x%lx\n",
             (unsigned long)frame->user_esp);
 
@@ -206,14 +212,18 @@ static void breakpoint_handler(struct interrupt_frame *frame)
             "User SS   : 0x%lx\n",
             (unsigned long)frame->user_ss);
 
-        printf("U1: CPL=3 trap confirmed\n");
+        if (frame->eax !=
+            I386_SYSCALL_TEST_RESULT)
+        {
+            printf(
+                "U2: syscall return value FAILED\n");
 
-        /*
-         * This milestone intentionally stops here.
-         *
-         * We do not yet have a real user task lifecycle or syscall
-         * return path.
-         */
+            interrupt_halt();
+        }
+
+        printf(
+            "U2: syscall returned to CPL3 successfully\n");
+
         interrupt_halt();
     }
 

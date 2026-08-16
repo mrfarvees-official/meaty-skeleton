@@ -72,13 +72,42 @@ arch_enter_user:
 
 u1_user_test_entry:
     /*
-     * Success means this instruction executes at CPL3 and reaches
-     * the kernel through IDT vector 3.
+     * U2a ABI:
+     *
+     * EAX = syscall number
+     * INT 0x80
+     * EAX = return value
+     */
+    movl $0, %eax
+    int $0x80
+
+    /*
+     * If we reached here, the kernel IRET successfully returned
+     * execution to CPL3.
+     */
+    cmpl $0xC0DEFACE, %eax
+    jne 1f
+
+    /*
+     * Preserve returned EAX and deliberately trap again.
+     *
+     * The breakpoint handler can now verify:
+     *
+     *   - CS.RPL is still 3
+     *   - EAX contains the syscall result
      */
     int3
 
 1:
-    jmp 1b
+    /*
+     * Bad syscall return value.
+     *
+     * Generate an invalid opcode from CPL3 so failure is obvious.
+     */
+    ud2
+
+2:
+    jmp 2b
 
 .size u1_user_test_entry, . - u1_user_test_entry
 

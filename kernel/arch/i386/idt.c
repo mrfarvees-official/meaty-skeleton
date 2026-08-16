@@ -4,6 +4,7 @@
 
 #include "idt.h"
 #include "pic.h"
+#include "syscall.h"
 
 static struct idt_entry idt[IDT_ENTRY_COUNT];
 static struct idt_pointer idtr;
@@ -12,6 +13,7 @@ extern void *isr_stub_table[32];
 extern void *irq_stub_table[16];
 extern void isr_apic_timer(void);
 extern void isr_apic_reschedule(void);
+extern void isr_128(void);
 
 void idt_set_gate(uint8_t vector, void (*handler)(void), uint8_t attributes)
 {
@@ -56,6 +58,18 @@ void idt_initialize(void)
     idt_set_gate(
         3u,
         (void (*)(void))isr_stub_table[3],
+        0xEEu);
+
+    /*
+     * U2 syscall gate.
+     *
+     * DPL=3 allows INT 0x80 from user mode.
+     * Keep this an interrupt gate for now so IF is cleared while
+     * executing the initial syscall entry path.
+     */
+    idt_set_gate(
+        I386_SYSCALL_VECTOR,
+        isr_128,
         0xEEu);
 
     /*

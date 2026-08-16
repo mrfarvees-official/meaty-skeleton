@@ -51,6 +51,14 @@ ISR_NO_ERROR 29
 ISR_NO_ERROR 30
 ISR_NO_ERROR 31
 
+/*
+ * Software syscall entry.
+ *
+ * Software INT does not supply an error code, so match the normal
+ * no-error interrupt-frame layout expected by isr_common.
+ */
+ISR_NO_ERROR 128
+
 .global isr_apic_timer
 isr_apic_timer:
     pushl $0
