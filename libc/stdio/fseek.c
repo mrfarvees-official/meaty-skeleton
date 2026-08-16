@@ -61,6 +61,17 @@ int fseek(
         kernel_offset -= 1;
     }
 
+    /*
+     * Pending output must be written at the old position before
+     * repositioning the underlying descriptor.
+     */
+    if ((stream->flags & _IO_WRITE) &&
+        stream->write_buffer_used != 0)
+    {
+        if (fflush(stream) == EOF)
+            return -1;
+    }
+
     size_t new_offset = 0;
 
     if (kernel_fd_seek(
@@ -71,17 +82,6 @@ int fseek(
     {
         stream->flags |= _IO_ERROR;
         return -1;
-    }
-
-    /*
-     * Pending output must be written at the old position before
-     * repositioning the underlying descriptor.
-     */
-    if ((stream->flags & _IO_WRITE) &&
-        stream->write_buffer_used != 0)
-    {
-        if (fflush(stream) == EOF)
-            return -1;
     }
 
     (void)new_offset;
