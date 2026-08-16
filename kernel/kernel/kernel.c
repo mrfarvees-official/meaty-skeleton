@@ -79,21 +79,63 @@ extern void u1_user_test_entry(void);
 static uint8_t u1_user_stack[PAGE_SIZE]
 	__attribute__((aligned(PAGE_SIZE)));
 
-/*
- * Temporary BSP-only privilege-transition stack.
- *
- * This is deliberately not pretending to be the final task kernel
- * stack solution.  The next U1 milestone can hook esp0 to scheduled
- * tasks and make the TSS per-CPU.
- */
-static uint8_t u1_kernel_entry_stack[16u * 1024u]
-	__attribute__((aligned(16)));
-
-static void u1_ring3_test(void)
+static void u1_ring3_task(void *argument)
 	__attribute__((noreturn));
 
-static void u1_ring3_test(void)
+static void u1_ring3_task(void *argument)
 {
+	(void)argument;
+
+	task_t *task =
+		task_current();
+
+	cpu_local_t *cpu =
+		cpu_current();
+
+	if (task == NULL ||
+		cpu == NULL)
+	{
+		printf("U1d: missing current task/CPU\n");
+		halt_forever();
+	}
+
+	uintptr_t expected_esp0 =
+		task_kernel_stack_top(task);
+
+	uintptr_t actual_esp0 = 0;
+
+	if (expected_esp0 == 0)
+	{
+		printf("U1d: test task has no managed kernel stack\n");
+		halt_forever();
+	}
+
+	if (!gdt_get_kernel_stack(
+			cpu->index,
+			&actual_esp0))
+	{
+		printf("U1d: failed reading TSS esp0\n");
+		halt_forever();
+	}
+
+	printf(
+		"U1d: task=%u cpu=%u kernel_stack_top=0x%lx\n",
+		(unsigned)task->id,
+		(unsigned)cpu->index,
+		(unsigned long)expected_esp0);
+
+	printf(
+		"U1d: TSS esp0=0x%lx\n",
+		(unsigned long)actual_esp0);
+
+	if (actual_esp0 != expected_esp0)
+	{
+		printf("U1d: TSS esp0 does not match current task\n");
+		halt_forever();
+	}
+
+	printf("U1d: scheduler-owned kernel stack confirmed\n");
+
 	uintptr_t user_code_physical;
 	uintptr_t user_stack_physical;
 
@@ -144,30 +186,6 @@ static void u1_ring3_test(void)
 		halt_forever();
 	}
 
-	uintptr_t kernel_stack_top =
-		(uintptr_t)u1_kernel_entry_stack +
-		sizeof(u1_kernel_entry_stack);
-
-	kernel_stack_top &=
-		~(uintptr_t)0xFu;
-
-	cpu_local_t *cpu =
-		cpu_current();
-
-	if (cpu == NULL)
-	{
-		printf("U1: cannot resolve current CPU\n");
-		halt_forever();
-	}
-
-	if (!gdt_set_kernel_stack(
-			cpu->index,
-			kernel_stack_top))
-	{
-		printf("U1: failed to set kernel entry stack\n");
-		halt_forever();
-	}
-
 	printf(
 		"U1: entering user mode eip=0x%lx esp=0x%lx\n",
 		(unsigned long)U1_USER_CODE_ADDRESS,
@@ -176,6 +194,39 @@ static void u1_ring3_test(void)
 	arch_enter_user(
 		U1_USER_CODE_ADDRESS,
 		U1_USER_STACK_TOP);
+}
+
+static void u1_start_scheduler_owned_test(void)
+{
+	task_t *task =
+		task_create_kernel_with_policy(
+			u1_ring3_task,
+			NULL,
+			SCHED_POLICY_REALTIME);
+
+	if (task == NULL)
+	{
+		printf("U1d: failed creating scheduler-owned test task\n");
+		halt_forever();
+	}
+
+	printf(
+		"U1d: created scheduler-owned task %u\n",
+		(unsigned)task->id);
+
+	/*
+	 * The U1 task is REALTIME while the bootstrap/reaper tasks are
+	 * NORMAL, so the next scheduler selection deterministically
+	 * chooses the U1 task.
+	 */
+	task_yield();
+
+	/*
+	 * The U1 task enters CPL3 and the successful trap halts.
+	 * Returning here would therefore indicate a broken test.
+	 */
+	printf("U1d: ERROR test task returned\n");
+	halt_forever();
 }
 
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
@@ -244,6 +295,14 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	task_initialize();
 	printf("BSP task system initialized\n");
+
+	/*
+	 * Final U1 proof:
+	 *
+	 * Run the CPL3 transition from a scheduler-owned task before AP
+	 * startup so task placement is deterministic.
+	 */
+	u1_start_scheduler_owned_test();
 
 	process_initialize();
 	printf("process system initialized\n");
@@ -432,54 +491,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	}
 
 	printf("SMP online CPUs: %u\n", (unsigned)smp_online_cpu_count());
-
-	/*
-	 * U1c diagnostic.
-	 *
-	 * By this point AP scheduling has run and managed kernel tasks have
-	 * been selected.  Print the TSS esp0 currently installed for every
-	 * online CPU.
-	 */
-	for (size_t i = 0;
-		 i < smp_cpu_count();
-		 ++i)
-	{
-		cpu_local_t *cpu =
-			cpu_get(i);
-
-		if (cpu == NULL ||
-			!cpu->online)
-		{
-			continue;
-		}
-
-		uintptr_t esp0 = 0;
-
-		if (!gdt_get_kernel_stack(
-				i,
-				&esp0))
-		{
-			printf(
-				"U1c: failed reading CPU %u esp0\n",
-				(unsigned)i);
-
-			halt_forever();
-		}
-
-		printf(
-			"U1c: CPU %u TSS esp0=0x%lx\n",
-			(unsigned)i,
-			(unsigned long)esp0);
-	}
-
-	/*
-	 * U1a ends inside the breakpoint handler after proving a CPL3
-	 * interrupt transition.
-	 *
-	 * Keep this before heap/SMP/device startup so only the BSP is
-	 * involved in the first privilege-transition test.
-	 */
-	u1_ring3_test();
 
 	if (pit_initialize(PIT_DEFAULT_FREQUENCY_HZ) != 0)
 	{
