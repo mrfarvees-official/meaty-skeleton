@@ -319,179 +319,165 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	{
 		printf(
-			"\n=== fopen a test ===\n");
+			"\n=== bulk fread test ===\n");
 
-		/*
-		 * Establish a known existing file.
-		 */
+		static unsigned char source[8192];
+		static unsigned char destination[8192];
+
+		for (size_t i = 0;
+			 i < sizeof(source);
+			 ++i)
+		{
+			source[i] =
+				(unsigned char)((i * 19u + 7u) &
+								0xFFu);
+		}
+
 		FILE *file =
 			fopen(
-				"/stdio-a.txt",
+				"/stdio-fread.bin",
 				"w");
 
 		if (file != NULL)
 		{
-			fwrite(
-				"BASE",
-				1,
-				4,
-				file);
-
-			fclose(file);
-		}
-
-		/*
-		 * Append to existing file.
-		 */
-		file =
-			fopen(
-				"/stdio-a.txt",
-				"a");
-
-		printf(
-			"existing a open=%d\n",
-			file != NULL);
-
-		if (file != NULL)
-		{
 			size_t written =
 				fwrite(
-					"-APPEND",
+					source,
 					1,
-					7,
+					sizeof(source),
 					file);
 
 			printf(
-				"existing a write=%u error=%d\n",
+				"prepare write=%u error=%d\n",
 				(unsigned)written,
 				ferror(file));
 
 			fclose(file);
 		}
 
+		/*
+		 * Exact-size bulk read.
+		 */
+		memset(
+			destination,
+			0,
+			sizeof(destination));
+
 		file =
 			fopen(
-				"/stdio-a.txt",
+				"/stdio-fread.bin",
 				"r");
 
 		if (file != NULL)
 		{
-			char buffer[16];
-			size_t read;
-
-			memset(
-				buffer,
-				0,
-				sizeof(buffer));
-
-			read =
+			size_t read =
 				fread(
-					buffer,
-					1,
-					11,
+					destination,
+					64,
+					128,
 					file);
 
 			printf(
-				"existing a read=%u data=%s\n",
+				"exact elements=%u eof=%d error=%d compare=%d\n",
 				(unsigned)read,
-				buffer);
+				feof(file),
+				ferror(file),
+				memcmp(
+					source,
+					destination,
+					sizeof(source)) == 0);
 
-			fclose(file);
-		}
+			/*
+			 * Now actually read past EOF.
+			 */
+			unsigned char c = 0;
 
-		/*
-		 * Missing file must be created.
-		 */
-		file =
-			fopen(
-				"/stdio-a-new.txt",
-				"a");
-
-		printf(
-			"missing a open=%d\n",
-			file != NULL);
-
-		if (file != NULL)
-		{
-			size_t written =
-				fwrite(
-					"NEW",
+			size_t past =
+				fread(
+					&c,
 					1,
-					3,
+					1,
 					file);
 
 			printf(
-				"missing a write=%u error=%d\n",
-				(unsigned)written,
+				"past eof read=%u eof=%d error=%d\n",
+				(unsigned)past,
+				feof(file),
 				ferror(file));
 
 			fclose(file);
 		}
 
+		/*
+		 * Pushback + bulk read.
+		 */
 		file =
 			fopen(
-				"/stdio-a-new.txt",
+				"/stdio-fread.bin",
 				"r");
 
 		if (file != NULL)
 		{
-			char buffer[8];
-			size_t read;
+			int first =
+				fgetc(file);
 
-			memset(
-				buffer,
-				0,
-				sizeof(buffer));
+			int pushed =
+				ungetc(first, file);
 
-			read =
+			unsigned char small[4] = {0};
+
+			size_t read =
 				fread(
-					buffer,
+					small,
 					1,
-					3,
+					sizeof(small),
 					file);
 
 			printf(
-				"missing a read=%u data=%s\n",
+				"pushback read=%u pushed=%d bytes=%u,%u,%u,%u\n",
 				(unsigned)read,
-				buffer);
+				pushed != EOF,
+				(unsigned)small[0],
+				(unsigned)small[1],
+				(unsigned)small[2],
+				(unsigned)small[3]);
 
 			fclose(file);
 		}
 
 		/*
-		 * a+ should start readable from offset zero,
-		 * while still forcing writes to EOF.
+		 * Partial final element.
+		 *
+		 * File has 8192 bytes. Request elements of 3000 bytes:
+		 * only two complete elements fit, but the remaining 2192
+		 * bytes should still be copied.
 		 */
 		file =
 			fopen(
-				"/stdio-a.txt",
-				"a+");
-
-		printf(
-			"a+ open=%d\n",
-			file != NULL);
+				"/stdio-fread.bin",
+				"r");
 
 		if (file != NULL)
 		{
-			char buffer[5];
-			size_t read;
+			static unsigned char partial[9000];
 
 			memset(
-				buffer,
+				partial,
 				0,
-				sizeof(buffer));
+				sizeof(partial));
 
-			read =
+			size_t read =
 				fread(
-					buffer,
-					1,
-					4,
+					partial,
+					3000,
+					3,
 					file);
 
 			printf(
-				"a+ initial read=%u data=%s\n",
+				"partial elements=%u eof=%d last=%u\n",
 				(unsigned)read,
-				buffer);
+				feof(file),
+				(unsigned)partial[8191]);
 
 			fclose(file);
 		}
