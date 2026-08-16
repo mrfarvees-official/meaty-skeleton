@@ -2,77 +2,65 @@
 #include <stddef.h>
 
 #if defined(__is_libk)
-#include <kernel/keyboard.h>
+#include <kernel/tty.h>
 #include <kernel/fd.h>
 #endif
 
-int fgetc(FILE *stream)
+int fputc(int ic, FILE *stream)
 {
+    unsigned char c;
+
     if (stream == NULL)
         return EOF;
 
-    if (!(stream->flags & _IO_READ))
+    if (!(stream->flags & _IO_WRITE))
     {
         stream->flags |= _IO_ERROR;
         return EOF;
     }
 
-    if (stream->has_pushback)
-    {
-        int c = stream->pushback;
-
-        stream->has_pushback = 0;
-
-        return c;
-    }
+    c = (unsigned char)ic;
 
 #if defined(__is_libk)
 
-    /**
-     * stdin currently maps to then kernel keyboard character queue.
+    /*
+     * stdout and stderr map to the kernel terminal.
      */
-    if (stream->fd == 0)
+    if (stream->fd == 1 || stream->fd == 2)
     {
-        char character;
+        char character = (char)c;
 
-        if (!keyboard_wait_character(&character))
-        {
-            stream->flags |= _IO_ERROR;
-            return EOF;
-        }
+        terminal_write(
+            &character,
+            sizeof(character));
 
-        return (unsigned char)character;
+        return (int)c;
     }
 
-    /**
-     * Descriptors >= 3 are VFS-backed regular files
+    /*
+     * Descriptors >= 3 are VFS-backed files.
      */
     if (stream->fd >= KERNEL_FD_FIRST)
     {
-        unsigned char character;
-        size_t bytes_read = 0;
+        size_t bytes_written = 0;
 
-        if (kernel_fd_read(
+        if (kernel_fd_write(
                 stream->fd,
-                &character,
+                &c,
                 1,
-                &bytes_read) != 0)
+                &bytes_written) != 0)
         {
             stream->flags |= _IO_ERROR;
             return EOF;
         }
 
-        /**
-         * A successful zero-byte VFS read means that the file
-         * offset has reached end-of-file.
-         */
-        if (bytes_read == 0)
+        if (bytes_written != 1)
         {
-            stream->flags |= _IO_EOF;
+            stream->flags |= _IO_ERROR;
             return EOF;
         }
 
-        return (int)character;
+        return (int)c;
     }
 
 #endif

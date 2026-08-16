@@ -32,7 +32,7 @@ int kernel_fd_open(
     if (flags & KERNEL_FD_READ)
         vfs_flags |= VFS_OPEN_READ;
 
-    if (flags & KENREL_FD_WRITE)
+    if (flags & KERNEL_FD_WRITE)
         vfs_flags |= VFS_OPEN_WRITE;
 
     if (vfs_flags == 0)

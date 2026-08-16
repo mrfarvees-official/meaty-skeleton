@@ -30,6 +30,8 @@ LIBK_CPPFLAGS:=$(LIBK_CPPFLAGS) $(KERNEL_ARCH_CPPFLAGS)
 FREEOBJS=\
 $(ARCH_FREEOBJS) 	\
 stdio/printf.o 		\
+stdio/fopen.o 		\
+stdio/fclose.o 		\
 stdio/fread.o 		\
 stdio/feof.o 		\
 stdio/ferror.o 		\

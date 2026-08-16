@@ -28,6 +28,9 @@ extern FILE *stdin;
 extern FILE *stdout;
 extern FILE *stderr;
 
+FILE *fopen(const char *path, const char *mode);
+int fclose(FILE *stream);
+
 int fgetc(FILE *stream);
 int getchar(void);
 int ungetc(int c, FILE *stream);

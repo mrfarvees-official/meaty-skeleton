@@ -2,6 +2,7 @@
 #define KERNEL_HEAP_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
 typedef struct __attribute__((aligned(16))) heap_block
 {

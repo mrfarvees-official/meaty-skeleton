@@ -318,89 +318,137 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	printf("hardware interrupts enabled\n");
 
 	{
-		int fd;
+		FILE *file;
+		char buffer[32];
+		size_t written;
+		size_t read;
 
-		printf("\n=== file-backed stdio test ===\n");
+		printf("\n=== file-backed fwrite test ===\n");
 
-		fd = kernel_fd_open(
+		file = fopen(
 			"/grow.txt",
-			KERNEL_FD_READ);
+			"r+");
 
-		if (fd < 0)
+		if (file == NULL)
 		{
-			printf("kernel_fd_open FAILED\n");
+			printf("fopen r+ FAILED\n");
 		}
 		else
 		{
-			FILE file = {
-				.fd = fd,
-				.flags = _IO_READ,
-				.pushback = 0,
-				.has_pushback = 0,
-			};
+			static const char message[] =
+				"stdio-write-test";
 
-			unsigned char buffer[1024];
-			size_t total = 0;
-			size_t result;
+			written = fwrite(
+				message,
+				1,
+				sizeof(message) - 1,
+				file);
 
 			printf(
-				"opened /grow.txt fd=%d\n",
-				fd);
+				"fwrite result=%u ferror=%d\n",
+				(unsigned)written,
+				ferror(file));
 
-			/*
-			 * The test file is 4096 bytes. Read four blocks.
-			 */
-			for (int i = 0; i < 4; i++)
-			{
-				result = fread(
-					buffer,
-					1,
-					sizeof(buffer),
-					&file);
+			printf(
+				"fclose write=%d\n",
+				fclose(file));
+		}
 
-				total += result;
+		printf("\n=== file readback test ===\n");
 
-				printf(
-					"read %d: result=%u total=%u "
-					"feof=%d ferror=%d\n",
-					i + 1,
-					(unsigned)result,
-					(unsigned)total,
-					feof(&file),
-					ferror(&file));
-			}
+		file = fopen(
+			"/grow.txt",
+			"r");
 
-			/*
-			 * Reading exactly to the end does not set EOF yet.
-			 *
-			 * EOF becomes known only when a read attempts to go
-			 * beyond the end.
-			 */
-			result = fread(
+		if (file == NULL)
+		{
+			printf("readback fopen FAILED\n");
+		}
+		else
+		{
+			read = fread(
 				buffer,
 				1,
-				1,
-				&file);
+				16,
+				file);
+
+			if (read < sizeof(buffer))
+				buffer[read] = '\0';
 
 			printf(
-				"past-end: result=%u total=%u "
+				"read=%u data=%s\n",
+				(unsigned)read,
+				buffer);
+
+			printf(
 				"feof=%d ferror=%d\n",
-				(unsigned)result,
-				(unsigned)total,
-				feof(&file),
-				ferror(&file));
-
-			clearerr(&file);
+				feof(file),
+				ferror(file));
 
 			printf(
-				"after clearerr: feof=%d ferror=%d\n",
-				feof(&file),
-				ferror(&file));
+				"fclose read=%d\n",
+				fclose(file));
+		}
 
-			if (kernel_fd_close(fd) != 0)
-				printf("kernel_fd_close FAILED\n");
-			else
-				printf("kernel_fd_close passed\n");
+		printf("\n=== fputc file test ===\n");
+
+		file = fopen(
+			"/grow.txt",
+			"r+");
+
+		if (file == NULL)
+		{
+			printf("fputc fopen FAILED\n");
+		}
+		else
+		{
+			int result;
+
+			result = fputc(
+				'X',
+				file);
+
+			printf(
+				"fputc result=%c ferror=%d\n",
+				result,
+				ferror(file));
+
+			fclose(file);
+		}
+
+		file = fopen(
+			"/grow.txt",
+			"r");
+
+		if (file != NULL)
+		{
+			int c = fgetc(file);
+
+			printf(
+				"first byte after fputc=%c\n",
+				c);
+
+			fclose(file);
+		}
+
+		printf("\n=== write protection test ===\n");
+
+		file = fopen(
+			"/grow.txt",
+			"r");
+
+		if (file != NULL)
+		{
+			int result =
+				fputc('!', file);
+
+			printf(
+				"write to r stream: result=%d "
+				"ferror=%d\n",
+				result,
+				ferror(file));
+
+			fclose(file);
 		}
 	}
 

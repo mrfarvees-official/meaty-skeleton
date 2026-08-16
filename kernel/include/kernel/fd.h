@@ -8,7 +8,7 @@
 #define KERNEL_FD_MAX   64
 
 #define KERNEL_FD_READ  (1U << 0)
-#define KENREL_FD_WRITE (1U << 1)
+#define KERNEL_FD_WRITE (1U << 1)
 
 /**
  * Open a VFS-backed regular file and return a descriptor >= 3.
