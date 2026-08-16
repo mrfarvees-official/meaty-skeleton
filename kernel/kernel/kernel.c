@@ -41,6 +41,16 @@
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002u
 #define U3_TEST_USER_ADDRESS 0x00400000u
 
+typedef struct
+{
+	const char *name;
+	uintptr_t expected_directory;
+	unsigned slot;
+} u3b_task_test_t;
+
+static u3b_task_test_t u3b_contexts[2];
+static volatile bool u3b_seen[2];
+
 static void halt_forever(void)
 {
 	for (;;)
@@ -231,173 +241,219 @@ static void u1_start_scheduler_owned_test(void)
 	halt_forever();
 }
 
-static void u3_address_space_test(void)
+static void u3b_cr3_task(void *argument)
 {
-	printf(
-		"\n=== U3a ADDRESS-SPACE TEST ===\n");
+	u3b_task_test_t *test =
+		(u3b_task_test_t *)argument;
 
-	/*
-	 * The existing U1/U2 userspace setup normally places a user page
-	 * at 0x00400000.
-	 *
-	 * Create one explicitly here so we have a mapping whose absence
-	 * can be tested in the new address space.
-	 */
-	uintptr_t test_physical = 0;
+	task_t *task =
+		task_current();
 
-	if (!paging_get_physical_address(
-			(uintptr_t)u1_user_test_entry,
-			&test_physical))
+	if (test == NULL ||
+		task == NULL)
 	{
-		printf(
-			"U3a: cannot resolve test user code frame\n");
-
+		printf("U3b: missing test/task state\n");
 		halt_forever();
 	}
 
-	test_physical &=
-		~(uintptr_t)(PAGE_SIZE - 1u);
-
-	if (!paging_is_mapped(
-			U3_TEST_USER_ADDRESS))
-	{
-		if (!paging_map_page(
-				U3_TEST_USER_ADDRESS,
-				test_physical,
-				PAGE_USER))
-		{
-			printf(
-				"U3a: failed creating original user mapping\n");
-
-			halt_forever();
-		}
-	}
-
-	printf(
-		"U3a: original user mapping present=%d\n",
-		paging_is_mapped(
-			U3_TEST_USER_ADDRESS));
-
-	uintptr_t original_directory =
+	uintptr_t actual =
 		paging_current_directory();
 
-	uintptr_t user_directory = 0;
+	printf(
+		"U3b: %s task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
+		test->name,
+		(unsigned)task->id,
+		(unsigned long)task->page_directory,
+		(unsigned long)actual);
+
+	if (task->page_directory !=
+			test->expected_directory ||
+		actual !=
+			test->expected_directory)
+	{
+		printf(
+			"U3b: %s CR3 FAILED\n",
+			test->name);
+
+		halt_forever();
+	}
+
+	u3b_seen[test->slot] =
+		true;
+
+	printf(
+		"U3b: %s address space confirmed\n",
+		test->name);
+
+	task_exit();
+}
+
+static void u3_scheduler_address_space_test(void)
+{
+	printf(
+		"\n=== U3b SCHEDULER ADDRESS-SPACE TEST ===\n");
+
+	uintptr_t kernel_directory =
+		paging_kernel_directory();
+
+	if (kernel_directory == 0 ||
+		paging_current_directory() !=
+			kernel_directory)
+	{
+		printf(
+			"U3b: BSP did not start in kernel address space\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * IMPORTANT:
+	 *
+	 * Allocate both task objects and their stacks BEFORE taking the
+	 * U3a-style supervisor mapping snapshot.
+	 *
+	 * That guarantees their kernel stacks are included in the
+	 * mappings inherited by the second address space.
+	 */
+	u3b_contexts[0].name =
+		"kernel-space task";
+	u3b_contexts[0].expected_directory =
+		kernel_directory;
+	u3b_contexts[0].slot =
+		0u;
+
+	task_t *kernel_task =
+		task_create_kernel_with_policy(
+			u3b_cr3_task,
+			&u3b_contexts[0],
+			SCHED_POLICY_REALTIME);
+
+	if (kernel_task == NULL)
+	{
+		printf(
+			"U3b: failed creating kernel-space task\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * Allocate B while we still use the canonical kernel directory.
+	 * Its page_directory will be overridden only after the isolated
+	 * directory has been constructed.
+	 */
+	u3b_contexts[1].name =
+		"isolated-space task";
+	u3b_contexts[1].expected_directory =
+		0;
+	u3b_contexts[1].slot =
+		1u;
+
+	task_t *isolated_task =
+		task_create_kernel_with_policy(
+			u3b_cr3_task,
+			&u3b_contexts[1],
+			SCHED_POLICY_REALTIME);
+
+	if (isolated_task == NULL)
+	{
+		printf(
+			"U3b: failed creating isolated-space task\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * Both are ordinary kernel tasks at creation time.
+	 */
+	if (kernel_task->page_directory !=
+			kernel_directory ||
+		isolated_task->page_directory !=
+			kernel_directory)
+	{
+		printf(
+			"U3b: kernel-task page-directory initialization FAILED\n");
+
+		halt_forever();
+	}
+
+	uintptr_t isolated_directory =
+		0;
 
 	if (!paging_create_user_directory(
-			&user_directory))
+			&isolated_directory))
 	{
 		printf(
-			"U3a: failed creating user directory\n");
+			"U3b: failed creating isolated directory\n");
 
 		halt_forever();
 	}
 
-	printf(
-		"U3a: original CR3=0x%lx new CR3=0x%lx\n",
-		(unsigned long)original_directory,
-		(unsigned long)user_directory);
-
-	if (user_directory ==
-		original_directory)
+	if (isolated_directory ==
+		kernel_directory)
 	{
 		printf(
-			"U3a: directory was not distinct\n");
-
-		halt_forever();
-	}
-
-	if (!paging_switch_directory(
-			user_directory))
-	{
-		printf(
-			"U3a: failed switching to new directory\n");
+			"U3b: isolated directory is not distinct\n");
 
 		halt_forever();
 	}
 
 	/*
-	 * If this print works, the kernel's code/data/stack/terminal
-	 * mappings survived the CR3 switch.
+	 * U3b test-only assignment.
+	 *
+	 * We are not adding a user-task constructor yet.
 	 */
-	printf(
-		"U3a: running under new address space\n");
+	isolated_task->page_directory =
+		isolated_directory;
 
+	u3b_contexts[1].expected_directory =
+		isolated_directory;
+
+	printf(
+		"U3b: kernel CR3=0x%lx isolated CR3=0x%lx\n",
+		(unsigned long)kernel_directory,
+		(unsigned long)isolated_directory);
+
+	/*
+	 * Both test tasks are REALTIME while the bootstrap task is NORMAL.
+	 *
+	 * They will run, verify their CR3 values, and terminate before
+	 * this bootstrap context resumes.
+	 */
+	task_yield();
+
+	/*
+	 * Scheduler must have restored the bootstrap task's kernel CR3.
+	 */
 	if (paging_current_directory() !=
-		user_directory)
+		kernel_directory)
 	{
 		printf(
-			"U3a: CR3 verification FAILED\n");
+			"U3b: BSP resumed under wrong CR3\n");
 
 		halt_forever();
 	}
 
-	bool mapped_in_new =
-		paging_is_mapped(
-			U3_TEST_USER_ADDRESS);
+	if (!u3b_seen[0] ||
+		!u3b_seen[1])
+	{
+		printf(
+			"U3b: not all address-space tasks ran\n");
+
+		halt_forever();
+	}
 
 	printf(
-		"U3a: user mapping in new space=%d\n",
-		mapped_in_new);
-
-	if (mapped_in_new)
-	{
-		printf(
-			"U3a: user mapping leaked into new space\n");
-
-		halt_forever();
-	}
+		"U3b: BSP kernel address space restored\n");
 
 	/*
-	 * Exercise the shared kernel heap while the second CR3 is live.
+	 * Neither task owns this directory yet.  U3b deliberately keeps
+	 * address-space lifetime separate from task lifetime.
 	 */
-	void *probe =
-		kmalloc(64u);
-
-	if (probe == NULL)
-	{
-		printf(
-			"U3a: kernel heap unavailable in new space\n");
-
-		halt_forever();
-	}
-
-	memset(
-		probe,
-		0xA5,
-		64u);
-
-	kfree(probe);
-
-	printf(
-		"U3a: kernel mappings survived CR3 switch\n");
-
-	if (!paging_switch_directory(
-			original_directory))
-	{
-		/*
-		 * Practically unreachable because a failed CR3 load would
-		 * already be catastrophic, but keep the invariant explicit.
-		 */
-		halt_forever();
-	}
-
-	printf(
-		"U3a: restored original address space\n");
-
-	if (!paging_is_mapped(
-			U3_TEST_USER_ADDRESS))
-	{
-		printf(
-			"U3a: original user mapping was lost\n");
-
-		halt_forever();
-	}
-
 	paging_destroy_user_directory(
-		user_directory);
+		isolated_directory);
 
 	printf(
-		"U3a: isolated address-space switch confirmed\n");
+		"U3b: scheduler CR3 switching confirmed\n");
 
 	halt_forever();
 }
@@ -477,7 +533,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	u3_address_space_test();
+	u3_scheduler_address_space_test();
 
 	process_initialize();
 	printf("process system initialized\n");

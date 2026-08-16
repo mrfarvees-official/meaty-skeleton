@@ -7,6 +7,7 @@
 #include <kernel/cpu.h>
 #include <kernel/smp.h>
 #include <kernel/spinlock.h>
+#include <kernel/paging.h>
 
 #include "../arch/i386/gdt.h"
 
@@ -338,6 +339,37 @@ static void scheduler_update_kernel_entry_stack(
     }
 }
 
+static void scheduler_update_address_space(
+    task_t *task)
+{
+    if (task == NULL ||
+        task->page_directory == 0)
+    {
+        for (;;)
+            __asm__ volatile("cli; hlt");
+    }
+
+    uintptr_t current_directory =
+        paging_current_directory();
+
+    if (current_directory ==
+        task->page_directory)
+    {
+        return;
+    }
+
+    if (!paging_switch_directory(
+            task->page_directory))
+    {
+        /*
+         * A task with an unusable page directory is an unrecoverable
+         * scheduler invariant violation at this stage.
+         */
+        for (;;)
+            __asm__ volatile("cli; hlt");
+    }
+}
+
 static void scheduler_notify_switch_in(task_t *task)
 {
     if (task == NULL)
@@ -447,6 +479,9 @@ void scheduler_schedule(void)
         scheduler_update_kernel_entry_stack(
             next);
 
+        scheduler_update_address_space(
+            next);
+
         cpu->reschedule_pending =
             false;
 
@@ -533,12 +568,13 @@ void scheduler_schedule(void)
         next);
 
     /*
-     * Install the incoming task's ring-0 stack before execution can
-     * continue as that task.
-     *
-     * This is intentionally done before changing ESP.
+     * Install architectural state belonging to the incoming task before
+     * physically switching to its saved kernel stack.
      */
     scheduler_update_kernel_entry_stack(
+        next);
+
+    scheduler_update_address_space(
         next);
 
     cpu->reschedule_pending =

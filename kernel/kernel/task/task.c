@@ -10,6 +10,7 @@
 #include <kernel/smp.h>
 #include <kernel/cpu.h>
 #include <kernel/spinlock.h>
+#include <kernel/paging.h>
 
 #include "../arch/i386/interrupts.h"
 
@@ -531,7 +532,16 @@ static task_t *allocate_kernel_task(void (*entry)(void *), void *argument, sched
 
     task->stack_size = KERNEL_TASK_STACK_SIZE;
 
-    task->page_directory = 0;
+    task->page_directory =
+        paging_kernel_directory();
+
+    if (task->page_directory == 0)
+    {
+        kfree(stack);
+        kfree(task);
+
+        return NULL;
+    }
 
     task->priority = 0;
 
@@ -659,6 +669,12 @@ void task_initialize(void)
     bootstrap->wake_tick = 0;
 
     bootstrap->cleanup_next = NULL;
+
+    bootstrap->page_directory =
+        paging_kernel_directory();
+
+    if (bootstrap->page_directory == 0)
+        task_halt_forever();
 
     cpu->current_task = bootstrap;
 

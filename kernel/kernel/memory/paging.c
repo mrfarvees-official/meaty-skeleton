@@ -50,6 +50,14 @@ static uint32_t first_page_table[PAGE_TABLE_ENTRIES]
 
 static spinlock_t paging_lock = SPINLOCK_INITIALIZER;
 
+/*
+ * Physical frame of the bootstrap/kernel address space.
+ *
+ * Unlike paging_current_directory(), this value does not change when
+ * a task switches to another CR3.
+ */
+static uintptr_t kernel_directory_physical;
+
 static bool is_page_aligned(uintptr_t address)
 {
     return (address & (PAGE_SIZE - 1u)) == 0;
@@ -95,6 +103,11 @@ uintptr_t paging_current_directory(void)
         : "=r"(cr3));
 
     return (uintptr_t)(cr3 & PAGE_FRAME);
+}
+
+uintptr_t paging_kernel_directory(void)
+{
+    return kernel_directory_physical;
 }
 
 bool paging_switch_directory(
@@ -189,6 +202,9 @@ void paging_initialize(void)
 
     uintptr_t directory_physical =
         (uintptr_t)page_directory;
+
+    kernel_directory_physical =
+        directory_physical;
 
     /*
      * Directory entry 0 controls virtual addresses 0-4 MiB.

@@ -37,6 +37,14 @@ void paging_initialize(void);
 uintptr_t paging_current_directory(void);
 
 /*
+ * Return the canonical kernel page-directory physical frame created
+ * by paging_initialize().
+ *
+ * Kernel threads use this address space.
+ */
+uintptr_t paging_kernel_directory(void);
+
+/*
  * Construct a new address space containing the current kernel's
  * supervisor mappings but no PAGE_USER mappings.
  *
