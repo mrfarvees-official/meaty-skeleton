@@ -159,3 +159,61 @@ int kernel_fd_close(int fd)
 
     return 0;
 }
+
+int kernel_fd_seek(
+    int fd,
+    int64_t offset,
+    int whence,
+    size_t *new_offset)
+{
+    file_t *file;
+
+    if (!kernel_fd_valid(fd) ||
+        new_offset == NULL)
+    {
+        return -1;
+    }
+
+    uint32_t irq_flags =
+        spin_lock_irqsave(
+            &fd_lock);
+
+    file =
+        fd_table[fd].file;
+
+    spin_unlock_irqrestore(
+        &fd_lock,
+        irq_flags);
+
+    if (file == NULL)
+        return -1;
+
+    int vfs_whence;
+
+    switch (whence)
+    {
+        case KERNEL_FD_SEEK_SET:
+            vfs_whence =
+                VFS_SEEK_SET;
+            break;
+
+        case KERNEL_FD_SEEK_CUR:
+            vfs_whence =
+                VFS_SEEK_CUR;
+            break;
+
+        case KERNEL_FD_SEEK_END:
+            vfs_whence =
+                VFS_SEEK_END;
+            break;
+
+        default:
+            return -1;
+    }
+
+    return vfs_seek(
+        file,
+        offset,
+        vfs_whence,
+        new_offset);
+}

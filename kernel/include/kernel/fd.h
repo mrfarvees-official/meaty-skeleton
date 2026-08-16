@@ -4,14 +4,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define KERNEL_FD_FIRST  3
-#define KERNEL_FD_MAX    64
+#define KERNEL_FD_FIRST    3
+#define KERNEL_FD_MAX      64
 
-#define KERNEL_FD_READ   (1U << 0)
-#define KERNEL_FD_WRITE  (1U << 1)
-#define KERNEL_FD_APPEND (1U << 2)
-#define KERNEL_FD_CREATE (1U << 3)
-#define KERNEL_FD_TRUNC  (1U << 4)
+#define KERNEL_FD_READ     (1U << 0)
+#define KERNEL_FD_WRITE    (1U << 1)
+#define KERNEL_FD_APPEND   (1U << 2)
+#define KERNEL_FD_CREATE   (1U << 3)
+#define KERNEL_FD_TRUNC    (1U << 4)
+
+#define KERNEL_FD_SEEK_SET 0
+#define KERNEL_FD_SEEK_CUR 1
+#define KERNEL_FD_SEEK_END 2
 
 /**
  * Open a VFS-backed regular file and return a descriptor >= 3.
@@ -58,5 +62,11 @@ int kernel_fd_write(
  *     -1 on failure
  */
 int kernel_fd_close(int fd);
+
+int kernel_fd_seek(
+    int fd,
+    int64_t offset,
+    int whence,
+    size_t *new_offset);
 
 #endif

@@ -22,7 +22,10 @@ static vnode_t *vfs_root = NULL;
  * third:
  *      test
  */
-static const char *vfs_next_component(const char *path, char *component, size_t component_size)
+static const char *vfs_next_component(
+    const char *path, 
+    char *component, 
+    size_t component_size)
 {
     size_t length = 0;
 
@@ -218,7 +221,9 @@ static int vfs_lookup_parent(
     }
 }
 
-int vfs_lookup(const char *path, vnode_t **result)
+int vfs_lookup(
+    const char *path, 
+    vnode_t **result)
 {
     if (path == NULL || result == NULL)
         return -1;
@@ -295,7 +300,10 @@ int vfs_lookup(const char *path, vnode_t **result)
     return 0;
 }
 
-int vfs_open(const char *path, uint32_t flags, file_t **result)
+int vfs_open(
+    const char *path, 
+    uint32_t flags, 
+    file_t **result)
 {
     if (path == NULL || result == NULL)
         return -1;
@@ -395,7 +403,11 @@ int vfs_open(const char *path, uint32_t flags, file_t **result)
     return 0;
 }
 
-int vfs_read(file_t *file, void *buffer, size_t size, size_t *bytes_read)
+int vfs_read(
+    file_t *file, 
+    void *buffer, 
+    size_t size, 
+    size_t *bytes_read)
 {
     if (file == NULL || buffer == NULL || bytes_read == NULL)
         return -1;
@@ -429,7 +441,11 @@ int vfs_read(file_t *file, void *buffer, size_t size, size_t *bytes_read)
     return 0;
 }
 
-int vfs_write(file_t *file, const void *buffer, size_t size, size_t *bytes_written)
+int vfs_write(
+    file_t *file, 
+    const void *buffer, 
+    size_t size, 
+    size_t *bytes_written)
 {
     if (file == NULL || buffer == NULL || bytes_written == NULL)
         return -1;
@@ -475,4 +491,83 @@ void vfs_close(file_t *file)
     vnode_unref(file->vnode);
 
     kfree(file);
+}
+
+int vfs_seek(
+    file_t *file,
+    int64_t offset,
+    int whence,
+    size_t *new_offset)
+{
+    if (file == NULL ||
+        file->vnode == NULL ||
+        new_offset == NULL)
+    {
+        return -1;
+    }
+
+    int64_t base;
+
+    switch (whence)
+    {
+    case VFS_SEEK_SET:
+        base = 0;
+        break;
+
+    case VFS_SEEK_CUR:
+        base = (int64_t)file->offset;
+        break;
+
+    case VFS_SEEK_END:
+        /*
+         * Current ext2 files are effectively limited to the
+         * representable size_t/file-offset range.
+         */
+        if (file->vnode->size >
+            (uint64_t)SIZE_MAX)
+        {
+            return -1;
+        }
+
+        base =
+            (int64_t)file->vnode->size;
+        break;
+
+    default:
+        return -1;
+    }
+
+    /*
+     * Reject signed overflow.
+     */
+    if ((offset > 0 &&
+         base > INT64_MAX - offset) ||
+        (offset < 0 &&
+         base < INT64_MIN - offset))
+    {
+        return -1;
+    }
+
+    int64_t position =
+        base + offset;
+
+    /*
+     * Negative file positions are invalid.
+     */
+    if (position < 0)
+        return -1;
+
+    if ((uint64_t)position >
+        (uint64_t)SIZE_MAX)
+    {
+        return -1;
+    }
+
+    file->offset =
+        (size_t)position;
+
+    *new_offset =
+        file->offset;
+
+    return 0;
 }

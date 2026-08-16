@@ -319,167 +319,147 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	{
 		printf(
-			"\n=== bulk fread test ===\n");
+			"\n=== kernel fd seek test ===\n");
 
-		static unsigned char source[8192];
-		static unsigned char destination[8192];
+		int fd =
+			kernel_fd_open(
+				"/seek-test.txt",
+				KERNEL_FD_WRITE |
+					KERNEL_FD_CREATE |
+					KERNEL_FD_TRUNC);
 
-		for (size_t i = 0;
-			 i < sizeof(source);
-			 ++i)
+		if (fd >= 0)
 		{
-			source[i] =
-				(unsigned char)((i * 19u + 7u) &
-								0xFFu);
-		}
+			size_t written = 0;
 
-		FILE *file =
-			fopen(
-				"/stdio-fread.bin",
-				"w");
-
-		if (file != NULL)
-		{
-			size_t written =
-				fwrite(
-					source,
-					1,
-					sizeof(source),
-					file);
+			kernel_fd_write(
+				fd,
+				"0123456789",
+				10,
+				&written);
 
 			printf(
-				"prepare write=%u error=%d\n",
-				(unsigned)written,
-				ferror(file));
+				"prepare written=%u\n",
+				(unsigned)written);
 
-			fclose(file);
+			kernel_fd_close(fd);
 		}
 
-		/*
-		 * Exact-size bulk read.
-		 */
-		memset(
-			destination,
-			0,
-			sizeof(destination));
+		fd =
+			kernel_fd_open(
+				"/seek-test.txt",
+				KERNEL_FD_READ);
 
-		file =
-			fopen(
-				"/stdio-fread.bin",
-				"r");
-
-		if (file != NULL)
+		if (fd >= 0)
 		{
-			size_t read =
-				fread(
-					destination,
-					64,
-					128,
-					file);
-
-			printf(
-				"exact elements=%u eof=%d error=%d compare=%d\n",
-				(unsigned)read,
-				feof(file),
-				ferror(file),
-				memcmp(
-					source,
-					destination,
-					sizeof(source)) == 0);
-
-			/*
-			 * Now actually read past EOF.
-			 */
-			unsigned char c = 0;
-
-			size_t past =
-				fread(
-					&c,
-					1,
-					1,
-					file);
-
-			printf(
-				"past eof read=%u eof=%d error=%d\n",
-				(unsigned)past,
-				feof(file),
-				ferror(file));
-
-			fclose(file);
-		}
-
-		/*
-		 * Pushback + bulk read.
-		 */
-		file =
-			fopen(
-				"/stdio-fread.bin",
-				"r");
-
-		if (file != NULL)
-		{
-			int first =
-				fgetc(file);
-
-			int pushed =
-				ungetc(first, file);
-
-			unsigned char small[4] = {0};
-
-			size_t read =
-				fread(
-					small,
-					1,
-					sizeof(small),
-					file);
-
-			printf(
-				"pushback read=%u pushed=%d bytes=%u,%u,%u,%u\n",
-				(unsigned)read,
-				pushed != EOF,
-				(unsigned)small[0],
-				(unsigned)small[1],
-				(unsigned)small[2],
-				(unsigned)small[3]);
-
-			fclose(file);
-		}
-
-		/*
-		 * Partial final element.
-		 *
-		 * File has 8192 bytes. Request elements of 3000 bytes:
-		 * only two complete elements fit, but the remaining 2192
-		 * bytes should still be copied.
-		 */
-		file =
-			fopen(
-				"/stdio-fread.bin",
-				"r");
-
-		if (file != NULL)
-		{
-			static unsigned char partial[9000];
+			size_t position = 0;
+			char buffer[5];
 
 			memset(
-				partial,
+				buffer,
 				0,
-				sizeof(partial));
+				sizeof(buffer));
 
-			size_t read =
-				fread(
-					partial,
-					3000,
-					3,
-					file);
+			int result =
+				kernel_fd_seek(
+					fd,
+					4,
+					KERNEL_FD_SEEK_SET,
+					&position);
 
 			printf(
-				"partial elements=%u eof=%d last=%u\n",
-				(unsigned)read,
-				feof(file),
-				(unsigned)partial[8191]);
+				"set result=%d pos=%u\n",
+				result,
+				(unsigned)position);
 
-			fclose(file);
+			size_t read = 0;
+
+			kernel_fd_read(
+				fd,
+				buffer,
+				3,
+				&read);
+
+			printf(
+				"set read=%u data=%s\n",
+				(unsigned)read,
+				buffer);
+
+			result =
+				kernel_fd_seek(
+					fd,
+					-2,
+					KERNEL_FD_SEEK_CUR,
+					&position);
+
+			printf(
+				"cur result=%d pos=%u\n",
+				result,
+				(unsigned)position);
+
+			memset(
+				buffer,
+				0,
+				sizeof(buffer));
+
+			read = 0;
+
+			kernel_fd_read(
+				fd,
+				buffer,
+				2,
+				&read);
+
+			printf(
+				"cur read=%u data=%s\n",
+				(unsigned)read,
+				buffer);
+
+			result =
+				kernel_fd_seek(
+					fd,
+					-2,
+					KERNEL_FD_SEEK_END,
+					&position);
+
+			printf(
+				"end result=%d pos=%u\n",
+				result,
+				(unsigned)position);
+
+			memset(
+				buffer,
+				0,
+				sizeof(buffer));
+
+			read = 0;
+
+			kernel_fd_read(
+				fd,
+				buffer,
+				2,
+				&read);
+
+			printf(
+				"end read=%u data=%s\n",
+				(unsigned)read,
+				buffer);
+
+			/*
+			 * Must reject a position before byte zero.
+			 */
+			result =
+				kernel_fd_seek(
+					fd,
+					-20,
+					KERNEL_FD_SEEK_SET,
+					&position);
+
+			printf(
+				"negative result=%d\n",
+				result);
+
+			kernel_fd_close(fd);
 		}
 	}
 

@@ -131,13 +131,30 @@ void vnode_unref(vnode_t *node);
 /*
  * File API
  */
-int vfs_open(const char *path, uint32_t flags, file_t **result);
+int vfs_open(
+    const char *path, 
+    uint32_t flags, 
+    file_t **result);
 
-int vfs_read(file_t *file, void *buffer, size_t size, size_t *bytes_read);
+int vfs_read(
+    file_t *file, 
+    void *buffer, 
+    size_t size, 
+    size_t *bytes_read);
 
-int vfs_write(file_t *file, const void *buffer, size_t size, size_t *bytes_written);
+int vfs_write(
+    file_t *file, 
+    const void *buffer, 
+    size_t size, 
+    size_t *bytes_written);
 
 void vfs_close(file_t *file);
+
+int vfs_seek(
+    file_t *file,
+    int64_t offset,
+    int whence,
+    size_t *new_offset);
 
 /*
  * vnode reference management
@@ -148,5 +165,9 @@ void vfs_close(file_t *file);
 #define VFS_OPEN_APPEND 0x0004u
 #define VFS_OPEN_CREATE 0x0008u
 #define VFS_OPEN_TRUNC  0x0010u
+
+#define VFS_SEEK_SET    0
+#define VFS_SEEK_CUR    1
+#define VFS_SEEK_END    2
 
 #endif
