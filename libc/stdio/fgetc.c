@@ -2,65 +2,73 @@
 #include <stddef.h>
 
 #if defined(__is_libk)
-#include <kernel/tty.h>
+#include <kernel/keyboard.h>
 #include <kernel/fd.h>
 #endif
 
-int fputc(int ic, FILE *stream)
+int fgetc(FILE *stream)
 {
-    unsigned char c;
-
     if (stream == NULL)
         return EOF;
 
-    if (!(stream->flags & _IO_WRITE))
+    if (!(stream->flags & _IO_READ))
     {
         stream->flags |= _IO_ERROR;
         return EOF;
     }
 
-    c = (unsigned char)ic;
+    if (stream->has_pushback)
+    {
+        int c = stream->pushback;
+
+        stream->has_pushback = 0;
+
+        return c;
+    }
 
 #if defined(__is_libk)
 
     /*
-     * stdout and stderr map to the kernel terminal.
+     * stdin maps to the kernel keyboard character queue.
      */
-    if (stream->fd == 1 || stream->fd == 2)
+    if (stream->fd == 0)
     {
-        char character = (char)c;
+        char character;
 
-        terminal_write(
-            &character,
-            sizeof(character));
+        if (!keyboard_wait_character(&character))
+        {
+            stream->flags |= _IO_ERROR;
+            return EOF;
+        }
 
-        return (int)c;
+        return (unsigned char)character;
     }
 
     /*
-     * Descriptors >= 3 are VFS-backed files.
+     * Descriptors >= 3 are VFS-backed regular files.
      */
     if (stream->fd >= KERNEL_FD_FIRST)
     {
-        size_t bytes_written = 0;
+        unsigned char character;
+        size_t bytes_read = 0;
 
-        if (kernel_fd_write(
+        if (kernel_fd_read(
                 stream->fd,
-                &c,
+                &character,
                 1,
-                &bytes_written) != 0)
+                &bytes_read) != 0)
         {
             stream->flags |= _IO_ERROR;
             return EOF;
         }
 
-        if (bytes_written != 1)
+        if (bytes_read == 0)
         {
-            stream->flags |= _IO_ERROR;
+            stream->flags |= _IO_EOF;
             return EOF;
         }
 
-        return (int)c;
+        return (int)character;
     }
 
 #endif
