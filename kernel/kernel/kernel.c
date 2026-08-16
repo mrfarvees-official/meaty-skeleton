@@ -151,7 +151,22 @@ static void u1_ring3_test(void)
 	kernel_stack_top &=
 		~(uintptr_t)0xFu;
 
-	gdt_set_kernel_stack(kernel_stack_top);
+	cpu_local_t *cpu =
+		cpu_current();
+
+	if (cpu == NULL)
+	{
+		printf("U1: cannot resolve current CPU\n");
+		halt_forever();
+	}
+
+	if (!gdt_set_kernel_stack(
+			cpu->index,
+			kernel_stack_top))
+	{
+		printf("U1: failed to set kernel entry stack\n");
+		halt_forever();
+	}
 
 	printf(
 		"U1: entering user mode eip=0x%lx esp=0x%lx\n",
@@ -187,15 +202,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	paging_initialize();
 	printf("paging initialized\n");
 
-	/*
-	 * U1a ends inside the breakpoint handler after proving a CPL3
-	 * interrupt transition.
-	 *
-	 * Keep this before heap/SMP/device startup so only the BSP is
-	 * involved in the first privilege-transition test.
-	 */
-	u1_ring3_test();
-
 	heap_initialize();
 	printf("heap initialized\n");
 
@@ -213,6 +219,25 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	cpu_local_initialize();
 	printf("BSP CPU-local state initialized\n");
+
+	cpu_local_t *bsp_cpu =
+		cpu_current();
+
+	if (bsp_cpu == NULL)
+	{
+		printf("U1: failed to resolve BSP CPU-local state\n");
+		halt_forever();
+	}
+
+	if (!gdt_load_tss(bsp_cpu->index))
+	{
+		printf("U1: failed to load BSP TSS\n");
+		halt_forever();
+	}
+
+	printf(
+		"U1: BSP TSS loaded for CPU %u\n",
+		(unsigned)bsp_cpu->index);
 
 	scheduler_initialize();
 	printf("scheduler initialized\n");
@@ -407,6 +432,15 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	}
 
 	printf("SMP online CPUs: %u\n", (unsigned)smp_online_cpu_count());
+
+	/*
+	 * U1a ends inside the breakpoint handler after proving a CPL3
+	 * interrupt transition.
+	 *
+	 * Keep this before heap/SMP/device startup so only the BSP is
+	 * involved in the first privilege-transition test.
+	 */
+	u1_ring3_test();
 
 	if (pit_initialize(PIT_DEFAULT_FREQUENCY_HZ) != 0)
 	{

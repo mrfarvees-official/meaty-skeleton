@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <kernel/smp.h>
+
 #include "gdt.h"
 
 struct gdt_entry
@@ -67,13 +69,21 @@ enum
     GDT_ENTRY_KERNEL_DATA,
     GDT_ENTRY_USER_CODE,
     GDT_ENTRY_USER_DATA,
-    GDT_ENTRY_TSS,
-    GDT_ENTRY_COUNT
+
+    /*
+     * One TSS descriptor per possible CPU.
+     */
+    GDT_ENTRY_TSS_BASE,
+
+    GDT_ENTRY_COUNT =
+        GDT_ENTRY_TSS_BASE +
+        SMP_MAX_CPUS
 };
 
 static struct gdt_entry gdt[GDT_ENTRY_COUNT];
 static struct gdt_pointer gdtr;
-static struct tss32 tss;
+
+static struct tss32 tss_per_cpu[SMP_MAX_CPUS];
 
 static void gdt_set_entry(
     size_t index,
@@ -177,41 +187,46 @@ void gdt_initialize(void)
         0xC0);
 
     /*
-     * Entry 5, selector 0x28:
-     * Available 32-bit TSS.
+     * Entries 5 onward:
+     *
+     * One available 32-bit TSS descriptor for every possible CPU.
+     *
+     * A CPU must never share a loaded hardware TSS descriptor with
+     * another CPU.
      */
-    memset(&tss, 0, sizeof(tss));
+    for (size_t i = 0; i < SMP_MAX_CPUS; ++i)
+    {
+        struct tss32 *cpu_tss =
+            &tss_per_cpu[i];
 
-    tss.ss0 = GDT_KERNEL_DATA_SELECTOR;
+        memset(
+            cpu_tss,
+            0,
+            sizeof(*cpu_tss));
 
-    /*
-     * Place the I/O bitmap beyond the TSS limit.  CPL3 therefore
-     * receives no direct I/O-port access.
-     */
-    tss.iomap_base = sizeof(tss);
+        cpu_tss->ss0 =
+            GDT_KERNEL_DATA_SELECTOR;
 
-    gdt_set_entry(
-        GDT_ENTRY_TSS,
-        (uint32_t)(uintptr_t)&tss,
-        sizeof(tss) - 1u,
-        0x89,
-        0x00);
+        /*
+         * Put the I/O bitmap beyond the descriptor limit.
+         *
+         * User mode therefore has no direct I/O-port permission.
+         */
+        cpu_tss->iomap_base =
+            sizeof(*cpu_tss);
+
+        gdt_set_entry(
+            GDT_ENTRY_TSS_BASE + i,
+            (uint32_t)(uintptr_t)cpu_tss,
+            sizeof(*cpu_tss) - 1u,
+            0x89,
+            0x00);
+    }
 
     gdtr.limit = (uint16_t)(sizeof(gdt) - 1);
     gdtr.base = (uint32_t)(uintptr_t)gdt;
 
     gdt_load();
-
-    /*
-     * Load the task register.
-     *
-     * U1a intentionally uses this TSS only on the BSP.
-     */
-    __asm__ volatile(
-        "ltr %0"
-        :
-        : "r"((uint16_t)GDT_TSS_SELECTOR)
-        : "memory");
 }
 
 void gdt_load(void)
@@ -219,8 +234,39 @@ void gdt_load(void)
     gdt_flush(&gdtr);
 }
 
-void gdt_set_kernel_stack(uintptr_t stack_pointer)
+bool gdt_load_tss(size_t cpu_index)
 {
-    tss.ss0 = GDT_KERNEL_DATA_SELECTOR;
-    tss.esp0 = (uint32_t)stack_pointer;
+    if (cpu_index >= SMP_MAX_CPUS)
+        return false;
+
+    uint16_t selector =
+        (uint16_t)(GDT_TSS_BASE_SELECTOR +
+                   cpu_index * sizeof(struct gdt_entry));
+
+    __asm__ volatile(
+        "ltr %0"
+        :
+        : "r"(selector)
+        : "memory");
+
+    return true;
+}
+
+bool gdt_set_kernel_stack(
+    size_t cpu_index,
+    uintptr_t stack_pointer)
+{
+    if (cpu_index >= SMP_MAX_CPUS)
+        return false;
+
+    struct tss32 *cpu_tss =
+        &tss_per_cpu[cpu_index];
+
+    cpu_tss->ss0 =
+        GDT_KERNEL_DATA_SELECTOR;
+
+    cpu_tss->esp0 =
+        (uint32_t)stack_pointer;
+
+    return true;
 }

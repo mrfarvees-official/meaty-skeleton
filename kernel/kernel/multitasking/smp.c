@@ -14,34 +14,32 @@
 #include "../../arch/i386/idt.h"
 #include "../../arch/i386/interrupts.h"
 
-
 #define MADT_ENTRY_PROCESSOR_LOCAL_APIC 0u
 
-#define MADT_LOCAL_APIC_ENABLED         (1u << 0)
+#define MADT_LOCAL_APIC_ENABLED (1u << 0)
 
-#define LAPIC_ID_REGISTER                0x020u
-#define LAPIC_EOI_REGISTER               0x0B0u
-#define LAPIC_SVR_REGISTER               0x0F0u
-#define LAPIC_ICR_LOW_REGISTER           0x300u
-#define LAPIC_ICR_HIGH_REGISTER          0x310u
-#define LAPIC_LVT_TIMER_REGISTER         0x320u
-#define LAPIC_TIMER_INITIAL_REGISTER     0x380u
-#define LAPIC_TIMER_DIVIDE_REGISTER      0x3E0u
+#define LAPIC_ID_REGISTER 0x020u
+#define LAPIC_EOI_REGISTER 0x0B0u
+#define LAPIC_SVR_REGISTER 0x0F0u
+#define LAPIC_ICR_LOW_REGISTER 0x300u
+#define LAPIC_ICR_HIGH_REGISTER 0x310u
+#define LAPIC_LVT_TIMER_REGISTER 0x320u
+#define LAPIC_TIMER_INITIAL_REGISTER 0x380u
+#define LAPIC_TIMER_DIVIDE_REGISTER 0x3E0u
 
-#define LAPIC_ICR_DELIVERY_PENDING       (1u << 12)
-#define LAPIC_ICR_INIT_ASSERT            0x0000C500u
-#define LAPIC_ICR_INIT_DEASSERT          0x00008500u
-#define LAPIC_ICR_STARTUP                0x00000600u
-#define LAPIC_SVR_ENABLE                 (1u << 8)
-#define LAPIC_TIMER_PERIODIC             (1u << 17)
-#define LAPIC_TIMER_VECTOR               0xF0u
-#define LAPIC_RESCHEDULE_VECTOR          0xF1u
+#define LAPIC_ICR_DELIVERY_PENDING (1u << 12)
+#define LAPIC_ICR_INIT_ASSERT 0x0000C500u
+#define LAPIC_ICR_INIT_DEASSERT 0x00008500u
+#define LAPIC_ICR_STARTUP 0x00000600u
+#define LAPIC_SVR_ENABLE (1u << 8)
+#define LAPIC_TIMER_PERIODIC (1u << 17)
+#define LAPIC_TIMER_VECTOR 0xF0u
+#define LAPIC_RESCHEDULE_VECTOR 0xF1u
 
-#define AP_TRAMPOLINE_PHYSICAL           0x00008000u
-#define AP_TRAMPOLINE_VECTOR             (AP_TRAMPOLINE_PHYSICAL >> 12)
-#define AP_BOOT_STACK_SIZE                (16u * 1024u)
-#define AP_START_TIMEOUT                  4000000u
-
+#define AP_TRAMPOLINE_PHYSICAL 0x00008000u
+#define AP_TRAMPOLINE_VECTOR (AP_TRAMPOLINE_PHYSICAL >> 12)
+#define AP_BOOT_STACK_SIZE (16u * 1024u)
+#define AP_START_TIMEOUT 4000000u
 
 /*
  * ==========================================================================
@@ -68,14 +66,12 @@ typedef struct acpi_madt
 
 } __attribute__((packed)) acpi_madt_t;
 
-
 typedef struct madt_entry_header
 {
     uint8_t type;
     uint8_t length;
 
 } __attribute__((packed)) madt_entry_header_t;
-
 
 typedef struct madt_local_apic
 {
@@ -88,20 +84,15 @@ typedef struct madt_local_apic
 
 } __attribute__((packed)) madt_local_apic_t;
 
-
 /*
  * ==========================================================================
  * DISCOVERED CPU STATE
  * ==========================================================================
  */
 
-static smp_cpu_t cpus[
-    SMP_MAX_CPUS
-];
-
+static smp_cpu_t cpus[SMP_MAX_CPUS];
 
 static size_t cpu_count = 0;
-
 
 static uintptr_t local_apic_physical_address = 0;
 
@@ -187,7 +178,6 @@ static void lapic_reschedule_handler(struct interrupt_frame *frame)
     }
 }
 
-
 /*
  * ==========================================================================
  * CPUID
@@ -206,26 +196,18 @@ static uint8_t current_cpu_initial_apic_id(void)
     uint32_t ecx;
     uint32_t edx;
 
-
     eax = 1u;
-
 
     __asm__ volatile(
         "cpuid"
         : "+a"(eax),
           "=b"(ebx),
           "=c"(ecx),
-          "=d"(edx)
-    );
+          "=d"(edx));
 
-
-    return
-        (uint8_t)(
-            (ebx >> 24) &
-            0xFFu
-        );
+    return (uint8_t)((ebx >> 24) &
+                     0xFFu);
 }
-
 
 /*
  * ==========================================================================
@@ -241,16 +223,12 @@ bool smp_detect_cpus(void)
     for (size_t i = 0; i < SMP_MAX_CPUS; ++i)
         cpus[i] = (smp_cpu_t){0};
 
-
     const acpi_sdt_header_t *header =
         acpi_find_table(
-            "APIC"
-        );
-
+            "APIC");
 
     if (header == NULL)
         return false;
-
 
     if (header->length <
         sizeof(acpi_madt_t))
@@ -258,29 +236,23 @@ bool smp_detect_cpus(void)
         return false;
     }
 
-
     const acpi_madt_t *madt =
         (const acpi_madt_t *)header;
 
-
     local_apic_physical_address =
         (uintptr_t)
-        madt->local_apic_address;
-
+            madt->local_apic_address;
 
     uint8_t bsp_apic_id =
         current_cpu_initial_apic_id();
-
 
     const uint8_t *current =
         (const uint8_t *)madt +
         sizeof(acpi_madt_t);
 
-
     const uint8_t *end =
         (const uint8_t *)madt +
         madt->header.length;
-
 
     /*
      * MADT entries are variable-length.
@@ -291,13 +263,12 @@ bool smp_detect_cpus(void)
      *     length
      */
     while (current +
-           sizeof(madt_entry_header_t)
-           <= end)
+               sizeof(madt_entry_header_t) <=
+           end)
     {
         const madt_entry_header_t *entry =
             (const madt_entry_header_t *)
-            current;
-
+                current;
 
         /*
          * A zero or undersized entry would otherwise cause an infinite
@@ -309,14 +280,12 @@ bool smp_detect_cpus(void)
             return false;
         }
 
-
         if (current +
-            entry->length >
+                entry->length >
             end)
         {
             return false;
         }
-
 
         if (entry->type ==
             MADT_ENTRY_PROCESSOR_LOCAL_APIC)
@@ -326,15 +295,11 @@ bool smp_detect_cpus(void)
             {
                 const madt_local_apic_t *lapic =
                     (const madt_local_apic_t *)
-                    current;
-
+                        current;
 
                 bool enabled =
-                    (
-                        lapic->flags &
-                        MADT_LOCAL_APIC_ENABLED
-                    ) != 0;
-
+                    (lapic->flags &
+                     MADT_LOCAL_APIC_ENABLED) != 0;
 
                 /*
                  * Ignore disabled processors.
@@ -350,31 +315,24 @@ bool smp_detect_cpus(void)
                         return false;
                     }
 
-
                     smp_cpu_t *cpu =
                         &cpus[cpu_count];
-
 
                     cpu->index =
                         cpu_count;
 
-
                     cpu->processor_id =
                         lapic->acpi_processor_id;
-
 
                     cpu->apic_id =
                         lapic->apic_id;
 
-
                     cpu->enabled =
                         true;
-
 
                     cpu->bootstrap_processor =
                         lapic->apic_id ==
                         bsp_apic_id;
-
 
                     /*
                      * Only BSP is actually executing kernel code.
@@ -382,24 +340,20 @@ bool smp_detect_cpus(void)
                     cpu->online =
                         cpu->bootstrap_processor;
 
-
                     ++cpu_count;
                 }
             }
         }
 
-
         current +=
             entry->length;
     }
-
 
     /*
      * A usable MADT should describe at least the BSP.
      */
     if (cpu_count == 0)
         return false;
-
 
     /*
      * Sanity check: our currently executing BSP must have appeared in
@@ -408,23 +362,19 @@ bool smp_detect_cpus(void)
     bool found_bsp =
         false;
 
-
     for (size_t i = 0;
          i < cpu_count;
          ++i)
     {
-        if (cpus[i].
-            bootstrap_processor)
+        if (cpus[i].bootstrap_processor)
         {
             found_bsp = true;
             break;
         }
     }
 
-
     return found_bsp;
 }
-
 
 /*
  * ==========================================================================
@@ -437,22 +387,18 @@ size_t smp_cpu_count(void)
     return cpu_count;
 }
 
-
 const smp_cpu_t *smp_get_cpu(
     size_t index)
 {
     if (index >= cpu_count)
         return NULL;
 
-
     return &cpus[index];
 }
 
-
 uintptr_t smp_lapic_address(void)
 {
-    return
-        local_apic_physical_address;
+    return local_apic_physical_address;
 }
 
 size_t smp_online_cpu_count(void)
@@ -470,13 +416,28 @@ size_t smp_online_cpu_count(void)
 
 static void smp_ap_entry(void)
 {
-    /* The temporary trampoline GDT got us here; now use kernel tables. */
+    /*
+     * The temporary trampoline GDT got us here.
+     * Switch to the kernel-owned tables.
+     */
     gdt_load();
     idt_load();
 
-    cpu_local_t *cpu = cpu_current();
+    cpu_local_t *cpu =
+        cpu_current();
 
-    if (cpu == NULL || cpu->index >= cpu_count)
+    if (cpu == NULL ||
+        cpu->index >= cpu_count)
+    {
+        goto halt;
+    }
+
+    /*
+     * Every CPU owns a distinct hardware TSS descriptor.
+     *
+     * This must happen before the AP announces itself ready.
+     */
+    if (!gdt_load_tss(cpu->index))
         goto halt;
 
     lapic_enable_timer();
@@ -560,13 +521,13 @@ bool smp_start_aps(void)
         ap_ready[i] = 0;
 
         *(volatile uint32_t *)(AP_TRAMPOLINE_PHYSICAL +
-            ((uintptr_t)&ap_trampoline_stack - (uintptr_t)&ap_trampoline_start)) =
+                               ((uintptr_t)&ap_trampoline_stack - (uintptr_t)&ap_trampoline_start)) =
             (uint32_t)((uintptr_t)stack + AP_BOOT_STACK_SIZE);
         *(volatile uint32_t *)(AP_TRAMPOLINE_PHYSICAL +
-            ((uintptr_t)&ap_trampoline_cr3 - (uintptr_t)&ap_trampoline_start)) =
+                               ((uintptr_t)&ap_trampoline_cr3 - (uintptr_t)&ap_trampoline_start)) =
             (uint32_t)cr3;
         *(volatile uint32_t *)(AP_TRAMPOLINE_PHYSICAL +
-            ((uintptr_t)&ap_trampoline_entry - (uintptr_t)&ap_trampoline_start)) =
+                               ((uintptr_t)&ap_trampoline_entry - (uintptr_t)&ap_trampoline_start)) =
             (uint32_t)(uintptr_t)smp_ap_entry;
 
         __asm__ volatile("" ::: "memory");
