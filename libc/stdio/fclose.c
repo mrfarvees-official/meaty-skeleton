@@ -27,6 +27,9 @@ int fclose(FILE *stream)
         stream == stderr)
         return EOF;
 
+    if (fflush(stream) == EOF)
+        return EOF;
+
     result = kernel_fd_close(stream->fd);
 
     if (result != 0)

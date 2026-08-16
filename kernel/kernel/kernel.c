@@ -319,154 +319,86 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	{
 		printf(
-			"\n=== stdio positioning test ===\n");
+			"\n=== fflush test ===\n");
 
 		FILE *file =
 			fopen(
-				"/stdio-seek.txt",
-				"w+");
+				"/stdio-flush.txt",
+				"w");
 
-		if (file == NULL)
+		printf(
+			"open=%d\n",
+			file != NULL);
+
+		if (file != NULL)
 		{
-			printf("open FAILED\n");
+			size_t written =
+				fwrite(
+					"FLUSH",
+					1,
+					5,
+					file);
+
+			printf(
+				"write=%u error=%d\n",
+				(unsigned)written,
+				ferror(file));
+
+			int flush_result =
+				fflush(file);
+
+			printf(
+				"fflush file=%d error=%d\n",
+				flush_result,
+				ferror(file));
+
+			printf(
+				"fclose=%d\n",
+				fclose(file));
 		}
-		else
+
+		file =
+			fopen(
+				"/stdio-flush.txt",
+				"r");
+
+		if (file != NULL)
 		{
-			fwrite(
-				"0123456789",
-				1,
-				10,
-				file);
-
-			printf(
-				"after write pos=%ld\n",
-				ftell(file));
-
-			int result =
-				fseek(
-					file,
-					4,
-					SEEK_SET);
-
-			printf(
-				"seek set=%d pos=%ld\n",
-				result,
-				ftell(file));
-
-			char buffer[4] = {0};
+			char buffer[6] = {0};
 
 			size_t read =
 				fread(
 					buffer,
 					1,
-					3,
+					5,
 					file);
 
 			printf(
-				"read=%u data=%s pos=%ld\n",
+				"read=%u data=%s\n",
 				(unsigned)read,
-				buffer,
-				ftell(file));
-
-			result =
-				fseek(
-					file,
-					-2,
-					SEEK_CUR);
-
-			printf(
-				"seek cur=%d pos=%ld\n",
-				result,
-				ftell(file));
-
-			memset(
-				buffer,
-				0,
-				sizeof(buffer));
-
-			read =
-				fread(
-					buffer,
-					1,
-					2,
-					file);
-
-			printf(
-				"cur read=%u data=%s pos=%ld\n",
-				(unsigned)read,
-				buffer,
-				ftell(file));
-
-			result =
-				fseek(
-					file,
-					-2,
-					SEEK_END);
-
-			printf(
-				"seek end=%d pos=%ld\n",
-				result,
-				ftell(file));
-
-			memset(
-				buffer,
-				0,
-				sizeof(buffer));
-
-			read =
-				fread(
-					buffer,
-					1,
-					3,
-					file);
-
-			printf(
-				"end read=%u data=%s eof=%d pos=%ld\n",
-				(unsigned)read,
-				buffer,
-				feof(file),
-				ftell(file));
-
-			rewind(file);
-
-			printf(
-				"rewind pos=%ld eof=%d error=%d\n",
-				ftell(file),
-				feof(file),
-				ferror(file));
+				buffer);
 
 			/*
-			 * Pushback positioning check.
+			 * Current policy: fflush on a non-output stream fails.
 			 */
-			int c =
-				fgetc(file);
-
-			long before_pushback =
-				ftell(file);
-
-			ungetc(c, file);
-
-			long after_pushback =
-				ftell(file);
+			int flush_result =
+				fflush(file);
 
 			printf(
-				"pushback before=%ld after=%ld\n",
-				before_pushback,
-				after_pushback);
-
-			result =
-				fseek(
-					file,
-					2,
-					SEEK_CUR);
-
-			printf(
-				"pushback seek=%d pos=%ld\n",
-				result,
-				ftell(file));
+				"fflush read=%d error=%d\n",
+				flush_result,
+				ferror(file));
 
 			fclose(file);
 		}
+
+		printf(
+			"fflush NULL=%d\n",
+			fflush(NULL));
+
+		printf(
+			"fflush stdout=%d\n",
+			fflush(stdout));
 	}
 
 	yield_forever();

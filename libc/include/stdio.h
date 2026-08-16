@@ -34,6 +34,7 @@ extern FILE *stderr;
 
 FILE *fopen(const char *path, const char *mode);
 int fclose(FILE *stream);
+int fflush(FILE *stream);
 
 int fseek(FILE *stream, long offset, int whence);
 long ftell(FILE *stream);
