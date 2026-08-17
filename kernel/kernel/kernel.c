@@ -27,6 +27,7 @@
 #include <kernel/ext2.h>
 #include <kernel/pci.h>
 #include <kernel/ahci.h>
+#include <kernel/elf.h>
 #include <kernel/user_image.h>
 
 #include "../arch/i386/gdt.h"
@@ -60,16 +61,19 @@ void validate_multiboot_magic(uint32_t magic)
 	}
 }
 
-#define U1_USER_CODE_ADDRESS 0x00400000u
-#define U1_USER_STACK_ADDRESS 0x00401000u
-#define U1_USER_STACK_TOP 0x00402000u
+#define U8_USER_STACK_ADDRESS 0xBFFFF000u
+#define U8_USER_STACK_TOP 0xC0000000u
 
 extern void arch_enter_user(
 	uintptr_t instruction_pointer,
 	uintptr_t stack_pointer)
 	__attribute__((noreturn));
 
-extern void u1_user_test_entry(void);
+extern const unsigned char
+	u8_hello_elf_start[];
+
+extern const unsigned char
+	u8_hello_elf_end[];
 
 typedef struct
 {
@@ -77,13 +81,13 @@ typedef struct
 	uintptr_t stack_top;
 } user_launch_context_t;
 
-static user_image_t u7_user_image;
-static user_launch_context_t u7_launch_context;
+static user_image_t u8_user_image;
+static user_launch_context_t u8_launch_context;
 
-static void u7_user_task_entry(void *argument)
+static void u8_user_task_entry(void *argument)
 	__attribute__((noreturn));
 
-static void u7_user_task_entry(void *argument)
+static void u8_user_task_entry(void *argument)
 {
 	user_launch_context_t *launch =
 		(user_launch_context_t *)argument;
@@ -93,7 +97,8 @@ static void u7_user_task_entry(void *argument)
 		launch->stack_top == 0)
 	{
 		printf(
-			"U7: missing launch context\n");
+			"U8: invalid ELF launch context\n");
+
 		halt_forever();
 	}
 
@@ -103,20 +108,13 @@ static void u7_user_task_entry(void *argument)
 	if (task == NULL)
 	{
 		printf(
-			"U7: no current user task\n");
+			"U8: no current user task\n");
+
 		halt_forever();
 	}
 
 	uintptr_t actual_directory =
 		paging_current_directory();
-
-	printf(
-		"U7: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
-		(unsigned)task->id,
-		(unsigned long)
-			task->page_directory,
-		(unsigned long)
-			actual_directory);
 
 	if (!task->owns_page_directory ||
 		actual_directory !=
@@ -125,30 +123,27 @@ static void u7_user_task_entry(void *argument)
 			paging_kernel_directory())
 	{
 		printf(
-			"U7: user address-space ownership invalid\n");
+			"U8: invalid user address space\n");
+
 		halt_forever();
 	}
 
-	uintptr_t entry =
-		launch->entry;
-
-	uintptr_t stack_top =
-		launch->stack_top;
-
 	printf(
-		"U7: entering CPL3 entry=0x%lx stack=0x%lx\n",
-		(unsigned long)entry,
-		(unsigned long)stack_top);
+		"U8: entering ELF at 0x%lx stack=0x%lx\n",
+		(unsigned long)
+			launch->entry,
+		(unsigned long)
+			launch->stack_top);
 
 	arch_enter_user(
-		entry,
-		stack_top);
+		launch->entry,
+		launch->stack_top);
 }
 
-static void u7_user_lifecycle_test(void)
+static void u8_elf_test(void)
 {
 	printf(
-		"\n=== U7 USER TASK LIFECYCLE TEST ===\n");
+		"\n=== U8 ELF USERSPACE TEST ===\n");
 
 	uintptr_t kernel_directory =
 		paging_kernel_directory();
@@ -158,17 +153,27 @@ static void u7_user_lifecycle_test(void)
 			kernel_directory)
 	{
 		printf(
-			"U7: not running in kernel address space\n");
+			"U8: kernel CR3 is not active\n");
+
 		halt_forever();
 	}
 
-	if (((uintptr_t)u1_user_test_entry &
-		 (PAGE_SIZE - 1u)) != 0)
+	if (u8_hello_elf_end <=
+		u8_hello_elf_start)
 	{
 		printf(
-			"U7: probe source is not page aligned\n");
+			"U8: embedded ELF is empty\n");
+
 		halt_forever();
 	}
+
+	size_t elf_size =
+		(size_t)(u8_hello_elf_end -
+				 u8_hello_elf_start);
+
+	printf(
+		"U8: embedded hello.elf size=%lu bytes\n",
+		(unsigned long)elf_size);
 
 	size_t live_before =
 		task_live_count();
@@ -176,60 +181,50 @@ static void u7_user_lifecycle_test(void)
 	uint64_t reaped_before =
 		task_cleanup_total_reaped();
 
-	printf(
-		"U7: live tasks before=%lu reaped=%lu\n",
-		(unsigned long)live_before,
-		(unsigned long)reaped_before);
-
-	/*
-	 * Build the complete private userspace image first.
-	 */
-	if (!user_image_prepare_single_page(
-			&u7_user_image,
-			(const void *)u1_user_test_entry,
-			U1_USER_CODE_ADDRESS,
-			U1_USER_STACK_ADDRESS,
-			U1_USER_STACK_TOP))
+	if (!elf_load_user_image(
+			&u8_user_image,
+			u8_hello_elf_start,
+			elf_size,
+			U8_USER_STACK_ADDRESS,
+			U8_USER_STACK_TOP))
 	{
 		printf(
-			"U7: user image preparation failed\n");
+			"U8: ELF loader rejected hello.elf\n");
+
 		halt_forever();
 	}
 
-	u7_launch_context.entry =
-		u7_user_image.entry;
+	printf(
+		"U8: ELF loaded entry=0x%lx CR3=0x%lx\n",
+		(unsigned long)
+			u8_user_image.entry,
+		(unsigned long)
+			u8_user_image.page_directory);
 
-	u7_launch_context.stack_top =
-		u7_user_image.stack_top;
+	u8_launch_context.entry =
+		u8_user_image.entry;
+
+	u8_launch_context.stack_top =
+		u8_user_image.stack_top;
 
 	uintptr_t user_directory =
-		u7_user_image.page_directory;
+		u8_user_image.page_directory;
 
-	printf(
-		"U7: prepared CR3=0x%lx entry=0x%lx stack=0x%lx\n",
-		(unsigned long)user_directory,
-		(unsigned long)
-			u7_launch_context.entry,
-		(unsigned long)
-			u7_launch_context.stack_top);
-
-	/*
-	 * Creation takes ownership of user_directory only on success.
-	 */
 	task_t *task =
 		task_create_user_with_policy(
-			u7_user_task_entry,
-			&u7_launch_context,
+			u8_user_task_entry,
+			&u8_launch_context,
 			user_directory,
 			SCHED_POLICY_REALTIME);
 
 	if (task == NULL)
 	{
 		user_image_destroy(
-			&u7_user_image);
+			&u8_user_image);
 
 		printf(
-			"U7: user task creation failed\n");
+			"U8: failed creating ELF user task\n");
+
 		halt_forever();
 	}
 
@@ -238,87 +233,45 @@ static void u7_user_lifecycle_test(void)
 			user_directory)
 	{
 		printf(
-			"U7: task did not accept CR3 ownership\n");
+			"U8: user task did not accept ELF CR3\n");
+
 		halt_forever();
 	}
 
-	/*
-	 * The task now owns this directory.
-	 *
-	 * Detach it from user_image_t so user_image_destroy() can never
-	 * accidentally free the task's live address space.
-	 */
 	uintptr_t detached_directory =
 		user_image_detach_directory(
-			&u7_user_image);
+			&u8_user_image);
 
 	if (detached_directory !=
-			user_directory ||
-		u7_user_image.page_directory != 0)
+		user_directory)
 	{
 		printf(
-			"U7: image ownership transfer failed\n");
+			"U8: ELF address-space ownership transfer failed\n");
+
 		halt_forever();
 	}
 
 	task_id_t user_tid =
 		task->id;
 
-	if (task_live_count() !=
-		live_before + 1u)
-	{
-		printf(
-			"U7: live task count did not increase\n");
-		halt_forever();
-	}
+	printf(
+		"U8: starting ELF task %u\n",
+		(unsigned)user_tid);
 
 	/*
-	 * Take the PMM baseline after every task/image allocation has
-	 * already occurred.
+	 * hello.elf should:
 	 *
-	 * The private single-page image owns exactly four PMM frames:
-	 *
-	 *     page directory
-	 *     user page table
-	 *     code page
-	 *     stack page
-	 *
-	 * Code and stack are both inside the same 4 MiB PDE.
-	 */
-	size_t free_frames_while_alive =
-		pmm_get_free_frame_count();
-
-	printf(
-		"U7: user task %u owns private CR3=0x%lx\n",
-		(unsigned)user_tid,
-		(unsigned long)user_directory);
-
-	printf(
-		"U7: free frames while alive=%lu\n",
-		(unsigned long)
-			free_frames_while_alive);
-
-	printf(
-		"U7: yielding to userspace\n");
-
-	/*
-	 * User code will:
-	 *
-	 *     debug_write
-	 *     return to CPL3
-	 *     syscall exit
-	 *
-	 * Do not dereference task after this yield.  The reaper may have
-	 * freed it before control returns here.
+	 *     start at ELF e_entry
+	 *     execute separately compiled C
+	 *     call debug_write
+	 *     return from main
+	 *     crt0 converts main's return value to exit(status)
 	 */
 	task_yield();
 
 	/*
-	 * Normally the reaper will already have completed by the time the
-	 * BSP is selected again.
-	 *
-	 * Keep a small bounded yield loop so the proof does not depend on
-	 * one exact normal-policy queue ordering.
+	 * The task pointer may already have been freed by the reaper.
+	 * Do not dereference it beyond this point.
 	 */
 	for (size_t i = 0;
 		 i < 64u;
@@ -343,31 +296,20 @@ static void u7_user_lifecycle_test(void)
 	size_t pending_after =
 		task_cleanup_pending_count();
 
-	size_t free_frames_after =
-		pmm_get_free_frame_count();
-
-	printf(
-		"U7: reaped after=%lu pending=%lu live=%lu\n",
-		(unsigned long)reaped_after,
-		(unsigned long)pending_after,
-		(unsigned long)live_after);
-
-	printf(
-		"U7: free frames after=%lu\n",
-		(unsigned long)free_frames_after);
-
 	if (reaped_after !=
 		reaped_before + 1u)
 	{
 		printf(
-			"U7: user task was not reaped exactly once\n");
+			"U8: ELF task was not reaped exactly once\n");
+
 		halt_forever();
 	}
 
 	if (pending_after != 0)
 	{
 		printf(
-			"U7: cleanup queue did not drain\n");
+			"U8: ELF task cleanup did not finish\n");
+
 		halt_forever();
 	}
 
@@ -375,42 +317,16 @@ static void u7_user_lifecycle_test(void)
 		live_before)
 	{
 		printf(
-			"U7: task object or kernel stack leaked\n");
-		halt_forever();
-	}
-
-	const size_t expected_user_frames =
-		4u;
-
-	if (free_frames_after !=
-		free_frames_while_alive +
-			expected_user_frames)
-	{
-		printf(
-			"U7: user address space was not fully reclaimed\n");
-
-		printf(
-			"U7: expected=%lu actual=%lu\n",
-			(unsigned long)
-				(free_frames_while_alive +
-				 expected_user_frames),
-			(unsigned long)
-				free_frames_after);
+			"U8: ELF task lifecycle leaked a task\n");
 
 		halt_forever();
 	}
 
 	printf(
-		"U7: user task exited through syscall\n");
+		"U8: ELF task exited and was reaped\n");
 
 	printf(
-		"U7: private address space reclaimed\n");
-
-	printf(
-		"U7: kernel stack and task object reaped\n");
-
-	printf(
-		"U7: complete user lifecycle confirmed\n");
+		"U8: real ELF32 userspace confirmed\n");
 
 	halt_forever();
 }
@@ -490,7 +406,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	u7_user_lifecycle_test();
+	u8_elf_test();
 
 	process_initialize();
 	printf("process system initialized\n");

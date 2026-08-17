@@ -56,6 +56,7 @@ kernel/memory/heap.o 			\
 kernel/memory/spinlock.o 		\
 kernel/process/process.o 		\
 kernel/process/user_image.o 	\
+kernel/process/elf.o 			\
 kernel/task/task.o 				\
 kernel/task/mutex.o 			\
 kernel/task/semaphore.o 		\
@@ -108,6 +109,10 @@ myos.kernel: $(OBJS) $(ARCHDIR)/linker.ld
 $(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
 
+$(ARCHDIR)/user_elf_blob.o: ../user/hello.elf
+
+../user/hello.elf: 
+	$(MAKE) -C ../user hello.elf
 kernel/kernel.o: CFLAGS += -O0 -fstack-protector-all
 kernel/panic.o: CFLAGS += -fno-stack-protector
 kernel/ssp.o: CFLAGS += -fno-stack-protector
