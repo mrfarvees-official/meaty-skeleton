@@ -92,7 +92,7 @@ create_benchmark_disk()
         "$BENCH_FILE" \
         /mnt/meaty-bench/double.txt
 
-    echo "Creating /grow.txt..."
+        echo "Creating /grow.txt..."
 
     sudo dd \
         if=/dev/zero \
@@ -100,6 +100,26 @@ create_benchmark_disk()
         bs=4096 \
         count=1 \
         conv=fsync
+
+    echo "Installing native userspace executable /bin/hello.nex..."
+
+    if [ ! -f "$SYSROOT/bin/hello.nex" ]; then
+        echo "Error: $SYSROOT/bin/hello.nex does not exist."
+        exit 1
+    fi
+
+    sudo mkdir -p \
+        /mnt/meaty-bench/bin
+
+    sudo cp \
+        "$SYSROOT/bin/hello.nex" \
+        /mnt/meaty-bench/bin/hello.nex
+
+    sync
+
+    echo "Installed userspace executable:"
+    sudo ls -lh \
+        /mnt/meaty-bench/bin/hello.nex
 
     sync
 

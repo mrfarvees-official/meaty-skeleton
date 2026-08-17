@@ -5,7 +5,7 @@ LDFLAGS?=
 DESTDIR?=
 PREFIX?=/usr
 EXEC_PREFIX?=$(PREFIX)
-BINDIR?=$(EXEC_PREFIX)/bin
+BINDIR?=/bin
 
 USER_CFLAGS=\
 	-std=gnu11 \
@@ -32,9 +32,9 @@ OBJS=\
 
 .PHONY: all clean install
 
-all: hello.elf
+all: hello.nex
 
-hello.elf: $(OBJS) linker.ld
+hello.nex: $(OBJS) linker.ld
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) -o $@ $(OBJS)
 
 crt0.o: crt0.S
@@ -43,9 +43,9 @@ crt0.o: crt0.S
 hello.o: hello.c
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-install: hello.elf
+install: hello.nex
 	mkdir -p $(DESTDIR)$(BINDIR)
-	cp hello.elf $(DESTDIR)$(BINDIR)/hello
+	cp hello.nex $(DESTDIR)$(BINDIR)/hello.nex
 
 clean:
-	rm -f hello.elf $(OBJS)
+	rm -f hello.nex $(OBJS)

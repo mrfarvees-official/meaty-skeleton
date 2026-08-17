@@ -61,19 +61,24 @@ void validate_multiboot_magic(uint32_t magic)
 	}
 }
 
-#define U8_USER_STACK_ADDRESS 0xBFFFF000u
-#define U8_USER_STACK_TOP 0xC0000000u
+#define U9_USER_STACK_ADDRESS 0xBFFFF000u
+#define U9_USER_STACK_TOP 0xC0000000u
+
+#define U9_EXECUTABLE_PATH "/bin/hello.nex"
+
+/*
+ * Keep the initial whole-file ELF buffering deliberately bounded.
+ *
+ * Streaming ELF loading can come later.  One MiB is vastly larger
+ * than the current hello.nex while preventing an invalid filesystem
+ * size from causing an uncontrolled kernel allocation.
+ */
+#define U9_MAX_EXECUTABLE_SIZE (1024u * 1024u)
 
 extern void arch_enter_user(
 	uintptr_t instruction_pointer,
 	uintptr_t stack_pointer)
 	__attribute__((noreturn));
-
-extern const unsigned char
-	u8_hello_elf_start[];
-
-extern const unsigned char
-	u8_hello_elf_end[];
 
 typedef struct
 {
@@ -81,13 +86,13 @@ typedef struct
 	uintptr_t stack_top;
 } user_launch_context_t;
 
-static user_image_t u8_user_image;
-static user_launch_context_t u8_launch_context;
+static user_image_t u9_user_image;
+static user_launch_context_t u9_launch_context;
 
-static void u8_user_task_entry(void *argument)
+static void u9_user_task_entry(void *argument)
 	__attribute__((noreturn));
 
-static void u8_user_task_entry(void *argument)
+static void u9_user_task_entry(void *argument)
 {
 	user_launch_context_t *launch =
 		(user_launch_context_t *)argument;
@@ -97,7 +102,7 @@ static void u8_user_task_entry(void *argument)
 		launch->stack_top == 0)
 	{
 		printf(
-			"U8: invalid ELF launch context\n");
+			"U9: invalid ELF launch context\n");
 
 		halt_forever();
 	}
@@ -108,7 +113,7 @@ static void u8_user_task_entry(void *argument)
 	if (task == NULL)
 	{
 		printf(
-			"U8: no current user task\n");
+			"U9: no current user task\n");
 
 		halt_forever();
 	}
@@ -123,13 +128,13 @@ static void u8_user_task_entry(void *argument)
 			paging_kernel_directory())
 	{
 		printf(
-			"U8: invalid user address space\n");
+			"U9: invalid user address space\n");
 
 		halt_forever();
 	}
 
 	printf(
-		"U8: entering ELF at 0x%lx stack=0x%lx\n",
+		"U9: entering ELF at 0x%lx stack=0x%lx\n",
 		(unsigned long)
 			launch->entry,
 		(unsigned long)
@@ -140,10 +145,10 @@ static void u8_user_task_entry(void *argument)
 		launch->stack_top);
 }
 
-static void u8_elf_test(void)
+static void u9_vfs_elf_test(void)
 {
 	printf(
-		"\n=== U8 ELF USERSPACE TEST ===\n");
+		"\n=== U9 VFS ELF USERSPACE TEST ===\n");
 
 	uintptr_t kernel_directory =
 		paging_kernel_directory();
@@ -153,27 +158,158 @@ static void u8_elf_test(void)
 			kernel_directory)
 	{
 		printf(
-			"U8: kernel CR3 is not active\n");
+			"U9: kernel CR3 is not active\n");
 
 		halt_forever();
 	}
 
-	if (u8_hello_elf_end <=
-		u8_hello_elf_start)
+	file_t *file = NULL;
+
+	if (vfs_open(
+			U9_EXECUTABLE_PATH,
+			VFS_OPEN_READ,
+			&file) != 0 ||
+		file == NULL)
 	{
 		printf(
-			"U8: embedded ELF is empty\n");
+			"U9: failed opening %s\n",
+			U9_EXECUTABLE_PATH);
 
 		halt_forever();
 	}
 
-	size_t elf_size =
-		(size_t)(u8_hello_elf_end -
-				 u8_hello_elf_start);
+	printf(
+		"U9: opened %s\n",
+		U9_EXECUTABLE_PATH);
+
+	if (file->vnode == NULL ||
+		file->vnode->type != VNODE_REGULAR)
+	{
+		printf(
+			"U9: executable vnode is not a regular file\n");
+
+		vfs_close(file);
+		halt_forever();
+	}
+
+	uint64_t executable_size_64 =
+		file->vnode->size;
+
+	if (executable_size_64 == 0)
+	{
+		printf(
+			"U9: executable is empty\n");
+
+		vfs_close(file);
+		halt_forever();
+	}
+
+	if (executable_size_64 >
+			(uint64_t)SIZE_MAX ||
+		executable_size_64 >
+			U9_MAX_EXECUTABLE_SIZE)
+	{
+		printf(
+			"U9: executable size is invalid: %llu bytes\n",
+			(unsigned long long)
+				executable_size_64);
+
+		vfs_close(file);
+		halt_forever();
+	}
+
+	size_t executable_size =
+		(size_t)executable_size_64;
+
+	uint8_t *executable_data =
+		kmalloc(executable_size);
+
+	if (executable_data == NULL)
+	{
+		printf(
+			"U9: failed allocating executable buffer\n");
+
+		vfs_close(file);
+		halt_forever();
+	}
+
+	size_t total_read = 0;
+
+	while (total_read <
+		   executable_size)
+	{
+		size_t bytes_read = 0;
+
+		if (vfs_read(
+				file,
+				executable_data +
+					total_read,
+				executable_size -
+					total_read,
+				&bytes_read) != 0)
+		{
+			printf(
+				"U9: VFS read failed at offset %lu\n",
+				(unsigned long)
+					total_read);
+
+			kfree(executable_data);
+			vfs_close(file);
+			halt_forever();
+		}
+
+		/*
+		 * A zero-byte successful read before the advertised vnode
+		 * size is reached means the filesystem supplied a truncated
+		 * file.
+		 */
+		if (bytes_read == 0)
+		{
+			printf(
+				"U9: unexpected EOF at %lu of %lu bytes\n",
+				(unsigned long)
+					total_read,
+				(unsigned long)
+					executable_size);
+
+			kfree(executable_data);
+			vfs_close(file);
+			halt_forever();
+		}
+
+		if (bytes_read >
+			executable_size -
+				total_read)
+		{
+			printf(
+				"U9: VFS returned an invalid read length\n");
+
+			kfree(executable_data);
+			vfs_close(file);
+			halt_forever();
+		}
+
+		total_read +=
+			bytes_read;
+	}
+
+	vfs_close(file);
+	file = NULL;
+
+	if (total_read !=
+		executable_size)
+	{
+		printf(
+			"U9: executable read length mismatch\n");
+
+		kfree(executable_data);
+		halt_forever();
+	}
 
 	printf(
-		"U8: embedded hello.elf size=%lu bytes\n",
-		(unsigned long)elf_size);
+		"U9: loaded %lu bytes from VFS\n",
+		(unsigned long)
+			executable_size);
 
 	size_t live_before =
 		task_live_count();
@@ -182,48 +318,58 @@ static void u8_elf_test(void)
 		task_cleanup_total_reaped();
 
 	if (!elf_load_user_image(
-			&u8_user_image,
-			u8_hello_elf_start,
-			elf_size,
-			U8_USER_STACK_ADDRESS,
-			U8_USER_STACK_TOP))
+			&u9_user_image,
+			executable_data,
+			executable_size,
+			U9_USER_STACK_ADDRESS,
+			U9_USER_STACK_TOP))
 	{
 		printf(
-			"U8: ELF loader rejected hello.elf\n");
+			"U9: ELF loader rejected %s\n",
+			U9_EXECUTABLE_PATH);
 
+		kfree(executable_data);
 		halt_forever();
 	}
 
+	/*
+	 * elf_load_user_image() has copied every PT_LOAD byte into
+	 * separately allocated user frames.  The original filesystem
+	 * buffer is no longer needed.
+	 */
+	kfree(executable_data);
+	executable_data = NULL;
+
 	printf(
-		"U8: ELF loaded entry=0x%lx CR3=0x%lx\n",
+		"U9: ELF loaded entry=0x%lx CR3=0x%lx\n",
 		(unsigned long)
-			u8_user_image.entry,
+			u9_user_image.entry,
 		(unsigned long)
-			u8_user_image.page_directory);
+			u9_user_image.page_directory);
 
-	u8_launch_context.entry =
-		u8_user_image.entry;
+	u9_launch_context.entry =
+		u9_user_image.entry;
 
-	u8_launch_context.stack_top =
-		u8_user_image.stack_top;
+	u9_launch_context.stack_top =
+		u9_user_image.stack_top;
 
 	uintptr_t user_directory =
-		u8_user_image.page_directory;
+		u9_user_image.page_directory;
 
 	task_t *task =
 		task_create_user_with_policy(
-			u8_user_task_entry,
-			&u8_launch_context,
+			u9_user_task_entry,
+			&u9_launch_context,
 			user_directory,
 			SCHED_POLICY_REALTIME);
 
 	if (task == NULL)
 	{
 		user_image_destroy(
-			&u8_user_image);
+			&u9_user_image);
 
 		printf(
-			"U8: failed creating ELF user task\n");
+			"U9: failed creating ELF user task\n");
 
 		halt_forever();
 	}
@@ -233,20 +379,20 @@ static void u8_elf_test(void)
 			user_directory)
 	{
 		printf(
-			"U8: user task did not accept ELF CR3\n");
+			"U9: user task did not accept ELF CR3\n");
 
 		halt_forever();
 	}
 
 	uintptr_t detached_directory =
 		user_image_detach_directory(
-			&u8_user_image);
+			&u9_user_image);
 
 	if (detached_directory !=
 		user_directory)
 	{
 		printf(
-			"U8: ELF address-space ownership transfer failed\n");
+			"U9: ELF address-space ownership transfer failed\n");
 
 		halt_forever();
 	}
@@ -255,11 +401,12 @@ static void u8_elf_test(void)
 		task->id;
 
 	printf(
-		"U8: starting ELF task %u\n",
+		"U9: starting %s as task %u\n",
+		U9_EXECUTABLE_PATH,
 		(unsigned)user_tid);
 
 	/*
-	 * hello.elf should:
+	 * hello.nex should:
 	 *
 	 *     start at ELF e_entry
 	 *     execute separately compiled C
@@ -300,7 +447,7 @@ static void u8_elf_test(void)
 		reaped_before + 1u)
 	{
 		printf(
-			"U8: ELF task was not reaped exactly once\n");
+			"U9: ELF task was not reaped exactly once\n");
 
 		halt_forever();
 	}
@@ -308,7 +455,7 @@ static void u8_elf_test(void)
 	if (pending_after != 0)
 	{
 		printf(
-			"U8: ELF task cleanup did not finish\n");
+			"U9: ELF task cleanup did not finish\n");
 
 		halt_forever();
 	}
@@ -317,16 +464,17 @@ static void u8_elf_test(void)
 		live_before)
 	{
 		printf(
-			"U8: ELF task lifecycle leaked a task\n");
+			"U9: ELF task lifecycle leaked a task\n");
 
 		halt_forever();
 	}
 
 	printf(
-		"U8: ELF task exited and was reaped\n");
+		"U9: ELF task exited and was reaped\n");
 
 	printf(
-		"U8: real ELF32 userspace confirmed\n");
+		"U9: %s filesystem execution confirmed\n",
+		U9_EXECUTABLE_PATH);
 
 	halt_forever();
 }
@@ -406,8 +554,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	u8_elf_test();
-
 	process_initialize();
 	printf("process system initialized\n");
 
@@ -419,17 +565,20 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	pci_device_t ahci_controller;
 
-	if (pci_find_ahci_controller(&ahci_controller))
+	if (pci_find_ahci_controller(
+			&ahci_controller))
 	{
-
-		if (!ahci_probe(&ahci_controller))
+		if (!ahci_probe(
+				&ahci_controller))
 		{
-			printf("AHCI: probe failed\n");
+			printf(
+				"AHCI: probe failed\n");
 		}
 	}
 	else
 	{
-		printf("AHCI: no controller detected\n");
+		printf(
+			"AHCI: no controller detected\n");
 	}
 
 	block_device_t *disk =
@@ -453,7 +602,8 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	if (partition_count == 0)
 	{
-		printf("Storage: no usable partitions\n");
+		printf(
+			"Storage: no usable partitions\n");
 
 		halt_forever();
 	}
@@ -588,23 +738,40 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	printf(
 		"EXT2: mounted as /\n");
 
+	/*
+	 * U9 proves that a native .nex executable can be obtained through
+	 * the mounted filesystem/VFS and passed into the existing ELF +
+	 * U7 userspace lifecycle.
+	 *
+	 * The test intentionally halts after completing, so later hardware
+	 * initialization remains unreachable during this bring-up proof.
+	 */
+	u9_vfs_elf_test();
+
 	if (!smp_start_aps())
 	{
 		printf("AP startup failed\n");
 		halt_forever();
 	}
 
-	printf("SMP online CPUs: %u\n", (unsigned)smp_online_cpu_count());
+	printf(
+		"SMP online CPUs: %u\n",
+		(unsigned)smp_online_cpu_count());
 
-	if (pit_initialize(PIT_DEFAULT_FREQUENCY_HZ) != 0)
+	if (pit_initialize(
+			PIT_DEFAULT_FREQUENCY_HZ) != 0)
 	{
-		printf("PIT initialization failed\n");
+		printf(
+			"PIT initialization failed\n");
+
 		halt_forever();
 	}
 
 	if (!keyboard_initialize())
 	{
-		printf("keyboard initialization FAILED\n");
+		printf(
+			"keyboard initialization FAILED\n");
+
 		halt_forever();
 	}
 
@@ -614,7 +781,8 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 * Allow maskable hardware interrupts.
 	 */
 	interrupt_enable();
-	printf("hardware interrupts enabled\n");
+	printf(
+		"hardware interrupts enabled\n");
 
 	yield_forever();
 }
