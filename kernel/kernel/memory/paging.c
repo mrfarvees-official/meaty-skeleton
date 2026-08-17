@@ -362,6 +362,105 @@ void paging_destroy_user_directory(
         directory_physical);
 }
 
+bool paging_share_kernel_pde(
+    uintptr_t directory_physical,
+    uintptr_t virtual_address)
+{
+    if (directory_physical == 0)
+        return false;
+
+    if (!is_page_aligned(
+            directory_physical))
+    {
+        return false;
+    }
+
+    /*
+     * U3c intentionally keeps this helper small: it must be called
+     * while the canonical kernel page directory is active.
+     */
+    if (paging_current_directory() !=
+        kernel_directory_physical)
+    {
+        return false;
+    }
+
+    size_t directory_index =
+        page_directory_index(
+            virtual_address);
+
+    /*
+     * Never share the recursive paging region or the temporary
+     * scratch PDE used to access the target directory frame.
+     */
+    if (directory_index ==
+            RECURSIVE_DIRECTORY_INDEX ||
+        directory_index ==
+            PAGE_DIRECTORY_SCRATCH_INDEX)
+    {
+        return false;
+    }
+
+    uint32_t *kernel_directory =
+        recursive_page_directory();
+
+    uint32_t kernel_entry =
+        kernel_directory[directory_index];
+
+    if ((kernel_entry & PAGE_PRESENT) == 0)
+        return false;
+
+    if ((kernel_entry & PAGE_USER) != 0)
+        return false;
+
+    /*
+     * Temporarily map the target page-directory frame into the
+     * canonical kernel address space.
+     */
+    if (!paging_map_page(
+            PAGE_DIRECTORY_SCRATCH_ADDRESS,
+            directory_physical,
+            PAGE_WRITABLE))
+    {
+        return false;
+    }
+
+    uint32_t *target_directory =
+        (uint32_t *)
+            PAGE_DIRECTORY_SCRATCH_ADDRESS;
+
+    /*
+     * Do not overwrite a userspace-owned PDE.
+     */
+    if ((target_directory[directory_index] &
+         PAGE_PRESENT) != 0 &&
+        (target_directory[directory_index] &
+         PAGE_USER) != 0)
+    {
+        paging_unmap_page(
+            PAGE_DIRECTORY_SCRATCH_ADDRESS,
+            false);
+
+        return false;
+    }
+
+    /*
+     * Both directories now reference the same supervisor page table
+     * for this 4 MiB region.
+     */
+    target_directory[directory_index] =
+        kernel_entry;
+
+    if (!paging_unmap_page(
+            PAGE_DIRECTORY_SCRATCH_ADDRESS,
+            false))
+    {
+        return false;
+    }
+
+    return true;
+}
+
 bool paging_map_page(
     uintptr_t virtual_address,
     uintptr_t physical_address,
@@ -531,6 +630,7 @@ bool paging_unmap_page(
 
     return true;
 }
+
 bool paging_get_physical_address(
     uintptr_t virtual_address,
     uintptr_t *physical_address)

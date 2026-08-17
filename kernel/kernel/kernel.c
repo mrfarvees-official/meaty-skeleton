@@ -76,6 +76,7 @@ void validate_multiboot_magic(uint32_t magic)
 #define U1_USER_CODE_ADDRESS 0x00400000u
 #define U1_USER_STACK_ADDRESS 0x00401000u
 #define U1_USER_STACK_TOP 0x00402000u
+#define U3C_KERNEL_TEST_ADDRESS 0xE4000000u
 
 extern void arch_enter_user(
 	uintptr_t instruction_pointer,
@@ -458,6 +459,158 @@ static void u3_scheduler_address_space_test(void)
 	halt_forever();
 }
 
+static void u3c_kernel_pde_test(void)
+{
+    printf(
+        "\n=== U3c KERNEL PDE SHARE TEST ===\n");
+
+    uintptr_t kernel_directory =
+        paging_kernel_directory();
+
+    if (kernel_directory == 0 ||
+        paging_current_directory() !=
+            kernel_directory)
+    {
+        printf(
+            "U3c: not running in kernel address space\n");
+
+        halt_forever();
+    }
+
+    uintptr_t user_directory = 0;
+
+    if (!paging_create_user_directory(
+            &user_directory))
+    {
+        printf(
+            "U3c: failed creating user directory\n");
+
+        halt_forever();
+    }
+
+    printf(
+        "U3c: created user CR3=0x%lx\n",
+        (unsigned long)user_directory);
+
+    if (paging_is_mapped(
+            U3C_KERNEL_TEST_ADDRESS))
+    {
+        printf(
+            "U3c: test address already mapped\n");
+
+        halt_forever();
+    }
+
+    uintptr_t frame =
+        pmm_allocate_frame();
+
+    if (frame == 0)
+    {
+        printf(
+            "U3c: failed allocating frame\n");
+
+        halt_forever();
+    }
+
+    if (!paging_map_page(
+            U3C_KERNEL_TEST_ADDRESS,
+            frame,
+            PAGE_WRITABLE))
+    {
+        printf(
+            "U3c: failed creating late kernel mapping\n");
+
+        halt_forever();
+    }
+
+    printf(
+        "U3c: late kernel mapping created\n");
+
+    volatile uint32_t *probe =
+        (volatile uint32_t *)
+            U3C_KERNEL_TEST_ADDRESS;
+
+    *probe =
+        0xC3C3C3C3u;
+
+    if (!paging_share_kernel_pde(
+            user_directory,
+            U3C_KERNEL_TEST_ADDRESS))
+    {
+        printf(
+            "U3c: failed sharing kernel PDE\n");
+
+        halt_forever();
+    }
+
+    printf(
+        "U3c: kernel PDE copied into user directory\n");
+
+    if (!paging_switch_directory(
+            user_directory))
+    {
+        printf(
+            "U3c: failed switching to user directory\n");
+
+        halt_forever();
+    }
+
+    printf(
+        "U3c: switched to user directory\n");
+
+    if (!paging_is_mapped(
+            U3C_KERNEL_TEST_ADDRESS))
+    {
+        printf(
+            "U3c: shared kernel mapping is missing\n");
+
+        halt_forever();
+    }
+
+    volatile uint32_t *shared_probe =
+        (volatile uint32_t *)
+            U3C_KERNEL_TEST_ADDRESS;
+
+    if (*shared_probe !=
+        0xC3C3C3C3u)
+    {
+        printf(
+            "U3c: shared mapping contains wrong value\n");
+
+        halt_forever();
+    }
+
+    printf(
+        "U3c: late kernel mapping works in user directory\n");
+
+    if (!paging_switch_directory(
+            kernel_directory))
+    {
+        halt_forever();
+    }
+
+    printf(
+        "U3c: returned to kernel directory\n");
+
+    paging_destroy_user_directory(
+        user_directory);
+
+    if (!paging_unmap_page(
+            U3C_KERNEL_TEST_ADDRESS,
+            true))
+    {
+        printf(
+            "U3c: cleanup failed\n");
+
+        halt_forever();
+    }
+
+    printf(
+        "U3c: kernel PDE sharing confirmed\n");
+
+    halt_forever();
+}
+
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
@@ -533,7 +686,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	u3_scheduler_address_space_test();
+	u3c_kernel_pde_test();
 
 	process_initialize();
 	printf("process system initialized\n");

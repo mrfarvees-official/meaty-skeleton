@@ -70,6 +70,10 @@ bool paging_switch_directory(
 void paging_destroy_user_directory(
     uintptr_t directory_physical);
 
+bool paging_share_kernel_pde(
+    uintptr_t directory_physical,
+    uintptr_t virtual_address);
+
 bool paging_map_page(
     uintptr_t virtual_address,
     uintptr_t physical_address,
