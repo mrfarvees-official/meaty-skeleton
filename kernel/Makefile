@@ -55,6 +55,7 @@ kernel/memory/usercopy.o 		\
 kernel/memory/heap.o 			\
 kernel/memory/spinlock.o 		\
 kernel/process/process.o 		\
+kernel/process/user_image.o 	\
 kernel/task/task.o 				\
 kernel/task/mutex.o 			\
 kernel/task/semaphore.o 		\

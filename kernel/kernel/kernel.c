@@ -27,9 +27,7 @@
 #include <kernel/ext2.h>
 #include <kernel/pci.h>
 #include <kernel/ahci.h>
-
-#include <kernel/test.h>
-#include <kernel/system_info.h>
+#include <kernel/user_image.h>
 
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
@@ -66,15 +64,6 @@ void validate_multiboot_magic(uint32_t magic)
 #define U1_USER_STACK_ADDRESS 0x00401000u
 #define U1_USER_STACK_TOP 0x00402000u
 
-/*
- * Temporary supervisor alias used only while copying the hand-written
- * userspace probe into its newly allocated private physical frame.
- *
- * paging_create_user_directory() already uses this same VA internally
- * and removes its PTE before returning, so it is free here.
- */
-#define U5_CODE_COPY_ADDRESS 0xE0000000u
-
 extern void arch_enter_user(
 	uintptr_t instruction_pointer,
 	uintptr_t stack_pointer)
@@ -82,28 +71,23 @@ extern void arch_enter_user(
 
 extern void u1_user_test_entry(void);
 
-typedef struct
-{
-	uintptr_t entry;
-	uintptr_t stack_top;
-} user_launch_context_t;
-
-static user_launch_context_t u5_launch_context;
+static user_image_t u5_user_image;
 
 static void u1_ring3_task(void *argument)
 	__attribute__((noreturn));
 
 static void u1_ring3_task(void *argument)
 {
-	user_launch_context_t *launch =
-		(user_launch_context_t *)argument;
+	user_image_t *image =
+		(user_image_t *)argument;
 
-	if (launch == NULL ||
-		launch->entry == 0 ||
-		launch->stack_top == 0)
+	if (image == NULL ||
+		image->page_directory == 0 ||
+		image->entry == 0 ||
+		image->stack_top == 0)
 	{
 		printf(
-			"U5b: missing user launch context\n");
+			"U5c: missing prepared user image\n");
 		halt_forever();
 	}
 
@@ -113,7 +97,7 @@ static void u1_ring3_task(void *argument)
 	if (task == NULL)
 	{
 		printf(
-			"U5b: no current task\n");
+			"U5c: no current task\n");
 		halt_forever();
 	}
 
@@ -121,41 +105,36 @@ static void u1_ring3_task(void *argument)
 		paging_current_directory();
 
 	printf(
-		"U5b: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
+		"U5c: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
 		(unsigned)task->id,
 		(unsigned long)task->page_directory,
 		(unsigned long)actual_directory);
 
 	if (actual_directory !=
 			task->page_directory ||
+		actual_directory !=
+			image->page_directory ||
 		actual_directory ==
 			paging_kernel_directory())
 	{
 		printf(
-			"U5b: scheduler did not install prepared CR3\n");
+			"U5c: prepared image CR3 is not active\n");
 		halt_forever();
 	}
 
-	/*
-	 * Copy the launch values into locals while still in CPL0.
-	 *
-	 * After arch_enter_user(), the task begins executing the prepared
-	 * image directly and does not need to reference this kernel-side
-	 * context again.
-	 */
 	uintptr_t entry =
-		launch->entry;
+		image->entry;
 
 	uintptr_t stack_top =
-		launch->stack_top;
+		image->stack_top;
 
 	printf(
-		"U5b: launch context entry=0x%lx stack=0x%lx\n",
+		"U5c: image entry=0x%lx stack=0x%lx\n",
 		(unsigned long)entry,
 		(unsigned long)stack_top);
 
 	printf(
-		"U5b: entering prepared userspace\n");
+		"U5c: entering reusable prepared image\n");
 
 	arch_enter_user(
 		entry,
@@ -165,7 +144,7 @@ static void u1_ring3_task(void *argument)
 static void u5_prepared_ring3_test(void)
 {
 	printf(
-		"\n=== U5b USER LAUNCH CONTEXT TEST ===\n");
+		"\n=== U5c REUSABLE USER IMAGE PREPARATION TEST ===\n");
 
 	uintptr_t kernel_directory =
 		paging_kernel_directory();
@@ -175,189 +154,96 @@ static void u5_prepared_ring3_test(void)
 			kernel_directory)
 	{
 		printf(
-			"U5b: not running in kernel address space\n");
+			"U5c: not running in kernel address space\n");
 		halt_forever();
 	}
 
 	/*
-	 * Describe the userspace image independently of the scheduler
-	 * task that will eventually launch it.
+	 * Create the scheduler task first.
 	 *
-	 * A future loader will produce these values instead.
-	 */
-	u5_launch_context.entry =
-		U1_USER_CODE_ADDRESS;
-
-	u5_launch_context.stack_top =
-		U1_USER_STACK_TOP;
-
-	printf(
-		"U5b: image entry=0x%lx stack=0x%lx\n",
-		(unsigned long)u5_launch_context.entry,
-		(unsigned long)u5_launch_context.stack_top);
-
-	/*
-	 * This raw one-page probe currently requires a page-aligned entry
-	 * because its whole code page is copied and mapped at that address.
-	 *
-	 * This restriction belongs to the temporary probe preparation,
-	 * not to the generic launch task.
-	 */
-	if ((u5_launch_context.entry &
-		 (PAGE_SIZE - 1u)) != 0)
-	{
-		printf(
-			"U5b: probe entry is not page aligned\n");
-		halt_forever();
-	}
-
-	/*
-	 * Create the scheduler task first so its managed kernel stack is
-	 * already represented in the supervisor mappings inherited by
-	 * the new address space.
-	 *
-	 * Pass the launch description through the task system's existing
-	 * argument field.
+	 * Its kernel stack must exist before the new user directory takes
+	 * its snapshot of kernel supervisor mappings.
 	 */
 	task_t *task =
 		task_create_kernel_with_policy(
 			u1_ring3_task,
-			&u5_launch_context,
+			&u5_user_image,
 			SCHED_POLICY_REALTIME);
 
 	if (task == NULL)
 	{
 		printf(
-			"U5b: failed creating scheduler task\n");
+			"U5c: failed creating scheduler task\n");
 		halt_forever();
 	}
 
 	printf(
-		"U5b: created task %u with launch context\n",
+		"U5c: created scheduler task %u\n",
 		(unsigned)task->id);
 
-	uintptr_t user_directory = 0;
-
-	if (!paging_create_user_directory(
-			&user_directory))
-	{
-		printf(
-			"U5b: failed creating user directory\n");
-		halt_forever();
-	}
-
-	if (user_directory ==
-		kernel_directory)
-	{
-		printf(
-			"U5b: user directory is not distinct\n");
-		halt_forever();
-	}
-
-	printf(
-		"U5b: created private CR3=0x%lx\n",
-		(unsigned long)user_directory);
-
 	/*
-	 * Allocate a private code frame and copy the existing hand-written
-	 * ring-3 probe into it through the temporary supervisor alias.
+	 * The temporary raw-image helper still copies exactly one code
+	 * page, so the assembly probe source must begin on a page
+	 * boundary.
 	 */
-	uintptr_t code_frame =
-		pmm_allocate_frame();
-
-	if (code_frame == 0)
+	if (((uintptr_t)u1_user_test_entry &
+		 (PAGE_SIZE - 1u)) != 0)
 	{
 		printf(
-			"U5b: failed allocating code frame\n");
+			"U5c: probe source is not page aligned\n");
 		halt_forever();
 	}
 
-	if (!paging_map_page(
-			U5_CODE_COPY_ADDRESS,
-			code_frame,
-			PAGE_WRITABLE))
-	{
-		printf(
-			"U5b: failed mapping code-copy alias\n");
-		halt_forever();
-	}
-
-	memcpy(
-		(void *)U5_CODE_COPY_ADDRESS,
-		(const void *)u1_user_test_entry,
-		PAGE_SIZE);
-
-	if (!paging_unmap_page(
-			U5_CODE_COPY_ADDRESS,
-			false))
-	{
-		printf(
-			"U5b: failed removing code-copy alias\n");
-		halt_forever();
-	}
-
-	if (!paging_map_page_in_directory(
-			user_directory,
-			u5_launch_context.entry,
-			code_frame,
-			PAGE_USER))
-	{
-		printf(
-			"U5b: failed mapping private user code\n");
-		halt_forever();
-	}
-
-	/*
-	 * The current probe uses one stack page immediately below
-	 * U1_USER_STACK_TOP.
-	 */
-	uintptr_t stack_frame =
-		pmm_allocate_frame();
-
-	if (stack_frame == 0)
-	{
-		printf(
-			"U5b: failed allocating stack frame\n");
-		halt_forever();
-	}
-
-	if (!paging_map_page_in_directory(
-			user_directory,
+	if (!user_image_prepare_single_page(
+			&u5_user_image,
+			(const void *)u1_user_test_entry,
+			U1_USER_CODE_ADDRESS,
 			U1_USER_STACK_ADDRESS,
-			stack_frame,
-			PAGE_USER | PAGE_WRITABLE))
+			U1_USER_STACK_TOP))
 	{
 		printf(
-			"U5b: failed mapping private user stack\n");
+			"U5c: user image preparation failed\n");
 		halt_forever();
 	}
 
 	printf(
-		"U5b: image prepared while target CR3 inactive\n");
+		"U5c: prepared image CR3=0x%lx\n",
+		(unsigned long)
+			u5_user_image.page_directory);
 
+	printf(
+		"U5c: prepared entry=0x%lx stack=0x%lx\n",
+		(unsigned long)
+			u5_user_image.entry,
+		(unsigned long)
+			u5_user_image.stack_top);
+
+	/*
+	 * Image construction must have happened entirely while the BSP
+	 * remained under the canonical kernel CR3.
+	 */
 	if (paging_current_directory() !=
 		kernel_directory)
 	{
 		printf(
-			"U5b: image preparation changed active CR3\n");
+			"U5c: image helper changed active CR3\n");
 		halt_forever();
 	}
 
 	task->page_directory =
-		user_directory;
+		u5_user_image.page_directory;
 
 	printf(
-		"U5b: attached CR3=0x%lx to task %u\n",
-		(unsigned long)user_directory,
+		"U5c: attached prepared image to task %u\n",
 		(unsigned)task->id);
 
 	printf(
-		"U5b: yielding to launch-context task\n");
+		"U5c: yielding to user image\n");
 
 	task_yield();
 
 	printf(
-		"U5b: ERROR user task returned\n");
+		"U5c: ERROR user task returned\n");
 	halt_forever();
 }
 
