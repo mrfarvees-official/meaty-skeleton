@@ -35,6 +35,17 @@ bool user_image_prepare_single_page(
     uintptr_t stack_top);
 
 /*
+ * Detach the prepared page directory without destroying it.
+ *
+ * This is used when ownership is transferred to a user task.
+ * entry and stack_top remain valid launch metadata.
+ *
+ * Returns 0 when image is NULL or owns no directory.
+ */
+uintptr_t user_image_detach_directory(
+    user_image_t *image);
+
+/*
  * Destroy the address space owned by a prepared image.
  *
  * The image's page directory must not currently be active.

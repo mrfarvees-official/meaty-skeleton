@@ -200,6 +200,20 @@ bool user_image_prepare_single_page(
     return true;
 }
 
+uintptr_t user_image_detach_directory(
+    user_image_t *image)
+{
+    if (image == NULL)
+        return 0;
+
+    uintptr_t directory =
+        image->page_directory;
+
+    image->page_directory = 0;
+
+    return directory;
+}
+
 void user_image_destroy(
     user_image_t *image)
 {

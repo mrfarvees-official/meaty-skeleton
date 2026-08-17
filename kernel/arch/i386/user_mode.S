@@ -72,7 +72,7 @@ arch_enter_user:
 
 u1_user_test_entry:
     /*
-     * Build "Hello from ring 3!\n" in the existing user stack page.
+     * Build "Hello from ring 3!\n" on the private user stack.
      *
      * Buffer address: 0x00401FC0
      */
@@ -99,14 +99,7 @@ u1_user_test_entry:
     movb $'\n', 18(%edi)
 
     /*
-     * ----------------------------------------------------------
-     * U2e test 1:
-     * invalid pointer must still be rejected.
-     * ----------------------------------------------------------
-     *
-     * syscall 4 = debug_write
-     * EBX = user buffer
-     * ECX = length
+     * Existing debug_write rejection test.
      */
     movl $4,          %eax
     movl $0xFFFFF000, %ebx
@@ -117,10 +110,7 @@ u1_user_test_entry:
     jne 1f
 
     /*
-     * ----------------------------------------------------------
-     * U2e test 2:
-     * oversized write must be rejected.
-     * ----------------------------------------------------------
+     * Existing oversized debug_write rejection test.
      */
     movl $4,          %eax
     movl $0x00401FC0, %ebx
@@ -131,10 +121,7 @@ u1_user_test_entry:
     jne 1f
 
     /*
-     * ----------------------------------------------------------
-     * U2e test 3:
-     * real userspace console output.
-     * ----------------------------------------------------------
+     * Write from real private userspace memory.
      */
     movl $4,          %eax
     movl $0x00401FC0, %ebx
@@ -145,17 +132,20 @@ u1_user_test_entry:
     jne 1f
 
     /*
-     * Success trap.
+     * Reaching here proves debug_write returned successfully to CPL3.
      *
-     * Preserve EAX=19 for kernel-side verification.
+     * syscall 5 = exit
+     * EBX = status
      */
-    int3
+    movl $5, %eax
+    xorl %ebx, %ebx
+    int $0x80
 
+    /*
+     * exit must never return.
+     */
 1:
     ud2
-
-2:
-    jmp 2b
 
 .size u1_user_test_entry, . - u1_user_test_entry
 

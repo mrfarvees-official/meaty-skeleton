@@ -71,23 +71,29 @@ extern void arch_enter_user(
 
 extern void u1_user_test_entry(void);
 
-static user_image_t u5_user_image;
+typedef struct
+{
+	uintptr_t entry;
+	uintptr_t stack_top;
+} user_launch_context_t;
 
-static void u1_ring3_task(void *argument)
+static user_image_t u7_user_image;
+static user_launch_context_t u7_launch_context;
+
+static void u7_user_task_entry(void *argument)
 	__attribute__((noreturn));
 
-static void u1_ring3_task(void *argument)
+static void u7_user_task_entry(void *argument)
 {
-	user_image_t *image =
-		(user_image_t *)argument;
+	user_launch_context_t *launch =
+		(user_launch_context_t *)argument;
 
-	if (image == NULL ||
-		image->page_directory == 0 ||
-		image->entry == 0 ||
-		image->stack_top == 0)
+	if (launch == NULL ||
+		launch->entry == 0 ||
+		launch->stack_top == 0)
 	{
 		printf(
-			"U6a: missing prepared user image\n");
+			"U7: missing launch context\n");
 		halt_forever();
 	}
 
@@ -97,7 +103,7 @@ static void u1_ring3_task(void *argument)
 	if (task == NULL)
 	{
 		printf(
-			"U6a: no current task\n");
+			"U7: no current user task\n");
 		halt_forever();
 	}
 
@@ -105,48 +111,44 @@ static void u1_ring3_task(void *argument)
 		paging_current_directory();
 
 	printf(
-		"U6a: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
+		"U7: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
 		(unsigned)task->id,
 		(unsigned long)
 			task->page_directory,
 		(unsigned long)
 			actual_directory);
 
-	if (actual_directory !=
-			task->page_directory ||
+	if (!task->owns_page_directory ||
 		actual_directory !=
-			image->page_directory ||
+			task->page_directory ||
 		actual_directory ==
 			paging_kernel_directory())
 	{
 		printf(
-			"U6a: user task address space is not active\n");
+			"U7: user address-space ownership invalid\n");
 		halt_forever();
 	}
 
 	uintptr_t entry =
-		image->entry;
+		launch->entry;
 
 	uintptr_t stack_top =
-		image->stack_top;
+		launch->stack_top;
 
 	printf(
-		"U6a: image entry=0x%lx stack=0x%lx\n",
+		"U7: entering CPL3 entry=0x%lx stack=0x%lx\n",
 		(unsigned long)entry,
 		(unsigned long)stack_top);
-
-	printf(
-		"U6a: entering userspace from user task\n");
 
 	arch_enter_user(
 		entry,
 		stack_top);
 }
 
-static void u5_prepared_ring3_test(void)
+static void u7_user_lifecycle_test(void)
 {
 	printf(
-		"\n=== U6a USER TASK CREATION TEST ===\n");
+		"\n=== U7 USER TASK LIFECYCLE TEST ===\n");
 
 	uintptr_t kernel_directory =
 		paging_kernel_directory();
@@ -156,7 +158,7 @@ static void u5_prepared_ring3_test(void)
 			kernel_directory)
 	{
 		printf(
-			"U6a: not running in kernel address space\n");
+			"U7: not running in kernel address space\n");
 		halt_forever();
 	}
 
@@ -164,104 +166,252 @@ static void u5_prepared_ring3_test(void)
 		 (PAGE_SIZE - 1u)) != 0)
 	{
 		printf(
-			"U6a: probe source is not page aligned\n");
+			"U7: probe source is not page aligned\n");
 		halt_forever();
 	}
 
+	size_t live_before =
+		task_live_count();
+
+	uint64_t reaped_before =
+		task_cleanup_total_reaped();
+
+	printf(
+		"U7: live tasks before=%lu reaped=%lu\n",
+		(unsigned long)live_before,
+		(unsigned long)reaped_before);
+
 	/*
-	 * Prepare the image first.
-	 *
-	 * Unlike U5c, no scheduler task exists yet.
+	 * Build the complete private userspace image first.
 	 */
 	if (!user_image_prepare_single_page(
-			&u5_user_image,
+			&u7_user_image,
 			(const void *)u1_user_test_entry,
 			U1_USER_CODE_ADDRESS,
 			U1_USER_STACK_ADDRESS,
 			U1_USER_STACK_TOP))
 	{
 		printf(
-			"U6a: user image preparation failed\n");
+			"U7: user image preparation failed\n");
 		halt_forever();
 	}
 
-	printf(
-		"U6a: prepared image CR3=0x%lx\n",
-		(unsigned long)
-			u5_user_image.page_directory);
+	u7_launch_context.entry =
+		u7_user_image.entry;
+
+	u7_launch_context.stack_top =
+		u7_user_image.stack_top;
+
+	uintptr_t user_directory =
+		u7_user_image.page_directory;
 
 	printf(
-		"U6a: prepared entry=0x%lx stack=0x%lx\n",
+		"U7: prepared CR3=0x%lx entry=0x%lx stack=0x%lx\n",
+		(unsigned long)user_directory,
 		(unsigned long)
-			u5_user_image.entry,
+			u7_launch_context.entry,
 		(unsigned long)
-			u5_user_image.stack_top);
-
-	if (paging_current_directory() !=
-		kernel_directory)
-	{
-		printf(
-			"U6a: image preparation changed active CR3\n");
-		halt_forever();
-	}
+			u7_launch_context.stack_top);
 
 	/*
-	 * Create the user task with its final page directory already set.
-	 *
-	 * There is no window where this task is READY while still
-	 * carrying the kernel CR3.
+	 * Creation takes ownership of user_directory only on success.
 	 */
 	task_t *task =
 		task_create_user_with_policy(
-			u1_ring3_task,
-			&u5_user_image,
-			u5_user_image.page_directory,
+			u7_user_task_entry,
+			&u7_launch_context,
+			user_directory,
 			SCHED_POLICY_REALTIME);
 
 	if (task == NULL)
 	{
+		user_image_destroy(
+			&u7_user_image);
+
 		printf(
-			"U6a: failed creating user task\n");
+			"U7: user task creation failed\n");
 		halt_forever();
 	}
 
-	printf(
-		"U6a: created user task %u\n",
-		(unsigned)task->id);
-
-	printf(
-		"U6a: task CR3=0x%lx image CR3=0x%lx\n",
-		(unsigned long)
-			task->page_directory,
-		(unsigned long)
-			u5_user_image.page_directory);
-
-	if (task->page_directory !=
-		u5_user_image.page_directory)
+	if (!task->owns_page_directory ||
+		task->page_directory !=
+			user_directory)
 	{
 		printf(
-			"U6a: task was created with wrong CR3\n");
+			"U7: task did not accept CR3 ownership\n");
 		halt_forever();
 	}
 
-	if (task->page_directory ==
-		kernel_directory)
+	/*
+	 * The task now owns this directory.
+	 *
+	 * Detach it from user_image_t so user_image_destroy() can never
+	 * accidentally free the task's live address space.
+	 */
+	uintptr_t detached_directory =
+		user_image_detach_directory(
+			&u7_user_image);
+
+	if (detached_directory !=
+			user_directory ||
+		u7_user_image.page_directory != 0)
 	{
 		printf(
-			"U6a: user task received kernel CR3\n");
+			"U7: image ownership transfer failed\n");
 		halt_forever();
 	}
 
-	printf(
-		"U6a: user task created with final address space\n");
+	task_id_t user_tid =
+		task->id;
+
+	if (task_live_count() !=
+		live_before + 1u)
+	{
+		printf(
+			"U7: live task count did not increase\n");
+		halt_forever();
+	}
+
+	/*
+	 * Take the PMM baseline after every task/image allocation has
+	 * already occurred.
+	 *
+	 * The private single-page image owns exactly four PMM frames:
+	 *
+	 *     page directory
+	 *     user page table
+	 *     code page
+	 *     stack page
+	 *
+	 * Code and stack are both inside the same 4 MiB PDE.
+	 */
+	size_t free_frames_while_alive =
+		pmm_get_free_frame_count();
 
 	printf(
-		"U6a: yielding to user task\n");
+		"U7: user task %u owns private CR3=0x%lx\n",
+		(unsigned)user_tid,
+		(unsigned long)user_directory);
 
+	printf(
+		"U7: free frames while alive=%lu\n",
+		(unsigned long)
+			free_frames_while_alive);
+
+	printf(
+		"U7: yielding to userspace\n");
+
+	/*
+	 * User code will:
+	 *
+	 *     debug_write
+	 *     return to CPL3
+	 *     syscall exit
+	 *
+	 * Do not dereference task after this yield.  The reaper may have
+	 * freed it before control returns here.
+	 */
 	task_yield();
 
+	/*
+	 * Normally the reaper will already have completed by the time the
+	 * BSP is selected again.
+	 *
+	 * Keep a small bounded yield loop so the proof does not depend on
+	 * one exact normal-policy queue ordering.
+	 */
+	for (size_t i = 0;
+		 i < 64u;
+		 ++i)
+	{
+		if (task_cleanup_total_reaped() >=
+				reaped_before + 1u &&
+			task_cleanup_pending_count() == 0)
+		{
+			break;
+		}
+
+		task_yield();
+	}
+
+	uint64_t reaped_after =
+		task_cleanup_total_reaped();
+
+	size_t live_after =
+		task_live_count();
+
+	size_t pending_after =
+		task_cleanup_pending_count();
+
+	size_t free_frames_after =
+		pmm_get_free_frame_count();
+
 	printf(
-		"U6a: ERROR user task returned\n");
+		"U7: reaped after=%lu pending=%lu live=%lu\n",
+		(unsigned long)reaped_after,
+		(unsigned long)pending_after,
+		(unsigned long)live_after);
+
+	printf(
+		"U7: free frames after=%lu\n",
+		(unsigned long)free_frames_after);
+
+	if (reaped_after !=
+		reaped_before + 1u)
+	{
+		printf(
+			"U7: user task was not reaped exactly once\n");
+		halt_forever();
+	}
+
+	if (pending_after != 0)
+	{
+		printf(
+			"U7: cleanup queue did not drain\n");
+		halt_forever();
+	}
+
+	if (live_after !=
+		live_before)
+	{
+		printf(
+			"U7: task object or kernel stack leaked\n");
+		halt_forever();
+	}
+
+	const size_t expected_user_frames =
+		4u;
+
+	if (free_frames_after !=
+		free_frames_while_alive +
+			expected_user_frames)
+	{
+		printf(
+			"U7: user address space was not fully reclaimed\n");
+
+		printf(
+			"U7: expected=%lu actual=%lu\n",
+			(unsigned long)
+				(free_frames_while_alive +
+				 expected_user_frames),
+			(unsigned long)
+				free_frames_after);
+
+		halt_forever();
+	}
+
+	printf(
+		"U7: user task exited through syscall\n");
+
+	printf(
+		"U7: private address space reclaimed\n");
+
+	printf(
+		"U7: kernel stack and task object reaped\n");
+
+	printf(
+		"U7: complete user lifecycle confirmed\n");
+
 	halt_forever();
 }
 
@@ -340,7 +490,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	u5_prepared_ring3_test();
+	u7_user_lifecycle_test();
 
 	process_initialize();
 	printf("process system initialized\n");

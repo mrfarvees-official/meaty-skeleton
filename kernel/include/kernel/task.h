@@ -51,11 +51,18 @@ typedef struct task
     size_t stack_size;
 
     /*
-     * Address space.
-     *
-     * Kernel threads currently share the kernel page directory.
+     * Address space installed by the scheduler when this task runs.
      */
     uintptr_t page_directory;
+
+    /*
+     * True when this task exclusively owns page_directory and the
+     * reaper must destroy it when the task exits.
+     *
+     * Kernel/bootstrap/idle/reaper tasks leave this false because
+     * they share the canonical kernel page directory.
+     */
+    bool owns_page_directory;
 
     /*
      * Generic scheduler/accounting information.
@@ -124,11 +131,16 @@ task_t *task_create_kernel_with_policy(
     sched_policy_t policy);
 
 /*
- * Create a scheduler task that begins with the supplied address space.
+ * Create a scheduler task using an already prepared private address
+ * space.
  *
- * The page directory must already be fully prepared and suitable for
- * CR3.  The task does not take ownership of the address space yet;
- * address-space lifetime remains separate from task lifetime.
+ * On success the task takes exclusive ownership of page_directory.
+ * The caller must not destroy that directory afterward.
+ *
+ * On failure ownership remains with the caller.
+ *
+ * At this stage creation must occur while the canonical kernel CR3
+ * is active.
  */
 task_t *task_create_user_with_policy(
     void (*entry)(void *),

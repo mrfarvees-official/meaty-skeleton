@@ -18,6 +18,8 @@ static int32_t syscall_dispatch(
     uint32_t arg3,
     uint32_t arg4)
 {
+    (void)arg3;
+    (void)arg4;
 
     switch (number)
     {
@@ -47,9 +49,6 @@ static int32_t syscall_dispatch(
         size_t length =
             (size_t)arg2;
 
-        /*
-         * U2d intentionally keeps the probe bounded.
-         */
         if (length != 4u)
             return I386_SYSCALL_ERROR_BAD_ADDRESS;
 
@@ -130,9 +129,6 @@ static int32_t syscall_dispatch(
             return I386_SYSCALL_ERROR_BAD_ADDRESS;
         }
 
-        /*
-         * Never pass the raw user pointer to terminal code.
-         */
         terminal_write(
             buffer,
             length);
@@ -142,6 +138,27 @@ static int32_t syscall_dispatch(
             (unsigned long)length);
 
         return (int32_t)length;
+    }
+
+    case I386_SYSCALL_EXIT:
+    {
+        task_t *task =
+            task_current();
+
+        if (task == NULL)
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+
+        printf(
+            "U7: exit tid=%lu status=%ld\n",
+            (unsigned long)task->id,
+            (long)(int32_t)arg0);
+
+        /*
+         * Exit status storage belongs to a future process layer.
+         *
+         * task_exit() never returns.
+         */
+        task_exit();
     }
 
     default:

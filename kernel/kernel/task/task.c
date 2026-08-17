@@ -269,48 +269,40 @@ static void task_reaper_thread(void *argument)
         /*
          * Sleep until at least one zombie exists.
          *
-         * There is exactly one signal per queued zombie.
+         * There is exactly one semaphore signal per queued zombie.
          */
-        if (!semaphore_wait(&cleanup_semaphore))
+        if (!semaphore_wait(
+                &cleanup_semaphore))
         {
-            /*
-             * This should never fail for the reaper.
-             */
             task_yield();
             continue;
         }
 
         /*
-         * Remove exactly one zombie.
+         * Remove exactly one zombie from the cleanup queue.
          */
-        uint32_t flags = spin_lock_irqsave(&cleanup_lock);
+        uint32_t flags =
+            spin_lock_irqsave(
+                &cleanup_lock);
 
-        task_t *task = cleanup_queue_pop();
+        task_t *task =
+            cleanup_queue_pop();
 
-        spin_unlock_irqrestore(&cleanup_lock, flags);
+        spin_unlock_irqrestore(
+            &cleanup_lock,
+            flags);
 
         if (task == NULL)
         {
             /*
              * Semaphore/queue inconsistency.
-             *
-             * Don't crash the kernel in this beginner-stage
-             * implementation; simply continue.
              */
             continue;
         }
 
         /*
-         * Absolute safety checks.
-         *
-         * The task being destroyed must:
-         *
-         *     - not be the current reaper
-         *     - not be bootstrap
-         *     - not be idle
-         *     - be a zombie
+         * Absolute lifecycle safety checks.
          */
-
         if (cpu_current() == NULL)
             task_halt_forever();
 
@@ -320,23 +312,61 @@ static void task_reaper_thread(void *argument)
             task == reaper_task ||
             task->state != TASK_ZOMBIE)
         {
-            /*
-             * This represents a serious lifecycle invariant failure.
-             *
-             * Reinsert nothing and halt rather than freeing unsafe
-             * memory.
-             */
             task_halt_forever();
         }
 
         /*
-         * We are running on reaper_task's stack here.
+         * User tasks exclusively own their private address spaces.
          *
-         * Therefore it is now safe to free the zombie's stack.
+         * By the time a zombie reaches this queue:
+         *
+         *     - execution is on another task's kernel stack
+         *     - the scheduler has installed the incoming task's CR3
+         *
+         * The reaper itself is a kernel task, so destruction occurs
+         * from the canonical kernel address space as required by
+         * paging_destroy_user_directory().
+         */
+        if (task->owns_page_directory)
+        {
+            uintptr_t kernel_directory =
+                paging_kernel_directory();
+
+            uintptr_t owned_directory =
+                task->page_directory;
+
+            if (kernel_directory == 0 ||
+                paging_current_directory() !=
+                    kernel_directory ||
+                owned_directory == 0 ||
+                owned_directory ==
+                    kernel_directory)
+            {
+                task_halt_forever();
+            }
+
+            /*
+             * Remove ownership from the zombie before destroying the
+             * actual paging structures.
+             */
+            task->owns_page_directory =
+                false;
+
+            task->page_directory =
+                kernel_directory;
+
+            paging_destroy_user_directory(
+                owned_directory);
+        }
+
+        /*
+         * We are running on reaper_task's stack, so the zombie's
+         * managed kernel stack can now be released safely.
          */
         if (task->stack_base != 0)
         {
-            kfree((void *)task->stack_base);
+            kfree(
+                (void *)task->stack_base);
 
             task->stack_base = 0;
             task->stack_size = 0;
@@ -344,34 +374,36 @@ static void task_reaper_thread(void *argument)
         }
 
         /*
-         * The task object itself is the final thing we free.
-         *
-         * Do not access *task after this call.
+         * task_t is the final object released.
          */
         kfree(task);
 
-        flags = spin_lock_irqsave(&task_id_lock);
+        flags =
+            spin_lock_irqsave(
+                &task_id_lock);
+
         --live_task_count;
-        spin_unlock_irqrestore(&task_id_lock, flags);
+
+        spin_unlock_irqrestore(
+            &task_id_lock,
+            flags);
 
         /*
-         * Record completion.
-         *
-         * Protect 64-bit cleanup_total_reaped because this is i386
-         * and 64-bit loads/stores are not inherently atomic.
+         * Record completed cleanup.
          */
-        flags = spin_lock_irqsave(&cleanup_lock);
+        flags =
+            spin_lock_irqsave(
+                &cleanup_lock);
 
         --cleanup_pending;
         ++cleanup_total_reaped;
 
-        spin_unlock_irqrestore(&cleanup_lock, flags);
+        spin_unlock_irqrestore(
+            &cleanup_lock,
+            flags);
 
         /*
-         * Give normal scheduler activity another opportunity.
-         *
-         * This is not required for correctness, but keeps a large
-         * cleanup burst from monopolizing the CPU.
+         * Avoid monopolizing the CPU during cleanup bursts.
          */
         task_yield();
     }
@@ -622,6 +654,40 @@ static task_t *allocate_task(
     return task;
 }
 
+static void destroy_unpublished_task(
+    task_t *task)
+{
+    if (task == NULL)
+        return;
+
+    /*
+     * This helper is used only before scheduler_make_ready().
+     * Therefore no scheduler queue can contain this task.
+     */
+    if (task->stack_base != 0)
+    {
+        kfree(
+            (void *)task->stack_base);
+
+        task->stack_base = 0;
+        task->stack_size = 0;
+        task->stack_pointer = 0;
+    }
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &task_id_lock);
+
+    if (live_task_count > 0)
+        --live_task_count;
+
+    spin_unlock_irqrestore(
+        &task_id_lock,
+        flags);
+
+    kfree(task);
+}
+
 static task_t *allocate_kernel_task(
     void (*entry)(void *),
     void *argument,
@@ -686,8 +752,17 @@ task_t *task_create_user_with_policy(
         return NULL;
 
     /*
-     * A user task must start in an address space distinct from the
-     * canonical kernel directory.
+     * The U3c sharing helper currently operates from the canonical
+     * kernel address space.
+     */
+    if (paging_current_directory() !=
+        kernel_directory)
+    {
+        return NULL;
+    }
+
+    /*
+     * A user task must use a distinct, page-aligned address space.
      */
     if (page_directory == 0 ||
         page_directory ==
@@ -698,6 +773,10 @@ task_t *task_create_user_with_policy(
         return NULL;
     }
 
+    /*
+     * allocate_task() creates the task object and its managed kernel
+     * stack, but does not publish the task to the scheduler.
+     */
     task_t *task =
         allocate_task(
             entry,
@@ -709,10 +788,65 @@ task_t *task_create_user_with_policy(
         return NULL;
 
     /*
-     * Only now does the task become scheduler-visible.
+     * The user directory may have been created before this task's
+     * task_t or kernel stack existed.
      *
-     * task->page_directory is already authoritative at this point.
+     * Ensure the supervisor PDEs containing those objects are shared
+     * into the target directory before the task can ever run.
      */
+    if (task->stack_base == 0 ||
+        task->stack_size == 0)
+    {
+        destroy_unpublished_task(
+            task);
+
+        return NULL;
+    }
+
+    if (task->stack_base >
+        UINTPTR_MAX -
+            (task->stack_size - 1u))
+    {
+        destroy_unpublished_task(
+            task);
+
+        return NULL;
+    }
+
+    uintptr_t stack_last =
+        task->stack_base +
+        task->stack_size -
+        1u;
+
+    if (!paging_share_kernel_pde(
+            page_directory,
+            (uintptr_t)task) ||
+        !paging_share_kernel_pde(
+            page_directory,
+            task->stack_base) ||
+        !paging_share_kernel_pde(
+            page_directory,
+            stack_last))
+    {
+        /*
+         * page_directory still belongs to the caller because this
+         * task was never published and ownership has not transferred.
+         */
+        destroy_unpublished_task(
+            task);
+
+        return NULL;
+    }
+
+    /*
+     * Ownership becomes authoritative before scheduler visibility.
+     *
+     * From this point onward the reaper is responsible for destroying
+     * the private address space.
+     */
+    task->owns_page_directory =
+        true;
+
     scheduler_make_ready(
         task);
 
