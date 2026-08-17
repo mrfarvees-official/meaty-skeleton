@@ -224,6 +224,9 @@ static bool task_is_idle_task(const task_t *task)
  * There is no safe meaningful recovery for this stage.
  */
 static void task_halt_forever(void)
+    __attribute__((noreturn));
+
+static void task_halt_forever(void)
 {
     for (;;)
         __asm__ volatile("cli; hlt");
@@ -487,7 +490,11 @@ static bool initialize_new_stack(
  * --------------------------------------------------------------------------
  */
 
-static task_t *allocate_kernel_task(void (*entry)(void *), void *argument, sched_policy_t policy)
+static task_t *allocate_task(
+    void (*entry)(void *),
+    void *argument,
+    uintptr_t page_directory,
+    sched_policy_t policy)
 {
     if (entry == NULL)
         return NULL;
@@ -498,58 +505,75 @@ static task_t *allocate_kernel_task(void (*entry)(void *), void *argument, sched
         return NULL;
     }
 
-    task_t *task = kmalloc(sizeof(task_t));
+    if (page_directory == 0 ||
+        (page_directory &
+         (PAGE_SIZE - 1u)) != 0)
+    {
+        return NULL;
+    }
+
+    task_t *task =
+        kmalloc(sizeof(task_t));
 
     if (task == NULL)
         return NULL;
 
-    memset(task, 0, sizeof(task_t));
+    memset(
+        task,
+        0,
+        sizeof(task_t));
 
-    void *stack = kmalloc(KERNEL_TASK_STACK_SIZE);
+    void *stack =
+        kmalloc(KERNEL_TASK_STACK_SIZE);
 
     if (stack == NULL)
     {
         kfree(task);
-
         return NULL;
     }
 
     /*
-     * Protect next_task_id against concurrent allocation
-     * from multiple CPUs.
+     * Protect next_task_id against concurrent allocation from
+     * multiple CPUs.
      */
-    uint32_t flags = spin_lock_irqsave(&task_id_lock);
+    uint32_t flags =
+        spin_lock_irqsave(
+            &task_id_lock);
 
-    task->id = next_task_id++;
+    task->id =
+        next_task_id++;
 
-    spin_unlock_irqrestore(&task_id_lock, flags);
+    spin_unlock_irqrestore(
+        &task_id_lock,
+        flags);
 
-    task->state = TASK_NEW;
+    task->state =
+        TASK_NEW;
 
-    task->policy = policy;
+    task->policy =
+        policy;
 
-    task->stack_base = (uintptr_t)stack;
+    task->stack_base =
+        (uintptr_t)stack;
 
-    task->stack_size = KERNEL_TASK_STACK_SIZE;
+    task->stack_size =
+        KERNEL_TASK_STACK_SIZE;
 
+    /*
+     * The address space is authoritative before this task can ever
+     * become visible to the scheduler.
+     */
     task->page_directory =
-        paging_kernel_directory();
-
-    if (task->page_directory == 0)
-    {
-        kfree(stack);
-        kfree(task);
-
-        return NULL;
-    }
+        page_directory;
 
     task->priority = 0;
-
     task->runtime_ticks = 0;
 
-    task->entry = entry;
+    task->entry =
+        entry;
 
-    task->argument = argument;
+    task->argument =
+        argument;
 
     /*
      * Scheduler linkage.
@@ -576,7 +600,8 @@ static task_t *allocate_kernel_task(void (*entry)(void *), void *argument, sched
      */
     task->cleanup_next = NULL;
 
-    if (!initialize_new_stack(task))
+    if (!initialize_new_stack(
+            task))
     {
         kfree(stack);
         kfree(task);
@@ -584,11 +609,35 @@ static task_t *allocate_kernel_task(void (*entry)(void *), void *argument, sched
         return NULL;
     }
 
-    flags = spin_lock_irqsave(&task_id_lock);
+    flags =
+        spin_lock_irqsave(
+            &task_id_lock);
+
     ++live_task_count;
-    spin_unlock_irqrestore(&task_id_lock, flags);
+
+    spin_unlock_irqrestore(
+        &task_id_lock,
+        flags);
 
     return task;
+}
+
+static task_t *allocate_kernel_task(
+    void (*entry)(void *),
+    void *argument,
+    sched_policy_t policy)
+{
+    uintptr_t kernel_directory =
+        paging_kernel_directory();
+
+    if (kernel_directory == 0)
+        return NULL;
+
+    return allocate_task(
+        entry,
+        argument,
+        kernel_directory,
+        policy);
 }
 
 /*
@@ -602,16 +651,70 @@ task_t *task_create_kernel_with_policy(
     void *argument,
     sched_policy_t policy)
 {
+    uintptr_t kernel_directory =
+        paging_kernel_directory();
+
+    if (kernel_directory == 0)
+        return NULL;
+
     task_t *task =
-        allocate_kernel_task(
+        allocate_task(
             entry,
             argument,
+            kernel_directory,
             policy);
 
     if (task == NULL)
         return NULL;
 
-    scheduler_make_ready(task);
+    scheduler_make_ready(
+        task);
+
+    return task;
+}
+
+task_t *task_create_user_with_policy(
+    void (*entry)(void *),
+    void *argument,
+    uintptr_t page_directory,
+    sched_policy_t policy)
+{
+    uintptr_t kernel_directory =
+        paging_kernel_directory();
+
+    if (kernel_directory == 0)
+        return NULL;
+
+    /*
+     * A user task must start in an address space distinct from the
+     * canonical kernel directory.
+     */
+    if (page_directory == 0 ||
+        page_directory ==
+            kernel_directory ||
+        (page_directory &
+         (PAGE_SIZE - 1u)) != 0)
+    {
+        return NULL;
+    }
+
+    task_t *task =
+        allocate_task(
+            entry,
+            argument,
+            page_directory,
+            policy);
+
+    if (task == NULL)
+        return NULL;
+
+    /*
+     * Only now does the task become scheduler-visible.
+     *
+     * task->page_directory is already authoritative at this point.
+     */
+    scheduler_make_ready(
+        task);
 
     return task;
 }

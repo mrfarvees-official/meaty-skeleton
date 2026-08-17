@@ -87,7 +87,7 @@ static void u1_ring3_task(void *argument)
 		image->stack_top == 0)
 	{
 		printf(
-			"U5c: missing prepared user image\n");
+			"U6a: missing prepared user image\n");
 		halt_forever();
 	}
 
@@ -97,7 +97,7 @@ static void u1_ring3_task(void *argument)
 	if (task == NULL)
 	{
 		printf(
-			"U5c: no current task\n");
+			"U6a: no current task\n");
 		halt_forever();
 	}
 
@@ -105,10 +105,12 @@ static void u1_ring3_task(void *argument)
 		paging_current_directory();
 
 	printf(
-		"U5c: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
+		"U6a: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
 		(unsigned)task->id,
-		(unsigned long)task->page_directory,
-		(unsigned long)actual_directory);
+		(unsigned long)
+			task->page_directory,
+		(unsigned long)
+			actual_directory);
 
 	if (actual_directory !=
 			task->page_directory ||
@@ -118,7 +120,7 @@ static void u1_ring3_task(void *argument)
 			paging_kernel_directory())
 	{
 		printf(
-			"U5c: prepared image CR3 is not active\n");
+			"U6a: user task address space is not active\n");
 		halt_forever();
 	}
 
@@ -129,12 +131,12 @@ static void u1_ring3_task(void *argument)
 		image->stack_top;
 
 	printf(
-		"U5c: image entry=0x%lx stack=0x%lx\n",
+		"U6a: image entry=0x%lx stack=0x%lx\n",
 		(unsigned long)entry,
 		(unsigned long)stack_top);
 
 	printf(
-		"U5c: entering reusable prepared image\n");
+		"U6a: entering userspace from user task\n");
 
 	arch_enter_user(
 		entry,
@@ -144,7 +146,7 @@ static void u1_ring3_task(void *argument)
 static void u5_prepared_ring3_test(void)
 {
 	printf(
-		"\n=== U5c REUSABLE USER IMAGE PREPARATION TEST ===\n");
+		"\n=== U6a USER TASK CREATION TEST ===\n");
 
 	uintptr_t kernel_directory =
 		paging_kernel_directory();
@@ -154,46 +156,23 @@ static void u5_prepared_ring3_test(void)
 			kernel_directory)
 	{
 		printf(
-			"U5c: not running in kernel address space\n");
+			"U6a: not running in kernel address space\n");
 		halt_forever();
 	}
 
-	/*
-	 * Create the scheduler task first.
-	 *
-	 * Its kernel stack must exist before the new user directory takes
-	 * its snapshot of kernel supervisor mappings.
-	 */
-	task_t *task =
-		task_create_kernel_with_policy(
-			u1_ring3_task,
-			&u5_user_image,
-			SCHED_POLICY_REALTIME);
-
-	if (task == NULL)
-	{
-		printf(
-			"U5c: failed creating scheduler task\n");
-		halt_forever();
-	}
-
-	printf(
-		"U5c: created scheduler task %u\n",
-		(unsigned)task->id);
-
-	/*
-	 * The temporary raw-image helper still copies exactly one code
-	 * page, so the assembly probe source must begin on a page
-	 * boundary.
-	 */
 	if (((uintptr_t)u1_user_test_entry &
 		 (PAGE_SIZE - 1u)) != 0)
 	{
 		printf(
-			"U5c: probe source is not page aligned\n");
+			"U6a: probe source is not page aligned\n");
 		halt_forever();
 	}
 
+	/*
+	 * Prepare the image first.
+	 *
+	 * Unlike U5c, no scheduler task exists yet.
+	 */
 	if (!user_image_prepare_single_page(
 			&u5_user_image,
 			(const void *)u1_user_test_entry,
@@ -202,48 +181,87 @@ static void u5_prepared_ring3_test(void)
 			U1_USER_STACK_TOP))
 	{
 		printf(
-			"U5c: user image preparation failed\n");
+			"U6a: user image preparation failed\n");
 		halt_forever();
 	}
 
 	printf(
-		"U5c: prepared image CR3=0x%lx\n",
+		"U6a: prepared image CR3=0x%lx\n",
 		(unsigned long)
 			u5_user_image.page_directory);
 
 	printf(
-		"U5c: prepared entry=0x%lx stack=0x%lx\n",
+		"U6a: prepared entry=0x%lx stack=0x%lx\n",
 		(unsigned long)
 			u5_user_image.entry,
 		(unsigned long)
 			u5_user_image.stack_top);
 
-	/*
-	 * Image construction must have happened entirely while the BSP
-	 * remained under the canonical kernel CR3.
-	 */
 	if (paging_current_directory() !=
 		kernel_directory)
 	{
 		printf(
-			"U5c: image helper changed active CR3\n");
+			"U6a: image preparation changed active CR3\n");
 		halt_forever();
 	}
 
-	task->page_directory =
-		u5_user_image.page_directory;
+	/*
+	 * Create the user task with its final page directory already set.
+	 *
+	 * There is no window where this task is READY while still
+	 * carrying the kernel CR3.
+	 */
+	task_t *task =
+		task_create_user_with_policy(
+			u1_ring3_task,
+			&u5_user_image,
+			u5_user_image.page_directory,
+			SCHED_POLICY_REALTIME);
+
+	if (task == NULL)
+	{
+		printf(
+			"U6a: failed creating user task\n");
+		halt_forever();
+	}
 
 	printf(
-		"U5c: attached prepared image to task %u\n",
+		"U6a: created user task %u\n",
 		(unsigned)task->id);
 
 	printf(
-		"U5c: yielding to user image\n");
+		"U6a: task CR3=0x%lx image CR3=0x%lx\n",
+		(unsigned long)
+			task->page_directory,
+		(unsigned long)
+			u5_user_image.page_directory);
+
+	if (task->page_directory !=
+		u5_user_image.page_directory)
+	{
+		printf(
+			"U6a: task was created with wrong CR3\n");
+		halt_forever();
+	}
+
+	if (task->page_directory ==
+		kernel_directory)
+	{
+		printf(
+			"U6a: user task received kernel CR3\n");
+		halt_forever();
+	}
+
+	printf(
+		"U6a: user task created with final address space\n");
+
+	printf(
+		"U6a: yielding to user task\n");
 
 	task_yield();
 
 	printf(
-		"U5c: ERROR user task returned\n");
+		"U6a: ERROR user task returned\n");
 	halt_forever();
 }
 
