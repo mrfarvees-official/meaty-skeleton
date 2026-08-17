@@ -26,7 +26,7 @@
 #define ELF_USER_LIMIT              0xC0000000u
 
 /*
- * Temporary supervisor alias used only while populating one newly
+ * Temporary supervisor alias used while initializing one newly
  * allocated physical user page.
  */
 #define ELF_PAGE_SCRATCH_ADDRESS    0xE0000000u
@@ -72,7 +72,8 @@ static bool file_range_valid(
     if (offset > file_size)
         return false;
 
-    return length <= file_size - offset;
+    return length <=
+        file_size - offset;
 }
 
 static uintptr_t page_align_down(
@@ -80,6 +81,32 @@ static uintptr_t page_align_down(
 {
     return address &
         ~(uintptr_t)(PAGE_SIZE - 1u);
+}
+
+static bool bounded_string_length(
+    const char *string,
+    size_t maximum,
+    size_t *length)
+{
+    if (string == NULL ||
+        length == NULL ||
+        maximum == 0)
+    {
+        return false;
+    }
+
+    for (size_t i = 0;
+         i < maximum;
+         ++i)
+    {
+        if (string[i] == '\0')
+        {
+            *length = i;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool populate_segment_page(
@@ -99,10 +126,6 @@ static bool populate_segment_page(
         return false;
     }
 
-    /*
-     * Temporarily expose the physical frame in the kernel address
-     * space so its contents can be initialized.
-     */
     if (!paging_map_page(
             ELF_PAGE_SCRATCH_ADDRESS,
             frame,
@@ -328,49 +351,109 @@ static bool load_segment(
 static bool map_user_stack(
     uintptr_t directory,
     uintptr_t stack_address,
-    uintptr_t stack_top)
+    uintptr_t stack_top,
+    size_t argc,
+    const char *const argv[],
+    uintptr_t *initial_stack_pointer)
 {
+    if (initial_stack_pointer == NULL)
+        return false;
+
+    *initial_stack_pointer = 0;
+
     if ((stack_address &
          (PAGE_SIZE - 1u)) != 0)
     {
+        printf(
+            "ELF: stack address is not page aligned\n");
+
         return false;
     }
 
     if (stack_address == 0 ||
         stack_address >= ELF_USER_LIMIT)
     {
+        printf(
+            "ELF: stack address is outside userspace\n");
+
         return false;
     }
 
     if (stack_address >
         UINTPTR_MAX - PAGE_SIZE)
     {
+        printf(
+            "ELF: stack address overflows\n");
+
         return false;
     }
 
     if (stack_top !=
         stack_address + PAGE_SIZE)
     {
+        printf(
+            "ELF: stack top does not match one-page stack\n");
+
         return false;
     }
 
     if (stack_top > ELF_USER_LIMIT)
+    {
+        printf(
+            "ELF: stack top exceeds userspace\n");
+
         return false;
+    }
+
+    if (argc == 0 ||
+        argc > ELF_USER_MAX_ARGS ||
+        argv == NULL)
+    {
+        printf(
+            "ELF: invalid userspace argument vector\n");
+
+        return false;
+    }
+
+    size_t argument_lengths[
+        ELF_USER_MAX_ARGS];
+
+    for (size_t i = 0;
+         i < argc;
+         ++i)
+    {
+        if (!bounded_string_length(
+                argv[i],
+                ELF_USER_MAX_ARG_LENGTH,
+                &argument_lengths[i]))
+        {
+            printf(
+                "ELF: argument %lu is invalid or too long\n",
+                (unsigned long)i);
+
+            return false;
+        }
+    }
 
     uintptr_t frame =
         pmm_allocate_frame();
 
     if (frame == 0)
-        return false;
+    {
+        printf(
+            "ELF: stack frame allocation failed\n");
 
-    /*
-     * Give userspace a deterministic zeroed initial stack.
-     */
+        return false;
+    }
+
     if (!paging_map_page(
             ELF_PAGE_SCRATCH_ADDRESS,
             frame,
             PAGE_WRITABLE))
     {
+        printf(
+            "ELF: stack scratch mapping failed\n");
+
         pmm_free_frame(
             frame);
 
@@ -382,10 +465,134 @@ static bool map_user_stack(
         0,
         PAGE_SIZE);
 
+    uintptr_t user_argument_addresses[
+        ELF_USER_MAX_ARGS];
+
+    uintptr_t stack_pointer =
+        stack_top;
+
+    /*
+     * Copy strings downward from the top of the stack page.
+     */
+    for (size_t remaining = argc;
+         remaining > 0;
+         --remaining)
+    {
+        size_t index =
+            remaining - 1u;
+
+        size_t length_with_nul =
+            argument_lengths[index] + 1u;
+
+        if (stack_pointer <
+            stack_address +
+                length_with_nul)
+        {
+            printf(
+                "ELF: arguments do not fit user stack\n");
+
+            paging_unmap_page(
+                ELF_PAGE_SCRATCH_ADDRESS,
+                false);
+
+            pmm_free_frame(
+                frame);
+
+            return false;
+        }
+
+        stack_pointer -=
+            length_with_nul;
+
+        size_t stack_offset =
+            (size_t)(
+                stack_pointer -
+                stack_address);
+
+        memcpy(
+            (void *)(
+                ELF_PAGE_SCRATCH_ADDRESS +
+                stack_offset),
+            argv[index],
+            length_with_nul);
+
+        user_argument_addresses[index] =
+            stack_pointer;
+    }
+
+    /*
+     * Keep the initial word table naturally aligned.
+     */
+    stack_pointer &=
+        ~(uintptr_t)0x3u;
+
+    /*
+     * Minimal i386 process-start stack:
+     *
+     *     argc
+     *     argv[0]
+     *     ...
+     *     argv[argc - 1]
+     *     NULL
+     */
+    size_t table_words =
+        argc + 2u;
+
+    size_t table_size =
+        table_words *
+        sizeof(uint32_t);
+
+    if (stack_pointer <
+        stack_address +
+            table_size)
+    {
+        printf(
+            "ELF: argument table does not fit user stack\n");
+
+        paging_unmap_page(
+            ELF_PAGE_SCRATCH_ADDRESS,
+            false);
+
+        pmm_free_frame(
+            frame);
+
+        return false;
+    }
+
+    stack_pointer -=
+        table_size;
+
+    size_t table_offset =
+        (size_t)(
+            stack_pointer -
+            stack_address);
+
+    uint32_t *table =
+        (uint32_t *)(
+            ELF_PAGE_SCRATCH_ADDRESS +
+            table_offset);
+
+    table[0] =
+        (uint32_t)argc;
+
+    for (size_t i = 0;
+         i < argc;
+         ++i)
+    {
+        table[i + 1u] =
+            (uint32_t)
+                user_argument_addresses[i];
+    }
+
+    table[argc + 1u] = 0;
+
     if (!paging_unmap_page(
             ELF_PAGE_SCRATCH_ADDRESS,
             false))
     {
+        printf(
+            "ELF: stack scratch unmap failed\n");
+
         for (;;)
             __asm__ volatile(
                 "cli; hlt");
@@ -398,11 +605,17 @@ static bool map_user_stack(
             PAGE_USER |
                 PAGE_WRITABLE))
     {
+        printf(
+            "ELF: user stack mapping failed\n");
+
         pmm_free_frame(
             frame);
 
         return false;
     }
+
+    *initial_stack_pointer =
+        stack_pointer;
 
     return true;
 }
@@ -412,7 +625,9 @@ bool elf_load_user_image(
     const void *file_data,
     size_t file_size,
     uintptr_t stack_address,
-    uintptr_t stack_top)
+    uintptr_t stack_top,
+    size_t argc,
+    const char *const argv[])
 {
     if (image == NULL ||
         file_data == NULL)
@@ -633,10 +848,15 @@ bool elf_load_user_image(
         return false;
     }
 
+    uintptr_t initial_stack_pointer = 0;
+
     if (!map_user_stack(
             directory,
             stack_address,
-            stack_top))
+            stack_top,
+            argc,
+            argv,
+            &initial_stack_pointer))
     {
         printf(
             "ELF: stack mapping failed\n");
@@ -647,10 +867,6 @@ bool elf_load_user_image(
         return false;
     }
 
-    /*
-     * All inactive-directory operations must leave the canonical
-     * kernel address space active.
-     */
     if (paging_current_directory() !=
         paging_kernel_directory())
     {
@@ -668,8 +884,11 @@ bool elf_load_user_image(
     image->entry =
         (uintptr_t)header->entry;
 
+    /*
+     * This is the initial userspace ESP, not merely the page boundary.
+     */
     image->stack_top =
-        stack_top;
+        initial_stack_pointer;
 
     return true;
 }
