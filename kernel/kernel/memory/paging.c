@@ -565,6 +565,145 @@ bool paging_map_page(
     return true;
 }
 
+bool paging_map_page_in_directory(
+    uintptr_t directory_physical,
+    uintptr_t virtual_address,
+    uintptr_t physical_address,
+    uint32_t flags)
+{
+    if (directory_physical == 0)
+        return false;
+
+    if (!is_page_aligned(
+            directory_physical))
+    {
+        return false;
+    }
+
+    if (!is_page_aligned(
+            virtual_address))
+    {
+        return false;
+    }
+
+    if (!is_page_aligned(
+            physical_address))
+    {
+        return false;
+    }
+
+    /*
+     * U4a deliberately supports construction from the canonical
+     * kernel address space only.
+     *
+     * This gives us a known-good address space to restore and ensures
+     * the target user directory inherited the supervisor mappings
+     * containing this code and the current kernel stack.
+     */
+    uintptr_t kernel_directory =
+        paging_kernel_directory();
+
+    if (kernel_directory == 0 ||
+        paging_current_directory() !=
+            kernel_directory)
+    {
+        return false;
+    }
+
+    /*
+     * Mapping the already-active kernel directory does not require
+     * a temporary CR3 switch.
+     */
+    if (directory_physical ==
+        kernel_directory)
+    {
+        return paging_map_page(
+            virtual_address,
+            physical_address,
+            flags);
+    }
+
+    /*
+     * The target directory must never be the recursive or temporary
+     * scratch region through the requested virtual address.
+     */
+    size_t directory_index =
+        page_directory_index(
+            virtual_address);
+
+    if (directory_index ==
+            RECURSIVE_DIRECTORY_INDEX ||
+        directory_index ==
+            PAGE_DIRECTORY_SCRATCH_INDEX)
+    {
+        return false;
+    }
+
+    /*
+     * Prevent a timer interrupt or scheduler entry from observing the
+     * temporary CR3 as if it belonged to the current kernel task.
+     *
+     * paging_map_page() takes paging_lock itself, so do not hold that
+     * lock around this call.
+     */
+    uint32_t saved_eflags;
+
+    __asm__ volatile(
+        "pushfl\n"
+        "popl %0\n"
+        "cli"
+        : "=r"(saved_eflags)
+        :
+        : "memory");
+
+    if (!paging_switch_directory(
+            directory_physical))
+    {
+        __asm__ volatile(
+            "pushl %0\n"
+            "popfl"
+            :
+            : "r"(saved_eflags)
+            : "memory");
+
+        return false;
+    }
+
+    /*
+     * recursive_page_directory() and recursive_page_table() now refer
+     * to the target directory, so the existing mapping path performs
+     * all normal PDE/PTE creation there.
+     */
+    bool mapped =
+        paging_map_page(
+            virtual_address,
+            physical_address,
+            flags);
+
+    /*
+     * Always restore the canonical kernel address space before
+     * restoring the caller's interrupt state.
+     */
+    if (!paging_switch_directory(
+            kernel_directory))
+    {
+        /*
+         * There is no safe continuation if CR3 restoration fails.
+         */
+        for (;;)
+            __asm__ volatile("cli; hlt");
+    }
+
+    __asm__ volatile(
+        "pushl %0\n"
+        "popfl"
+        :
+        : "r"(saved_eflags)
+        : "memory");
+
+    return mapped;
+}
+
 bool paging_unmap_page(
     uintptr_t virtual_address,
     bool release_frame)

@@ -80,6 +80,21 @@ bool paging_map_page(
     uint32_t flags);
 
 /*
+ * Create a mapping in a page directory other than the currently
+ * active address space.
+ *
+ * U4a keeps this deliberately small: the caller must currently be
+ * running in the canonical kernel address space.  The target
+ * directory is installed temporarily while paging_map_page() performs
+ * the normal mapping operation.
+ */
+bool paging_map_page_in_directory(
+    uintptr_t directory_physical,
+    uintptr_t virtual_address,
+    uintptr_t physical_address,
+    uint32_t flags);
+
+/*
  * release_frame == true:
  *     Remove the mapping and return the physical frame to the PMM.
  *

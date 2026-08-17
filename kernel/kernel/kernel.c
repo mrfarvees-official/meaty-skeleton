@@ -567,6 +567,213 @@ static void u3_scheduler_address_space_test(void)
 	halt_forever();
 }
 
+static void u4_inactive_mapping_test(void)
+{
+	printf(
+		"\n=== U4a INACTIVE ADDRESS-SPACE MAPPING TEST ===\n");
+
+	const uintptr_t user_test_address =
+		0x00800000u;
+
+	uintptr_t kernel_directory =
+		paging_kernel_directory();
+
+	if (kernel_directory == 0 ||
+		paging_current_directory() !=
+			kernel_directory)
+	{
+		printf(
+			"U4a: not running in kernel address space\n");
+		halt_forever();
+	}
+
+	uintptr_t user_directory = 0;
+
+	if (!paging_create_user_directory(
+			&user_directory))
+	{
+		printf(
+			"U4a: failed creating user directory\n");
+		halt_forever();
+	}
+
+	if (user_directory ==
+		kernel_directory)
+	{
+		printf(
+			"U4a: user directory is not distinct\n");
+		halt_forever();
+	}
+
+	printf(
+		"U4a: kernel CR3=0x%lx user CR3=0x%lx\n",
+		(unsigned long)kernel_directory,
+		(unsigned long)user_directory);
+
+	/*
+	 * The user directory is still inactive here.
+	 */
+	if (paging_current_directory() !=
+		kernel_directory)
+	{
+		printf(
+			"U4a: CR3 changed before mapping test\n");
+		halt_forever();
+	}
+
+	uintptr_t user_frame =
+		pmm_allocate_frame();
+
+	if (user_frame == 0)
+	{
+		printf(
+			"U4a: failed allocating user frame\n");
+		halt_forever();
+	}
+
+	if (!paging_map_page_in_directory(
+			user_directory,
+			user_test_address,
+			user_frame,
+			PAGE_USER | PAGE_WRITABLE))
+	{
+		printf(
+			"U4a: inactive-directory mapping failed\n");
+
+		pmm_free_frame(
+			user_frame);
+
+		halt_forever();
+	}
+
+	printf(
+		"U4a: mapped user page while target CR3 inactive\n");
+
+	/*
+	 * The helper must have restored the BSP's kernel CR3.
+	 */
+	if (paging_current_directory() !=
+		kernel_directory)
+	{
+		printf(
+			"U4a: helper did not restore kernel CR3\n");
+		halt_forever();
+	}
+
+	printf(
+		"U4a: kernel CR3 restored after mapping\n");
+
+	/*
+	 * Now enter the target address space only to verify the mapping
+	 * that was constructed while it was inactive.
+	 */
+	if (!paging_switch_directory(
+			user_directory))
+	{
+		printf(
+			"U4a: failed switching to user directory\n");
+		halt_forever();
+	}
+
+	printf(
+		"U4a: switched to target CR3 for verification\n");
+
+	uintptr_t resolved_physical = 0;
+
+	if (!paging_get_physical_address(
+			user_test_address,
+			&resolved_physical))
+	{
+		printf(
+			"U4a: new mapping is missing\n");
+		halt_forever();
+	}
+
+	resolved_physical &=
+		~(uintptr_t)(PAGE_SIZE - 1u);
+
+	if (resolved_physical !=
+		user_frame)
+	{
+		printf(
+			"U4a: mapping resolved to wrong frame\n");
+
+		printf(
+			"U4a: expected=0x%lx actual=0x%lx\n",
+			(unsigned long)user_frame,
+			(unsigned long)resolved_physical);
+
+		halt_forever();
+	}
+
+	uint32_t effective_flags = 0;
+
+	if (!paging_get_effective_flags(
+			user_test_address,
+			&effective_flags))
+	{
+		printf(
+			"U4a: failed reading mapping permissions\n");
+		halt_forever();
+	}
+
+	if ((effective_flags &
+		 (PAGE_PRESENT |
+		  PAGE_USER |
+		  PAGE_WRITABLE)) !=
+		(PAGE_PRESENT |
+		 PAGE_USER |
+		 PAGE_WRITABLE))
+	{
+		printf(
+			"U4a: user mapping permissions are wrong\n");
+		halt_forever();
+	}
+
+	volatile uint32_t *probe =
+		(volatile uint32_t *)
+			user_test_address;
+
+	*probe =
+		0x44A00001u;
+
+	if (*probe !=
+		0x44A00001u)
+	{
+		printf(
+			"U4a: mapped page read/write failed\n");
+		halt_forever();
+	}
+
+	printf(
+		"U4a: private user mapping works in target CR3\n");
+
+	if (!paging_switch_directory(
+			kernel_directory))
+	{
+		halt_forever();
+	}
+
+	printf(
+		"U4a: returned to kernel CR3\n");
+
+	/*
+	 * Intentional U4a limitation:
+	 *
+	 * Do not destroy this directory yet.
+	 *
+	 * It now owns a private page table, while
+	 * paging_destroy_user_directory() is still the old U3a version
+	 * that only releases the directory frame.
+	 *
+	 * U4b will handle private address-space destruction cleanly.
+	 */
+	printf(
+		"U4a: inactive address-space mapping confirmed\n");
+
+	halt_forever();
+}
+
 static void u3c_kernel_pde_test(void)
 {
 	printf(
@@ -794,7 +1001,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	u3d_private_ring3_test();
+	u4_inactive_mapping_test();
 
 	process_initialize();
 	printf("process system initialized\n");
