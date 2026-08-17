@@ -112,6 +112,28 @@ static void u1_ring3_task(void *argument)
 		halt_forever();
 	}
 
+	uintptr_t actual_directory =
+		paging_current_directory();
+
+	printf(
+		"U3d: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
+		(unsigned)task->id,
+		(unsigned long)task->page_directory,
+		(unsigned long)actual_directory);
+
+	if (actual_directory !=
+			task->page_directory ||
+		actual_directory ==
+			paging_kernel_directory())
+	{
+		printf(
+			"U3d: private task address space FAILED\n");
+		halt_forever();
+	}
+
+	printf(
+		"U3d: scheduler installed private address space\n");
+
 	uintptr_t expected_esp0 =
 		task_kernel_stack_top(task);
 
@@ -239,6 +261,92 @@ static void u1_start_scheduler_owned_test(void)
 	 * Returning here would therefore indicate a broken test.
 	 */
 	printf("U1d: ERROR test task returned\n");
+	halt_forever();
+}
+
+static void u3d_private_ring3_test(void)
+{
+	printf(
+		"\n=== U3d PRIVATE RING3 ADDRESS-SPACE TEST ===\n");
+
+	uintptr_t kernel_directory =
+		paging_kernel_directory();
+
+	if (kernel_directory == 0 ||
+		paging_current_directory() !=
+			kernel_directory)
+	{
+		printf(
+			"U3d: BSP did not start in kernel address space\n");
+		halt_forever();
+	}
+
+	/*
+	 * Create the scheduler-owned task first.
+	 *
+	 * This ensures its kernel stack already exists when
+	 * paging_create_user_directory() snapshots supervisor mappings.
+	 */
+	task_t *task =
+		task_create_kernel_with_policy(
+			u1_ring3_task,
+			NULL,
+			SCHED_POLICY_REALTIME);
+
+	if (task == NULL)
+	{
+		printf(
+			"U3d: failed creating scheduler-owned task\n");
+		halt_forever();
+	}
+
+	uintptr_t user_directory = 0;
+
+	if (!paging_create_user_directory(
+			&user_directory))
+	{
+		printf(
+			"U3d: failed creating user address space\n");
+		halt_forever();
+	}
+
+	if (user_directory ==
+		kernel_directory)
+	{
+		printf(
+			"U3d: user address space is not distinct\n");
+		halt_forever();
+	}
+
+	/*
+	 * U3d deliberately keeps task/process construction minimal.
+	 *
+	 * task->page_directory is already the authoritative scheduler
+	 * address-space field, so attach the isolated directory directly.
+	 */
+	task->page_directory =
+		user_directory;
+
+	printf(
+		"U3d: task=%u kernel_cr3=0x%lx user_cr3=0x%lx\n",
+		(unsigned)task->id,
+		(unsigned long)kernel_directory,
+		(unsigned long)user_directory);
+
+	printf(
+		"U3d: yielding to private-address-space task\n");
+
+	/*
+	 * The task is REALTIME while the BSP/reaper are NORMAL.
+	 * Scheduler selection therefore enters this task next.
+	 *
+	 * scheduler_schedule() installs task->page_directory before
+	 * arch_context_switch().
+	 */
+	task_yield();
+
+	printf(
+		"U3d: ERROR ring3 task returned\n");
 	halt_forever();
 }
 
@@ -461,154 +569,154 @@ static void u3_scheduler_address_space_test(void)
 
 static void u3c_kernel_pde_test(void)
 {
-    printf(
-        "\n=== U3c KERNEL PDE SHARE TEST ===\n");
+	printf(
+		"\n=== U3c KERNEL PDE SHARE TEST ===\n");
 
-    uintptr_t kernel_directory =
-        paging_kernel_directory();
+	uintptr_t kernel_directory =
+		paging_kernel_directory();
 
-    if (kernel_directory == 0 ||
-        paging_current_directory() !=
-            kernel_directory)
-    {
-        printf(
-            "U3c: not running in kernel address space\n");
+	if (kernel_directory == 0 ||
+		paging_current_directory() !=
+			kernel_directory)
+	{
+		printf(
+			"U3c: not running in kernel address space\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    uintptr_t user_directory = 0;
+	uintptr_t user_directory = 0;
 
-    if (!paging_create_user_directory(
-            &user_directory))
-    {
-        printf(
-            "U3c: failed creating user directory\n");
+	if (!paging_create_user_directory(
+			&user_directory))
+	{
+		printf(
+			"U3c: failed creating user directory\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    printf(
-        "U3c: created user CR3=0x%lx\n",
-        (unsigned long)user_directory);
+	printf(
+		"U3c: created user CR3=0x%lx\n",
+		(unsigned long)user_directory);
 
-    if (paging_is_mapped(
-            U3C_KERNEL_TEST_ADDRESS))
-    {
-        printf(
-            "U3c: test address already mapped\n");
+	if (paging_is_mapped(
+			U3C_KERNEL_TEST_ADDRESS))
+	{
+		printf(
+			"U3c: test address already mapped\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    uintptr_t frame =
-        pmm_allocate_frame();
+	uintptr_t frame =
+		pmm_allocate_frame();
 
-    if (frame == 0)
-    {
-        printf(
-            "U3c: failed allocating frame\n");
+	if (frame == 0)
+	{
+		printf(
+			"U3c: failed allocating frame\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    if (!paging_map_page(
-            U3C_KERNEL_TEST_ADDRESS,
-            frame,
-            PAGE_WRITABLE))
-    {
-        printf(
-            "U3c: failed creating late kernel mapping\n");
+	if (!paging_map_page(
+			U3C_KERNEL_TEST_ADDRESS,
+			frame,
+			PAGE_WRITABLE))
+	{
+		printf(
+			"U3c: failed creating late kernel mapping\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    printf(
-        "U3c: late kernel mapping created\n");
+	printf(
+		"U3c: late kernel mapping created\n");
 
-    volatile uint32_t *probe =
-        (volatile uint32_t *)
-            U3C_KERNEL_TEST_ADDRESS;
+	volatile uint32_t *probe =
+		(volatile uint32_t *)
+			U3C_KERNEL_TEST_ADDRESS;
 
-    *probe =
-        0xC3C3C3C3u;
+	*probe =
+		0xC3C3C3C3u;
 
-    if (!paging_share_kernel_pde(
-            user_directory,
-            U3C_KERNEL_TEST_ADDRESS))
-    {
-        printf(
-            "U3c: failed sharing kernel PDE\n");
+	if (!paging_share_kernel_pde(
+			user_directory,
+			U3C_KERNEL_TEST_ADDRESS))
+	{
+		printf(
+			"U3c: failed sharing kernel PDE\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    printf(
-        "U3c: kernel PDE copied into user directory\n");
+	printf(
+		"U3c: kernel PDE copied into user directory\n");
 
-    if (!paging_switch_directory(
-            user_directory))
-    {
-        printf(
-            "U3c: failed switching to user directory\n");
+	if (!paging_switch_directory(
+			user_directory))
+	{
+		printf(
+			"U3c: failed switching to user directory\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    printf(
-        "U3c: switched to user directory\n");
+	printf(
+		"U3c: switched to user directory\n");
 
-    if (!paging_is_mapped(
-            U3C_KERNEL_TEST_ADDRESS))
-    {
-        printf(
-            "U3c: shared kernel mapping is missing\n");
+	if (!paging_is_mapped(
+			U3C_KERNEL_TEST_ADDRESS))
+	{
+		printf(
+			"U3c: shared kernel mapping is missing\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    volatile uint32_t *shared_probe =
-        (volatile uint32_t *)
-            U3C_KERNEL_TEST_ADDRESS;
+	volatile uint32_t *shared_probe =
+		(volatile uint32_t *)
+			U3C_KERNEL_TEST_ADDRESS;
 
-    if (*shared_probe !=
-        0xC3C3C3C3u)
-    {
-        printf(
-            "U3c: shared mapping contains wrong value\n");
+	if (*shared_probe !=
+		0xC3C3C3C3u)
+	{
+		printf(
+			"U3c: shared mapping contains wrong value\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    printf(
-        "U3c: late kernel mapping works in user directory\n");
+	printf(
+		"U3c: late kernel mapping works in user directory\n");
 
-    if (!paging_switch_directory(
-            kernel_directory))
-    {
-        halt_forever();
-    }
+	if (!paging_switch_directory(
+			kernel_directory))
+	{
+		halt_forever();
+	}
 
-    printf(
-        "U3c: returned to kernel directory\n");
+	printf(
+		"U3c: returned to kernel directory\n");
 
-    paging_destroy_user_directory(
-        user_directory);
+	paging_destroy_user_directory(
+		user_directory);
 
-    if (!paging_unmap_page(
-            U3C_KERNEL_TEST_ADDRESS,
-            true))
-    {
-        printf(
-            "U3c: cleanup failed\n");
+	if (!paging_unmap_page(
+			U3C_KERNEL_TEST_ADDRESS,
+			true))
+	{
+		printf(
+			"U3c: cleanup failed\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    printf(
-        "U3c: kernel PDE sharing confirmed\n");
+	printf(
+		"U3c: kernel PDE sharing confirmed\n");
 
-    halt_forever();
+	halt_forever();
 }
 
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
@@ -686,7 +794,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	u3c_kernel_pde_test();
+	u3d_private_ring3_test();
 
 	process_initialize();
 	printf("process system initialized\n");
