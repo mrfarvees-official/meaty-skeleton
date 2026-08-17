@@ -39,7 +39,6 @@
 #include "../arch/i386/pit.h"
 
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002u
-#define U3_TEST_USER_ADDRESS 0x00400000u
 
 static void halt_forever(void)
 {
@@ -66,7 +65,15 @@ void validate_multiboot_magic(uint32_t magic)
 #define U1_USER_CODE_ADDRESS 0x00400000u
 #define U1_USER_STACK_ADDRESS 0x00401000u
 #define U1_USER_STACK_TOP 0x00402000u
-#define U3C_KERNEL_TEST_ADDRESS 0xE4000000u
+
+/*
+ * Temporary supervisor alias used only while copying the hand-written
+ * userspace probe into its newly allocated private physical frame.
+ *
+ * paging_create_user_directory() already uses this same VA internally
+ * and removes its PTE before returning, so it is free here.
+ */
+#define U5_CODE_COPY_ADDRESS 0xE0000000u
 
 extern void arch_enter_user(
 	uintptr_t instruction_pointer,
@@ -74,13 +81,6 @@ extern void arch_enter_user(
 	__attribute__((noreturn));
 
 extern void u1_user_test_entry(void);
-
-/*
- * One physical page that will be aliased into the user part of the
- * current bootstrap address space.
- */
-static uint8_t u1_user_stack[PAGE_SIZE]
-	__attribute__((aligned(PAGE_SIZE)));
 
 static void u1_ring3_task(void *argument)
 	__attribute__((noreturn));
@@ -92,13 +92,10 @@ static void u1_ring3_task(void *argument)
 	task_t *task =
 		task_current();
 
-	cpu_local_t *cpu =
-		cpu_current();
-
-	if (task == NULL ||
-		cpu == NULL)
+	if (task == NULL)
 	{
-		printf("U1d: missing current task/CPU\n");
+		printf(
+			"U5a: no current task\n");
 		halt_forever();
 	}
 
@@ -106,7 +103,7 @@ static void u1_ring3_task(void *argument)
 		paging_current_directory();
 
 	printf(
-		"U3d: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
+		"U5a: task=%u task_cr3=0x%lx actual_cr3=0x%lx\n",
 		(unsigned)task->id,
 		(unsigned long)task->page_directory,
 		(unsigned long)actual_directory);
@@ -117,102 +114,20 @@ static void u1_ring3_task(void *argument)
 			paging_kernel_directory())
 	{
 		printf(
-			"U3d: private task address space FAILED\n");
+			"U5a: scheduler did not install prepared CR3\n");
 		halt_forever();
 	}
 
 	printf(
-		"U3d: scheduler installed private address space\n");
+		"U5a: prepared address space active\n");
 
-	uintptr_t expected_esp0 =
-		task_kernel_stack_top(task);
-
-	uintptr_t actual_esp0 = 0;
-
-	if (expected_esp0 == 0)
-	{
-		printf("U1d: test task has no managed kernel stack\n");
-		halt_forever();
-	}
-
-	if (!gdt_get_kernel_stack(
-			cpu->index,
-			&actual_esp0))
-	{
-		printf("U1d: failed reading TSS esp0\n");
-		halt_forever();
-	}
-
+	/*
+	 * There is deliberately no paging setup in this task.
+	 *
+	 * Code and stack were created before the scheduler selected us.
+	 */
 	printf(
-		"U1d: task=%u cpu=%u kernel_stack_top=0x%lx\n",
-		(unsigned)task->id,
-		(unsigned)cpu->index,
-		(unsigned long)expected_esp0);
-
-	printf(
-		"U1d: TSS esp0=0x%lx\n",
-		(unsigned long)actual_esp0);
-
-	if (actual_esp0 != expected_esp0)
-	{
-		printf("U1d: TSS esp0 does not match current task\n");
-		halt_forever();
-	}
-
-	printf("U1d: scheduler-owned kernel stack confirmed\n");
-
-	uintptr_t user_code_physical;
-	uintptr_t user_stack_physical;
-
-	if (((uintptr_t)u1_user_test_entry &
-		 (PAGE_SIZE - 1u)) != 0)
-	{
-		printf("U1: user test code is not page aligned\n");
-		halt_forever();
-	}
-
-	if (!paging_get_physical_address(
-			(uintptr_t)u1_user_test_entry,
-			&user_code_physical))
-	{
-		printf("U1: failed to resolve test-code physical page\n");
-		halt_forever();
-	}
-
-	if (!paging_get_physical_address(
-			(uintptr_t)u1_user_stack,
-			&user_stack_physical))
-	{
-		printf("U1: failed to resolve test-stack physical page\n");
-		halt_forever();
-	}
-
-	user_code_physical &=
-		~(uintptr_t)(PAGE_SIZE - 1u);
-
-	user_stack_physical &=
-		~(uintptr_t)(PAGE_SIZE - 1u);
-
-	if (!paging_map_page(
-			U1_USER_CODE_ADDRESS,
-			user_code_physical,
-			PAGE_USER))
-	{
-		printf("U1: failed to map user code\n");
-		halt_forever();
-	}
-
-	if (!paging_map_page(
-			U1_USER_STACK_ADDRESS,
-			user_stack_physical,
-			PAGE_USER | PAGE_WRITABLE))
-	{
-		printf("U1: failed to map user stack\n");
-		halt_forever();
-	}
-
-	printf(
-		"U1: entering user mode eip=0x%lx esp=0x%lx\n",
+		"U5a: entering prepared userspace eip=0x%lx esp=0x%lx\n",
 		(unsigned long)U1_USER_CODE_ADDRESS,
 		(unsigned long)U1_USER_STACK_TOP);
 
@@ -221,16 +136,10 @@ static void u1_ring3_task(void *argument)
 		U1_USER_STACK_TOP);
 }
 
-static void u4_inactive_mapping_test(void)
+static void u5_prepared_ring3_test(void)
 {
 	printf(
-		"\n=== U4b USER ADDRESS-SPACE DESTRUCTION TEST ===\n");
-
-	const uintptr_t user_test_address =
-		0x00800000u;
-
-	const uint32_t test_value =
-		0x44B00001u;
+		"\n=== U5a PREPARED USER IMAGE TEST ===\n");
 
 	uintptr_t kernel_directory =
 		paging_kernel_directory();
@@ -240,64 +149,48 @@ static void u4_inactive_mapping_test(void)
 			kernel_directory)
 	{
 		printf(
-			"U4b: not running in kernel address space\n");
+			"U5a: not running in kernel address space\n");
 		halt_forever();
 	}
 
 	/*
-	 * Warm up the kernel scratch page-table infrastructure before
-	 * recording the PMM baseline.
+	 * Create the scheduler-owned task first.
 	 *
-	 * paging_create_user_directory() uses 0xE0000000 as a temporary
-	 * mapping.  Its first use may allocate one persistent supervisor
-	 * page-table frame in the kernel directory.
+	 * Its managed kernel stack must already exist when the user
+	 * directory snapshots the current supervisor mappings.
 	 *
-	 * That frame belongs to the kernel paging infrastructure, not to
-	 * the user address space being tested below.
+	 * Hardware interrupts are still disabled at this point in
+	 * kernel_main(), so although task_create_kernel_with_policy()
+	 * makes the task READY, it cannot run until we explicitly yield.
 	 */
-	uintptr_t warmup_directory = 0;
+	task_t *task =
+		task_create_kernel_with_policy(
+			u1_ring3_task,
+			NULL,
+			SCHED_POLICY_REALTIME);
 
-	if (!paging_create_user_directory(
-			&warmup_directory))
+	if (task == NULL)
 	{
 		printf(
-			"U4b: failed warming scratch mapping\n");
+			"U5a: failed creating scheduler task\n");
 		halt_forever();
 	}
-
-	paging_destroy_user_directory(
-		warmup_directory);
-
-	if (paging_current_directory() !=
-		kernel_directory)
-	{
-		printf(
-			"U4b: warmup changed active CR3\n");
-		halt_forever();
-	}
-
-	/*
-	 * From this point onward, all temporary allocations measured by
-	 * the test belong to the user address space itself:
-	 *
-	 *     1 page-directory frame
-	 *     1 user data frame
-	 *     1 private page-table frame
-	 */
-	size_t free_frames_before =
-		pmm_get_free_frame_count();
 
 	printf(
-		"U4b: free frames before=%lu\n",
-		(unsigned long)free_frames_before);
+		"U5a: created task %u\n",
+		(unsigned)task->id);
 
+	/*
+	 * Create the private address space while the BSP remains on the
+	 * canonical kernel CR3.
+	 */
 	uintptr_t user_directory = 0;
 
 	if (!paging_create_user_directory(
 			&user_directory))
 	{
 		printf(
-			"U4b: failed creating user directory\n");
+			"U5a: failed creating user directory\n");
 		halt_forever();
 	}
 
@@ -305,139 +198,152 @@ static void u4_inactive_mapping_test(void)
 		kernel_directory)
 	{
 		printf(
-			"U4b: user directory is not distinct\n");
+			"U5a: user directory is not distinct\n");
 		halt_forever();
 	}
 
-	uintptr_t user_frame =
-		pmm_allocate_frame();
+	printf(
+		"U5a: created private CR3=0x%lx\n",
+		(unsigned long)user_directory);
 
-	if (user_frame == 0)
+	/*
+	 * The hand-written userspace probe occupies one page by design.
+	 */
+	if (((uintptr_t)u1_user_test_entry &
+		 (PAGE_SIZE - 1u)) != 0)
 	{
 		printf(
-			"U4b: failed allocating user frame\n");
+			"U5a: userspace probe is not page aligned\n");
+		halt_forever();
+	}
 
-		paging_destroy_user_directory(
-			user_directory);
+	/*
+	 * Allocate a genuinely private physical code page.
+	 *
+	 * Unlike U3d, userspace will no longer execute through an alias of
+	 * the kernel image's original physical code page.
+	 */
+	uintptr_t code_frame =
+		pmm_allocate_frame();
 
+	if (code_frame == 0)
+	{
+		printf(
+			"U5a: failed allocating code frame\n");
+		halt_forever();
+	}
+
+	/*
+	 * Temporarily expose that physical frame in the kernel address
+	 * space so we can copy the existing one-page assembly probe into
+	 * it.
+	 */
+	if (!paging_map_page(
+			U5_CODE_COPY_ADDRESS,
+			code_frame,
+			PAGE_WRITABLE))
+	{
+		printf(
+			"U5a: failed mapping code-copy alias\n");
+		halt_forever();
+	}
+
+	memcpy(
+		(void *)U5_CODE_COPY_ADDRESS,
+		(const void *)u1_user_test_entry,
+		PAGE_SIZE);
+
+	if (!paging_unmap_page(
+			U5_CODE_COPY_ADDRESS,
+			false))
+	{
+		printf(
+			"U5a: failed removing code-copy alias\n");
+		halt_forever();
+	}
+
+	printf(
+		"U5a: copied ring3 probe into private code frame\n");
+
+	/*
+	 * Install the private code frame into the still-inactive user
+	 * directory.
+	 *
+	 * No PAGE_WRITABLE: userspace receives an effectively read-only
+	 * code page.
+	 */
+	if (!paging_map_page_in_directory(
+			user_directory,
+			U1_USER_CODE_ADDRESS,
+			code_frame,
+			PAGE_USER))
+	{
+		printf(
+			"U5a: failed mapping private user code\n");
+		halt_forever();
+	}
+
+	/*
+	 * Allocate and install one private writable userspace stack page.
+	 */
+	uintptr_t stack_frame =
+		pmm_allocate_frame();
+
+	if (stack_frame == 0)
+	{
+		printf(
+			"U5a: failed allocating stack frame\n");
 		halt_forever();
 	}
 
 	if (!paging_map_page_in_directory(
 			user_directory,
-			user_test_address,
-			user_frame,
+			U1_USER_STACK_ADDRESS,
+			stack_frame,
 			PAGE_USER | PAGE_WRITABLE))
 	{
 		printf(
-			"U4b: failed mapping private user page\n");
-
-		pmm_free_frame(
-			user_frame);
-
-		paging_destroy_user_directory(
-			user_directory);
-
+			"U5a: failed mapping private user stack\n");
 		halt_forever();
 	}
 
 	printf(
-		"U4b: private page created in inactive CR3\n");
+		"U5a: private code and stack prepared while CR3 inactive\n");
 
-	if (!paging_switch_directory(
-			user_directory))
-	{
-		printf(
-			"U4b: failed switching to user directory\n");
-		halt_forever();
-	}
-
-	volatile uint32_t *probe =
-		(volatile uint32_t *)
-			user_test_address;
-
-	*probe =
-		test_value;
-
-	if (*probe !=
-		test_value)
-	{
-		printf(
-			"U4b: private mapping read/write failed\n");
-		halt_forever();
-	}
-
-	uintptr_t resolved_physical = 0;
-
-	if (!paging_get_physical_address(
-			user_test_address,
-			&resolved_physical))
-	{
-		printf(
-			"U4b: private mapping disappeared\n");
-		halt_forever();
-	}
-
-	resolved_physical &=
-		~(uintptr_t)(PAGE_SIZE - 1u);
-
-	if (resolved_physical !=
-		user_frame)
-	{
-		printf(
-			"U4b: private mapping resolved incorrectly\n");
-		halt_forever();
-	}
-
-	printf(
-		"U4b: private user mapping verified\n");
-
-	if (!paging_switch_directory(
-			kernel_directory))
-	{
-		printf(
-			"U4b: failed returning to kernel CR3\n");
-		halt_forever();
-	}
-
-	paging_destroy_user_directory(
-		user_directory);
-
+	/*
+	 * The BSP must still be executing in the kernel address space.
+	 */
 	if (paging_current_directory() !=
 		kernel_directory)
 	{
 		printf(
-			"U4b: destroy changed active CR3\n");
+			"U5a: image preparation changed active CR3\n");
 		halt_forever();
 	}
 
-	size_t free_frames_after =
-		pmm_get_free_frame_count();
+	/*
+	 * Attach the completely prepared address space to the scheduler
+	 * task only after both userspace mappings are ready.
+	 */
+	task->page_directory =
+		user_directory;
 
 	printf(
-		"U4b: free frames after=%lu\n",
-		(unsigned long)free_frames_after);
-
-	if (free_frames_after !=
-		free_frames_before)
-	{
-		printf(
-			"U4b: address-space frames leaked\n");
-
-		printf(
-			"U4b: before=%lu after=%lu\n",
-			(unsigned long)free_frames_before,
-			(unsigned long)free_frames_after);
-
-		halt_forever();
-	}
+		"U5a: attached CR3=0x%lx to task %u\n",
+		(unsigned long)user_directory,
+		(unsigned)task->id);
 
 	printf(
-		"U4b: private pages and page tables reclaimed\n");
+		"U5a: yielding to prepared user task\n");
+
+	/*
+	 * The task is REALTIME.  The scheduler will install its private
+	 * CR3 before entering u1_ring3_task().
+	 */
+	task_yield();
 
 	printf(
-		"U4b: user address-space destruction confirmed\n");
-
+		"U5a: ERROR user task returned\n");
 	halt_forever();
 }
 
@@ -516,7 +422,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	task_initialize();
 	printf("BSP task system initialized\n");
 
-	u4_inactive_mapping_test();
+	u5_prepared_ring3_test();
 
 	process_initialize();
 	printf("process system initialized\n");
