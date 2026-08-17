@@ -61,11 +61,17 @@ bool paging_switch_directory(
     uintptr_t directory_physical);
 
 /*
- * Release a page directory created by
+ * Destroy an address space created by
  * paging_create_user_directory().
  *
- * U3a directories contain no private page tables yet, so only the
- * directory frame itself is released.
+ * Present PAGE_USER mappings are private to that user address space:
+ * their mapped frames and page-table frames are released.
+ *
+ * Supervisor mappings are shared with the kernel address space and
+ * are never released here.
+ *
+ * The directory being destroyed must not be the currently active
+ * address space.
  */
 void paging_destroy_user_directory(
     uintptr_t directory_physical);

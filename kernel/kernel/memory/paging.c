@@ -110,11 +110,9 @@ uintptr_t paging_kernel_directory(void)
     return kernel_directory_physical;
 }
 
-bool paging_switch_directory(
-    uintptr_t directory_physical)
+bool paging_switch_directory(uintptr_t directory_physical)
 {
-    if (!is_page_aligned(
-            directory_physical))
+    if (!is_page_aligned(directory_physical))
     {
         return false;
     }
@@ -352,14 +350,168 @@ void paging_destroy_user_directory(
         return;
     }
 
+    uintptr_t kernel_directory =
+        paging_kernel_directory();
+
+    if (kernel_directory == 0)
+        return;
+
     /*
-     * U3a creates no private page tables in these directories yet.
-     *
-     * Shared supervisor page tables belong to the kernel address
-     * space and must not be freed here.
+     * Never destroy the canonical kernel directory.
      */
+    if (directory_physical ==
+        kernel_directory)
+    {
+        return;
+    }
+
+    /*
+     * U4b performs destruction only from the canonical kernel
+     * address space.
+     *
+     * The target directory must be inactive so that none of the
+     * mappings being reclaimed can still be in use by this CPU.
+     */
+    if (paging_current_directory() !=
+        kernel_directory)
+    {
+        return;
+    }
+
+    /*
+     * Prevent timer/preemption activity while the temporary target
+     * CR3 is installed.
+     */
+    uint32_t saved_eflags;
+
+    __asm__ volatile(
+        "pushfl\n"
+        "popl %0\n"
+        "cli"
+        : "=r"(saved_eflags)
+        :
+        : "memory");
+
+    if (!paging_switch_directory(
+            directory_physical))
+    {
+        __asm__ volatile(
+            "pushl %0\n"
+            "popfl"
+            :
+            : "r"(saved_eflags)
+            : "memory");
+
+        return;
+    }
+
+    uint32_t *directory =
+        recursive_page_directory();
+
+    /*
+     * Only PAGE_USER PDEs belong privately to this address space.
+     *
+     * Supervisor PDEs were inherited from the kernel directory and
+     * must remain untouched.
+     */
+    for (size_t directory_index = 0;
+         directory_index < PAGE_DIRECTORY_ENTRIES;
+         ++directory_index)
+    {
+        if (directory_index ==
+            RECURSIVE_DIRECTORY_INDEX)
+        {
+            continue;
+        }
+
+        if (directory_index ==
+            PAGE_DIRECTORY_SCRATCH_INDEX)
+        {
+            continue;
+        }
+
+        uint32_t directory_entry =
+            directory[directory_index];
+
+        if ((directory_entry &
+             PAGE_PRESENT) == 0)
+        {
+            continue;
+        }
+
+        if ((directory_entry &
+             PAGE_USER) == 0)
+        {
+            continue;
+        }
+
+        uintptr_t table_frame =
+            (uintptr_t)(directory_entry &
+                        PAGE_FRAME);
+
+        uint32_t *page_table =
+            recursive_page_table(
+                directory_index);
+
+        /*
+         * Every present PTE beneath a private PAGE_USER PDE is owned
+         * by this user address space.
+         */
+        for (size_t table_index = 0;
+             table_index < PAGE_TABLE_ENTRIES;
+             ++table_index)
+        {
+            uint32_t page_entry =
+                page_table[table_index];
+
+            if ((page_entry &
+                 PAGE_PRESENT) == 0)
+            {
+                continue;
+            }
+
+            uintptr_t page_frame =
+                (uintptr_t)(page_entry &
+                            PAGE_FRAME);
+
+            page_table[table_index] =
+                0;
+
+            pmm_free_frame(
+                page_frame);
+        }
+
+        /*
+         * Stop the directory from referencing this private page table
+         * before returning the table frame to the PMM.
+         */
+        directory[directory_index] =
+            0;
+
+        pmm_free_frame(
+            table_frame);
+    }
+
+    /*
+     * Return to the canonical kernel address space before freeing the
+     * page-directory frame itself.
+     */
+    if (!paging_switch_directory(
+            kernel_directory))
+    {
+        for (;;)
+            __asm__ volatile("cli; hlt");
+    }
+
     pmm_free_frame(
         directory_physical);
+
+    __asm__ volatile(
+        "pushl %0\n"
+        "popfl"
+        :
+        : "r"(saved_eflags)
+        : "memory");
 }
 
 bool paging_share_kernel_pde(

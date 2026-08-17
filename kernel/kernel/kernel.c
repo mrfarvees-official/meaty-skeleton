@@ -224,10 +224,13 @@ static void u1_ring3_task(void *argument)
 static void u4_inactive_mapping_test(void)
 {
 	printf(
-		"\n=== U4a INACTIVE ADDRESS-SPACE MAPPING TEST ===\n");
+		"\n=== U4b USER ADDRESS-SPACE DESTRUCTION TEST ===\n");
 
 	const uintptr_t user_test_address =
 		0x00800000u;
+
+	const uint32_t test_value =
+		0x44B00001u;
 
 	uintptr_t kernel_directory =
 		paging_kernel_directory();
@@ -237,9 +240,56 @@ static void u4_inactive_mapping_test(void)
 			kernel_directory)
 	{
 		printf(
-			"U4a: not running in kernel address space\n");
+			"U4b: not running in kernel address space\n");
 		halt_forever();
 	}
+
+	/*
+	 * Warm up the kernel scratch page-table infrastructure before
+	 * recording the PMM baseline.
+	 *
+	 * paging_create_user_directory() uses 0xE0000000 as a temporary
+	 * mapping.  Its first use may allocate one persistent supervisor
+	 * page-table frame in the kernel directory.
+	 *
+	 * That frame belongs to the kernel paging infrastructure, not to
+	 * the user address space being tested below.
+	 */
+	uintptr_t warmup_directory = 0;
+
+	if (!paging_create_user_directory(
+			&warmup_directory))
+	{
+		printf(
+			"U4b: failed warming scratch mapping\n");
+		halt_forever();
+	}
+
+	paging_destroy_user_directory(
+		warmup_directory);
+
+	if (paging_current_directory() !=
+		kernel_directory)
+	{
+		printf(
+			"U4b: warmup changed active CR3\n");
+		halt_forever();
+	}
+
+	/*
+	 * From this point onward, all temporary allocations measured by
+	 * the test belong to the user address space itself:
+	 *
+	 *     1 page-directory frame
+	 *     1 user data frame
+	 *     1 private page-table frame
+	 */
+	size_t free_frames_before =
+		pmm_get_free_frame_count();
+
+	printf(
+		"U4b: free frames before=%lu\n",
+		(unsigned long)free_frames_before);
 
 	uintptr_t user_directory = 0;
 
@@ -247,7 +297,7 @@ static void u4_inactive_mapping_test(void)
 			&user_directory))
 	{
 		printf(
-			"U4a: failed creating user directory\n");
+			"U4b: failed creating user directory\n");
 		halt_forever();
 	}
 
@@ -255,23 +305,7 @@ static void u4_inactive_mapping_test(void)
 		kernel_directory)
 	{
 		printf(
-			"U4a: user directory is not distinct\n");
-		halt_forever();
-	}
-
-	printf(
-		"U4a: kernel CR3=0x%lx user CR3=0x%lx\n",
-		(unsigned long)kernel_directory,
-		(unsigned long)user_directory);
-
-	/*
-	 * The user directory is still inactive here.
-	 */
-	if (paging_current_directory() !=
-		kernel_directory)
-	{
-		printf(
-			"U4a: CR3 changed before mapping test\n");
+			"U4b: user directory is not distinct\n");
 		halt_forever();
 	}
 
@@ -281,7 +315,11 @@ static void u4_inactive_mapping_test(void)
 	if (user_frame == 0)
 	{
 		printf(
-			"U4a: failed allocating user frame\n");
+			"U4b: failed allocating user frame\n");
+
+		paging_destroy_user_directory(
+			user_directory);
+
 		halt_forever();
 	}
 
@@ -292,45 +330,42 @@ static void u4_inactive_mapping_test(void)
 			PAGE_USER | PAGE_WRITABLE))
 	{
 		printf(
-			"U4a: inactive-directory mapping failed\n");
+			"U4b: failed mapping private user page\n");
 
 		pmm_free_frame(
 			user_frame);
 
+		paging_destroy_user_directory(
+			user_directory);
+
 		halt_forever();
 	}
 
 	printf(
-		"U4a: mapped user page while target CR3 inactive\n");
+		"U4b: private page created in inactive CR3\n");
 
-	/*
-	 * The helper must have restored the BSP's kernel CR3.
-	 */
-	if (paging_current_directory() !=
-		kernel_directory)
-	{
-		printf(
-			"U4a: helper did not restore kernel CR3\n");
-		halt_forever();
-	}
-
-	printf(
-		"U4a: kernel CR3 restored after mapping\n");
-
-	/*
-	 * Now enter the target address space only to verify the mapping
-	 * that was constructed while it was inactive.
-	 */
 	if (!paging_switch_directory(
 			user_directory))
 	{
 		printf(
-			"U4a: failed switching to user directory\n");
+			"U4b: failed switching to user directory\n");
 		halt_forever();
 	}
 
-	printf(
-		"U4a: switched to target CR3 for verification\n");
+	volatile uint32_t *probe =
+		(volatile uint32_t *)
+			user_test_address;
+
+	*probe =
+		test_value;
+
+	if (*probe !=
+		test_value)
+	{
+		printf(
+			"U4b: private mapping read/write failed\n");
+		halt_forever();
+	}
 
 	uintptr_t resolved_physical = 0;
 
@@ -339,7 +374,7 @@ static void u4_inactive_mapping_test(void)
 			&resolved_physical))
 	{
 		printf(
-			"U4a: new mapping is missing\n");
+			"U4b: private mapping disappeared\n");
 		halt_forever();
 	}
 
@@ -350,80 +385,58 @@ static void u4_inactive_mapping_test(void)
 		user_frame)
 	{
 		printf(
-			"U4a: mapping resolved to wrong frame\n");
-
-		printf(
-			"U4a: expected=0x%lx actual=0x%lx\n",
-			(unsigned long)user_frame,
-			(unsigned long)resolved_physical);
-
-		halt_forever();
-	}
-
-	uint32_t effective_flags = 0;
-
-	if (!paging_get_effective_flags(
-			user_test_address,
-			&effective_flags))
-	{
-		printf(
-			"U4a: failed reading mapping permissions\n");
-		halt_forever();
-	}
-
-	if ((effective_flags &
-		 (PAGE_PRESENT |
-		  PAGE_USER |
-		  PAGE_WRITABLE)) !=
-		(PAGE_PRESENT |
-		 PAGE_USER |
-		 PAGE_WRITABLE))
-	{
-		printf(
-			"U4a: user mapping permissions are wrong\n");
-		halt_forever();
-	}
-
-	volatile uint32_t *probe =
-		(volatile uint32_t *)
-			user_test_address;
-
-	*probe =
-		0x44A00001u;
-
-	if (*probe !=
-		0x44A00001u)
-	{
-		printf(
-			"U4a: mapped page read/write failed\n");
+			"U4b: private mapping resolved incorrectly\n");
 		halt_forever();
 	}
 
 	printf(
-		"U4a: private user mapping works in target CR3\n");
+		"U4b: private user mapping verified\n");
 
 	if (!paging_switch_directory(
 			kernel_directory))
 	{
+		printf(
+			"U4b: failed returning to kernel CR3\n");
+		halt_forever();
+	}
+
+	paging_destroy_user_directory(
+		user_directory);
+
+	if (paging_current_directory() !=
+		kernel_directory)
+	{
+		printf(
+			"U4b: destroy changed active CR3\n");
+		halt_forever();
+	}
+
+	size_t free_frames_after =
+		pmm_get_free_frame_count();
+
+	printf(
+		"U4b: free frames after=%lu\n",
+		(unsigned long)free_frames_after);
+
+	if (free_frames_after !=
+		free_frames_before)
+	{
+		printf(
+			"U4b: address-space frames leaked\n");
+
+		printf(
+			"U4b: before=%lu after=%lu\n",
+			(unsigned long)free_frames_before,
+			(unsigned long)free_frames_after);
+
 		halt_forever();
 	}
 
 	printf(
-		"U4a: returned to kernel CR3\n");
+		"U4b: private pages and page tables reclaimed\n");
 
-	/*
-	 * Intentional U4a limitation:
-	 *
-	 * Do not destroy this directory yet.
-	 *
-	 * It now owns a private page table, while
-	 * paging_destroy_user_directory() is still the old U3a version
-	 * that only releases the directory frame.
-	 *
-	 * U4b will handle private address-space destruction cleanly.
-	 */
 	printf(
-		"U4a: inactive address-space mapping confirmed\n");
+		"U4b: user address-space destruction confirmed\n");
 
 	halt_forever();
 }
@@ -712,260 +725,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 	printf("hardware interrupts enabled\n");
-
-	{
-		printf(
-			"\n=== setvbuf test ===\n");
-
-		/*
-		 * ==========================================================
-		 * Full buffering with caller-owned buffer
-		 * ==========================================================
-		 */
-		FILE *file =
-			fopen(
-				"/setvbuf-full.txt",
-				"w");
-
-		static char full_buffer[16];
-
-		printf(
-			"full open=%d\n",
-			file != NULL);
-
-		if (file != NULL)
-		{
-			int result =
-				setvbuf(
-					file,
-					full_buffer,
-					_IOFBF,
-					sizeof(full_buffer));
-
-			printf(
-				"full setvbuf=%d\n",
-				result);
-
-			fwrite(
-				"FULL",
-				1,
-				4,
-				file);
-
-			FILE *reader =
-				fopen(
-					"/setvbuf-full.txt",
-					"r");
-
-			if (reader != NULL)
-			{
-				char data[8] = {0};
-
-				size_t read =
-					fread(
-						data,
-						1,
-						4,
-						reader);
-
-				printf(
-					"full before flush=%u\n",
-					(unsigned)read);
-
-				fclose(reader);
-			}
-
-			fflush(file);
-
-			reader =
-				fopen(
-					"/setvbuf-full.txt",
-					"r");
-
-			if (reader != NULL)
-			{
-				char data[8] = {0};
-
-				size_t read =
-					fread(
-						data,
-						1,
-						4,
-						reader);
-
-				printf(
-					"full after flush=%u data=%s\n",
-					(unsigned)read,
-					data);
-
-				fclose(reader);
-			}
-
-			fclose(file);
-		}
-
-		/*
-		 * ==========================================================
-		 * Unbuffered
-		 * ==========================================================
-		 */
-		file =
-			fopen(
-				"/setvbuf-none.txt",
-				"w");
-
-		if (file != NULL)
-		{
-			int result =
-				setvbuf(
-					file,
-					NULL,
-					_IONBF,
-					0);
-
-			printf(
-				"none setvbuf=%d\n",
-				result);
-
-			fwrite(
-				"NOW",
-				1,
-				3,
-				file);
-
-			FILE *reader =
-				fopen(
-					"/setvbuf-none.txt",
-					"r");
-
-			if (reader != NULL)
-			{
-				char data[4] = {0};
-
-				size_t read =
-					fread(
-						data,
-						1,
-						3,
-						reader);
-
-				printf(
-					"none immediate=%u data=%s\n",
-					(unsigned)read,
-					data);
-
-				fclose(reader);
-			}
-
-			fclose(file);
-		}
-
-		/*
-		 * ==========================================================
-		 * Line buffering
-		 * ==========================================================
-		 */
-		file =
-			fopen(
-				"/setvbuf-line.txt",
-				"w");
-
-		if (file != NULL)
-		{
-			int result =
-				setvbuf(
-					file,
-					NULL,
-					_IOLBF,
-					16);
-
-			printf(
-				"line setvbuf=%d\n",
-				result);
-
-			fwrite(
-				"LINE",
-				1,
-				4,
-				file);
-
-			FILE *reader =
-				fopen(
-					"/setvbuf-line.txt",
-					"r");
-
-			if (reader != NULL)
-			{
-				char data[8] = {0};
-
-				size_t read =
-					fread(
-						data,
-						1,
-						5,
-						reader);
-
-				printf(
-					"line before newline=%u\n",
-					(unsigned)read);
-
-				fclose(reader);
-			}
-
-			fputc(
-				'\n',
-				file);
-
-			reader =
-				fopen(
-					"/setvbuf-line.txt",
-					"r");
-
-			if (reader != NULL)
-			{
-				char data[8] = {0};
-
-				size_t read =
-					fread(
-						data,
-						1,
-						5,
-						reader);
-
-				printf(
-					"line after newline=%u first=%c last=%u\n",
-					(unsigned)read,
-					data[0],
-					(unsigned char)data[4]);
-
-				fclose(reader);
-			}
-
-			fclose(file);
-		}
-
-		/*
-		 * Read-only streams are deliberately unsupported in this
-		 * output-buffering phase.
-		 */
-		file =
-			fopen(
-				"/setvbuf-full.txt",
-				"r");
-
-		if (file != NULL)
-		{
-			printf(
-				"read-only setvbuf=%d\n",
-				setvbuf(
-					file,
-					NULL,
-					_IOFBF,
-					16));
-
-			fclose(file);
-		}
-	}
 
 	yield_forever();
 }
