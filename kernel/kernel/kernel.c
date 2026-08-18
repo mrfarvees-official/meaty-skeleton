@@ -335,11 +335,10 @@ static void u10_argv_test(void)
 	 * these kernel strings.
 	 */
 	static const char *const user_argv[] =
-	{
-		U10_EXECUTABLE_PATH,
-		"one",
-		"two"
-	};
+		{
+			U10_EXECUTABLE_PATH,
+			"one",
+			"two"};
 
 	const size_t user_argc =
 		sizeof(user_argv) /
@@ -567,7 +566,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	if (!syscall_initialize())
 	{
-		printf("U2: syscall initialization failed\n");
+		log_error("Syscall initialization failed\n");
 		halt_forever();
 	}
 
@@ -584,13 +583,13 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	if (!acpi_initialize())
 	{
-		printf("ACPI initialization failed\n");
+		log_error("ACPI initialization failed\n");
 		halt_forever();
 	}
 
 	if (!smp_detect_cpus())
 	{
-		printf("SMP CPU detection failed\n");
+		log_error("SMP CPU detection failed\n");
 		halt_forever();
 	}
 
@@ -602,19 +601,17 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	if (bsp_cpu == NULL)
 	{
-		printf("U1: failed to resolve BSP CPU-local state\n");
+		log_error("Failed to resolve BSP CPU-local state\n");
 		halt_forever();
 	}
 
 	if (!gdt_load_tss(bsp_cpu->index))
 	{
-		printf("U1: failed to load BSP TSS\n");
+		log_error("U1: failed to load BSP TSS\n");
 		halt_forever();
 	}
 
-	log_info(
-		"U1: BSP TSS loaded for CPU %u\n",
-		(unsigned)bsp_cpu->index);
+	log_info("U1: BSP TSS loaded for CPU %u\n", (unsigned)bsp_cpu->index);
 
 	scheduler_initialize();
 	log_info("scheduler initialized\n");
@@ -633,20 +630,17 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	pci_device_t ahci_controller;
 
-	if (pci_find_ahci_controller(
-			&ahci_controller))
+	if (pci_find_ahci_controller(&ahci_controller))
 	{
 		if (!ahci_probe(
 				&ahci_controller))
 		{
-			printf(
-				"AHCI: probe failed\n");
+			log_error("AHCI: probe failed\n");
 		}
 	}
 	else
 	{
-		printf(
-			"AHCI: no controller detected\n");
+		log_info("AHCI: no controller detected\n");
 	}
 
 	block_device_t *disk =
@@ -654,8 +648,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	if (disk == NULL)
 	{
-		printf(
-			"Storage: no AHCI disk\n");
+		log_error("Storage: no AHCI disk\n");
 
 		halt_forever();
 	}
@@ -670,8 +663,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	if (partition_count == 0)
 	{
-		printf(
-			"Storage: no usable partitions\n");
+		log_error("Storage: no usable partitions\n");
 
 		halt_forever();
 	}
@@ -696,8 +688,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 				1,
 				original) != 0)
 		{
-			printf(
-				"Partition: initial write-test read failed\n");
+			log_error("Partition: initial write-test read failed\n");
 
 			halt_forever();
 		}
@@ -717,8 +708,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 				1,
 				test_data) != 0)
 		{
-			printf(
-				"Partition: write test failed\n");
+			log_error("Partition: write test failed\n");
 
 			halt_forever();
 		}
@@ -734,8 +724,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 				1,
 				verify) != 0)
 		{
-			printf(
-				"Partition: verify read failed\n");
+			log_error("Partition: verify read failed\n");
 
 			/*
 			 * Attempt restore before stopping.
@@ -754,8 +743,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 				verify,
 				sizeof(test_data)) != 0)
 		{
-			printf(
-				"Partition: write verification FAILED\n");
+			log_error("Partition: write verification FAILED\n");
 
 			block_write(
 				partition,
@@ -772,14 +760,12 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 				1,
 				original) != 0)
 		{
-			printf(
-				"Partition: failed restoring test sector\n");
+			log_error("Partition: failed restoring test sector\n");
 
 			halt_forever();
 		}
 
-		log_info(
-			"Partition: write/read test passed\n");
+		log_info("Partition: write/read test passed\n");
 	}
 
 	static ext2_fs_t ext2_fs;
@@ -788,8 +774,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 			&partitions[0].block,
 			&ext2_fs))
 	{
-		printf(
-			"EXT2: mount failed\n");
+		log_error("EXT2: mount failed\n");
 
 		halt_forever();
 	}
@@ -797,14 +782,12 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	if (!vfs_set_root(
 			&ext2_fs.root_vnode))
 	{
-		printf(
-			"EXT2: failed to set VFS root\n");
+		log_error("EXT2: failed to set VFS root\n");
 
 		halt_forever();
 	}
 
-	log_info(
-		"EXT2: mounted as /\n");
+	log_info("EXT2: mounted as /\n");
 
 	/*
 	 * U10 proves that a native .nex executable can be obtained through
@@ -814,42 +797,45 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 * The test intentionally halts after completing, so later hardware
 	 * initialization remains unreachable during this bring-up proof.
 	 */
-	// u10_argv_test();
 
 	if (!smp_start_aps())
 	{
-		printf("AP startup failed\n");
+		log_error("AP startup failed\n");
 		halt_forever();
 	}
 
-	log_info(
-		"SMP online CPUs: %u\n",
-		(unsigned)smp_online_cpu_count());
+	log_info("SMP online CPUs: %u\n", (unsigned)smp_online_cpu_count());
 
-	if (pit_initialize(
-			PIT_DEFAULT_FREQUENCY_HZ) != 0)
+	if (pit_initialize(PIT_DEFAULT_FREQUENCY_HZ) != 0)
 	{
-		printf(
-			"PIT initialization failed\n");
+		log_error("PIT initialization failed\n");
 
 		halt_forever();
 	}
+
+	log_info("PIT initialized\n");
 
 	if (!keyboard_initialize())
 	{
-		printf(
-			"keyboard initialization FAILED\n");
+		log_error("keyboard initialization failed\n");
 
 		halt_forever();
 	}
 
+	log_info("keyboard initialized\n");
+
+	u10_argv_test();
+
+
 	/*
-	 * PIT IRQ0 is now configured and unmasked.
+	 * Allow hardware IRQ delivery first.
 	 *
-	 * Allow maskable hardware interrupts.
+	 * Timer accounting, sleep wakeups, keyboard IRQs, PIC EOIs,
+	 * etc. can all run here.
+	 *
+	 * Actual scheduler context switching is still gated on this CPU.
 	 */
 	interrupt_enable();
-	log_info("hardware interrupts enabled\n");
 
 	yield_forever();
 }

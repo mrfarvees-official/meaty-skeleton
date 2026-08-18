@@ -59,8 +59,15 @@ bool scheduler_set_policy(task_t* task, sched_policy_t policy);
  * It does NOT context-switch directly from the PIT interrupt.
  */
 void scheduler_tick(void);
+
 bool scheduler_preemption_pending(void);
-void scheduler_handle_safe_preemption_point(uint32_t restore_flags);
+
+void scheduler_enable_preemption(void);
+void scheduler_disable_preemption(void);
+bool scheduler_preemption_enabled(void);
+
+void scheduler_handle_safe_preemption_point(
+    uint32_t restore_flags);
 
 /*
  * Idle task.

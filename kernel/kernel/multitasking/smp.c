@@ -434,8 +434,6 @@ static void smp_ap_entry(void)
 
     /*
      * Every CPU owns a distinct hardware TSS descriptor.
-     *
-     * This must happen before the AP announces itself ready.
      */
     if (!gdt_load_tss(cpu->index))
         goto halt;
@@ -448,16 +446,24 @@ static void smp_ap_entry(void)
     cpu->online = true;
     cpus[cpu->index].online = true;
 
+    /*
+     * This CPU now has valid scheduler/task state.
+     *
+     * Interrupt-driven scheduling is safe from this point.
+     */
+    scheduler_enable_preemption();
+
     __asm__ volatile("" ::: "memory");
+
     ap_ready[cpu->index] = 1u;
 
+    /*
+     * Interrupt enable is CPU-local.
+     */
     interrupt_enable();
 
     /*
-     * The AP bootstrap task can be selected again after it yields.  It is a
-     * real scheduler context, not a one-shot startup function, so keep it
-     * alive and yield whenever it is selected.  Halting here would disable
-     * interrupts permanently on the AP and strand all subsequent work.
+     * The AP bootstrap task remains a valid scheduler context.
      */
     for (;;)
         task_yield();

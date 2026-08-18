@@ -13,7 +13,7 @@ static uint8_t current_apic_id(void)
     uint32_t ecx;
     uint32_t edx;
 
-    __asm__ volatile (
+    __asm__ volatile(
         "cpuid"
         : "+a"(eax),
           "=b"(ebx),
@@ -38,29 +38,34 @@ void cpu_local_initialize(void)
         cpu_locals[i].idle_task = NULL;
         cpu_locals[i].previous_task = NULL;
         cpu_locals[i].reschedule_pending = false;
+        cpu_locals[i].preemption_enabled = false;
+        cpu_locals[i].scheduler_switch_flags = 0;
+        cpu_locals[i].scheduler_switch_lock_held = false;
         cpu_locals[i].scheduler_ticks = 0;
         cpu_locals[i].idle_ticks = 0;
         cpu_locals[i].scheduler_preempt_restore_flags = 0;
     }
 }
 
-cpu_local_t* cpu_get(size_t index)
+cpu_local_t *cpu_get(size_t index)
 {
-    if (index >= smp_cpu_count()) return NULL;
+    if (index >= smp_cpu_count())
+        return NULL;
 
     return &cpu_locals[index];
 }
 
-cpu_local_t* cpu_current(void)
+cpu_local_t *cpu_current(void)
 {
     uint8_t apic_id = current_apic_id();
     size_t count = smp_cpu_count();
 
     for (size_t i = 0; i < count; ++i)
     {
-        if (cpu_locals[i].apic_id == apic_id) return &cpu_locals[i];
+        if (cpu_locals[i].apic_id == apic_id)
+            return &cpu_locals[i];
     }
-    
+
     return NULL;
 }
 
@@ -68,7 +73,8 @@ size_t cpu_current_index(void)
 {
     cpu_local_t *cpu = cpu_current();
 
-    if (cpu == NULL) return SIZE_MAX;
+    if (cpu == NULL)
+        return SIZE_MAX;
 
     return cpu->index;
 }

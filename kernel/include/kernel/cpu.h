@@ -15,14 +15,20 @@ typedef struct cpu_local
     size_t              index;
     uint8_t             apic_id;
     bool                online;
+
     task_t              *current_task;
     task_t              *idle_task;
     task_t              *previous_task;
+
     bool                reschedule_pending;
+    bool                preemption_enabled;
+
     uint32_t            scheduler_switch_flags;
     bool                scheduler_switch_lock_held;
+
     volatile uint32_t   scheduler_ticks;
     volatile uint32_t   idle_ticks;
+
     uint32_t            scheduler_preempt_restore_flags;
 } cpu_local_t;
 

@@ -1067,12 +1067,48 @@ void scheduler_tick(void)
 
 bool scheduler_preemption_pending(void)
 {
-    cpu_local_t *cpu = cpu_current();
+    cpu_local_t *cpu =
+        cpu_current();
 
     if (cpu == NULL)
         return false;
 
     return cpu->reschedule_pending;
+}
+
+void scheduler_enable_preemption(void)
+{
+    cpu_local_t *cpu =
+        cpu_current();
+
+    if (cpu == NULL)
+        return;
+
+    cpu->preemption_enabled =
+        true;
+}
+
+void scheduler_disable_preemption(void)
+{
+    cpu_local_t *cpu =
+        cpu_current();
+
+    if (cpu == NULL)
+        return;
+
+    cpu->preemption_enabled =
+        false;
+}
+
+bool scheduler_preemption_enabled(void)
+{
+    cpu_local_t *cpu =
+        cpu_current();
+
+    if (cpu == NULL)
+        return false;
+
+    return cpu->preemption_enabled;
 }
 
 void scheduler_handle_safe_preemption_point(
@@ -1082,6 +1118,9 @@ void scheduler_handle_safe_preemption_point(
         cpu_current();
 
     if (cpu == NULL)
+        return;
+
+    if (!cpu->preemption_enabled)
         return;
 
     if (!cpu->reschedule_pending)
