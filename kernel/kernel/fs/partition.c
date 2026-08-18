@@ -580,7 +580,6 @@ size_t partition_scan(block_device_t *disk, partition_device_t *partitions, size
 
     if (mbr_is_protective_gpt(disk))
     {
-        printf("Partition: GPT detected\n");
         return partition_scan_gpt(disk, partitions, max_partitions);
     }
 

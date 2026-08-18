@@ -17,7 +17,7 @@ DISK=disk.img
 # false:
 #   leave disk.img untouched and just boot QEMU
 #
-RECREATE_BENCH_DISK=true
+RECREATE_BENCH_DISK=false
 
 #
 # Disk and benchmark sizes.

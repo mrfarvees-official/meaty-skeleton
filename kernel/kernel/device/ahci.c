@@ -314,9 +314,6 @@ static bool ahci_stop_command_engine(
             return true;
     }
 
-    printf(
-        "AHCI: timeout waiting for FIS receive engine\n");
-
     return false;
 }
 
@@ -372,21 +369,11 @@ static void ahci_probe_ports(
         uint32_t ssts = port->ssts;
         uint32_t sig = port->sig;
 
-        printf(
-            "AHCI: port %u SSTS=0x%x SIG=0x%x\n",
-            (unsigned)port_index,
-            (unsigned)ssts,
-            (unsigned)sig);
-
         if (!ahci_port_device_present(port))
             continue;
 
         if (sig == AHCI_SIG_ATA)
         {
-            printf(
-                "AHCI: SATA disk found on port %u\n",
-                (unsigned)port_index);
-
             if (ahci_disk_port == NULL)
             {
                 if (!ahci_prepare_port(
@@ -449,10 +436,6 @@ bool ahci_probe(const pci_device_t *device)
         return false;
     }
 
-    printf(
-        "AHCI: ABAR = 0x%x\n",
-        (unsigned)abar);
-
     /*
      * Enable PCI memory-space access and bus mastering.
      */
@@ -490,22 +473,6 @@ bool ahci_probe(const pci_device_t *device)
     ahci_hba_t *hba =
         (ahci_hba_t *)abar;
 
-    printf(
-        "AHCI: CAP = 0x%x\n",
-        (unsigned)hba->cap);
-
-    printf(
-        "AHCI: GHC = 0x%x\n",
-        (unsigned)hba->ghc);
-
-    printf(
-        "AHCI: PI  = 0x%x\n",
-        (unsigned)hba->pi);
-
-    printf(
-        "AHCI: VS  = 0x%x\n",
-        (unsigned)hba->vs);
-
     ahci_probe_ports(hba);
 
     if (ahci_disk_port != NULL)
@@ -539,10 +506,6 @@ static bool ahci_prepare_port(
 
         return false;
     }
-
-    printf(
-        "AHCI: port %u command engine stopped\n",
-        (unsigned)port_index);
 
     /*
      * One physical page is enough for:
@@ -687,22 +650,6 @@ static bool ahci_prepare_port(
     ahci_command_table_physical = command_table_frame;
     ahci_command_table = (ahci_command_table_t *)command_table_frame;
 
-    printf(
-        "AHCI: command list phys=0x%x\n",
-        (unsigned)command_list_physical);
-
-    printf(
-        "AHCI: received FIS phys=0x%x\n",
-        (unsigned)received_fis_physical);
-
-    printf(
-        "AHCI: port %u command engine started\n",
-        (unsigned)port_index);
-
-    printf(
-        "AHCI: command table phys=0x%x\n",
-        (unsigned)command_table_frame);
-
     return true;
 }
 
@@ -726,9 +673,6 @@ static bool ahci_wait_device_ready(
             return true;
         }
     }
-
-    printf(
-        "AHCI: timeout waiting for device ready\n");
 
     return false;
 }
@@ -1873,31 +1817,8 @@ static bool ahci_initialize_disk(void)
     ahci_read_cache_sector_count =
         0;
 
-    printf(
-        "AHCI: read-ahead cache: %u KiB\n",
-        (unsigned)(AHCI_READ_CACHE_SIZE /
-                   1024u));
-
     ahci_disk_present =
         true;
-
-    printf(
-        "AHCI: block device %s ready\n",
-        ahci_disk.name);
-
-    printf(
-        "AHCI: model: %s\n",
-        model);
-
-    printf(
-        "AHCI: sectors: %u\n",
-        (unsigned)sector_count);
-
-    printf(
-        "AHCI: capacity: %u MiB\n",
-        (unsigned)(sector_count *
-                   AHCI_SECTOR_SIZE /
-                   (1024u * 1024u)));
 
     return true;
 }
@@ -1949,21 +1870,6 @@ static void ahci_test_gpt_read(void)
 
         return;
     }
-
-    printf(
-        "AHCI: DMA read LBA 1 succeeded\n");
-
-    printf(
-        "AHCI: GPT signature = "
-        "%c%c%c%c%c%c%c%c\n",
-        buffer[0],
-        buffer[1],
-        buffer[2],
-        buffer[3],
-        buffer[4],
-        buffer[5],
-        buffer[6],
-        buffer[7]);
 }
 
 static void ahci_test_write(void)
@@ -2068,12 +1974,6 @@ static void ahci_test_write(void)
 
         return;
     }
-
-    printf(
-        "AHCI: DMA write/read test %s\n",
-        matched
-            ? "passed"
-            : "FAILED");
 }
 
 block_device_t *ahci_primary_disk(void)

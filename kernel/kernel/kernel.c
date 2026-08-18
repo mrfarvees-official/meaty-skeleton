@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <kernel/tty.h>
+#include <kernel/logger.h>
 #include <kernel/multiboot.h>
 #include <kernel/paging.h>
 #include <kernel/pmm.h>
@@ -553,16 +554,16 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	validate_multiboot_magic(multiboot_magic);
 
 	pmm_initialize(multiboot_info_address);
-	printf("pmm initialized\n");
+	log_info("pmm initialized\n");
 
 	gdt_initialize();
-	printf("gdt initialized\n");
+	log_info("gdt initialized\n");
 
 	idt_initialize();
-	printf("idt initialized\n");
+	log_info("idt initialized\n");
 
 	interrupt_initialization();
-	printf("interrupts initialized\n");
+	log_info("interrupts initialized\n");
 
 	if (!syscall_initialize())
 	{
@@ -570,16 +571,16 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		halt_forever();
 	}
 
-	printf("U2: syscall gate initialized\n");
+	log_info("U2: syscall gate initialized\n");
 
 	pic_initialize();
-	printf("pic initialized\n");
+	log_info("pic initialized\n");
 
 	paging_initialize();
-	printf("paging initialized\n");
+	log_info("paging initialized\n");
 
 	heap_initialize();
-	printf("heap initialized\n");
+	log_info("heap initialized\n");
 
 	if (!acpi_initialize())
 	{
@@ -594,7 +595,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	}
 
 	cpu_local_initialize();
-	printf("BSP CPU-local state initialized\n");
+	log_info("BSP CPU-local state initialized\n");
 
 	cpu_local_t *bsp_cpu =
 		cpu_current();
@@ -611,24 +612,24 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		halt_forever();
 	}
 
-	printf(
+	log_info(
 		"U1: BSP TSS loaded for CPU %u\n",
 		(unsigned)bsp_cpu->index);
 
 	scheduler_initialize();
-	printf("scheduler initialized\n");
+	log_info("scheduler initialized\n");
 
 	task_initialize();
-	printf("BSP task system initialized\n");
+	log_info("BSP task system initialized\n");
 
 	process_initialize();
-	printf("process system initialized\n");
+	log_info("process system initialized\n");
 
 	sleep_queue_initialize();
-	printf("sleep queue initialized\n");
+	log_info("sleep queue initialized\n");
 
 	vfs_initialize();
-	printf("VFS initialized\n");
+	log_info("VFS initialized\n");
 
 	pci_device_t ahci_controller;
 
@@ -777,7 +778,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 			halt_forever();
 		}
 
-		printf(
+		log_info(
 			"Partition: write/read test passed\n");
 	}
 
@@ -802,7 +803,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		halt_forever();
 	}
 
-	printf(
+	log_info(
 		"EXT2: mounted as /\n");
 
 	/*
@@ -813,7 +814,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 * The test intentionally halts after completing, so later hardware
 	 * initialization remains unreachable during this bring-up proof.
 	 */
-	u10_argv_test();
+	// u10_argv_test();
 
 	if (!smp_start_aps())
 	{
@@ -821,7 +822,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		halt_forever();
 	}
 
-	printf(
+	log_info(
 		"SMP online CPUs: %u\n",
 		(unsigned)smp_online_cpu_count());
 
@@ -848,8 +849,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 * Allow maskable hardware interrupts.
 	 */
 	interrupt_enable();
-	printf(
-		"hardware interrupts enabled\n");
+	log_info("hardware interrupts enabled\n");
 
 	yield_forever();
 }

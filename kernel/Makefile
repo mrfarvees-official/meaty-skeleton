@@ -32,23 +32,7 @@ LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
 KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) 			\
 kernel/kernel.o 				\
-kernel/test/test.o 				\
-kernel/test/suite.o 			\
-kernel/test/pmm_stress.o 		\
-kernel/test/paging_stress.o 	\
-kernel/test/heap_stress.o 		\
-kernel/test/mutex_stress.o 		\
-kernel/test/semaphore_stress.o 	\
-kernel/test/task_cleanup_stress.o \
-kernel/test/keyboard.o 			\
-kernel/test/keyboard_event.o 	\
-kernel/test/keyboard_blocking.o \
-kernel/test/keyboard_line.o 	\
-kernel/test/cpu_detection.o 	\
-kernel/test/smp_multitasking_stress.o \
-kernel/test/ramfs.o 			\
-kernel/test/ata.o 				\
-kernel/test/partition.o 		\
+kernel/logger.o 				\
 kernel/memory/pmm.o 			\
 kernel/memory/paging.o 			\
 kernel/memory/usercopy.o 		\

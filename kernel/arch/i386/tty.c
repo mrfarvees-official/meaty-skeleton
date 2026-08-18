@@ -11,16 +11,17 @@ static const size_t VGA_WIDTH = 80;
 static const size_t VGA_HEIGHT = 25;
 static const size_t TAB_WIDTH = 4;
 
-static uint16_t* const VGA_MEMORY = (uint16_t*) 0xB8000;
+static uint16_t *const VGA_MEMORY = (uint16_t *)0xB8000;
 
 static size_t terminal_row;
 static size_t terminal_column;
 static uint8_t terminal_color;
-static uint16_t* terminal_buffer;
+static uint16_t *terminal_buffer;
 
 static void terminal_clear_row(size_t row)
 {
-	for (size_t column = 0; column < VGA_WIDTH; column++) {
+	for (size_t column = 0; column < VGA_WIDTH; column++)
+	{
 		const size_t index = row * VGA_WIDTH + column;
 		terminal_buffer[index] = vga_entry(' ', terminal_color);
 	}
@@ -28,8 +29,10 @@ static void terminal_clear_row(size_t row)
 
 static void terminal_scroll(void)
 {
-	for (size_t row = 1; row < VGA_HEIGHT; row++) {
-		for (size_t column = 0; column < VGA_WIDTH; column++) {
+	for (size_t row = 1; row < VGA_HEIGHT; row++)
+	{
+		for (size_t column = 0; column < VGA_WIDTH; column++)
+		{
 			const size_t source = row * VGA_WIDTH + column;
 			const size_t destination = (row - 1) * VGA_WIDTH + column;
 
@@ -67,6 +70,11 @@ void terminal_setcolor(uint8_t color)
 	terminal_color = color;
 }
 
+uint8_t terminal_getcolor(void)
+{
+	return terminal_color;
+}
+
 void terminal_putentryat(
 	unsigned char character,
 	uint8_t color,
@@ -82,7 +90,8 @@ void terminal_putentryat(
 
 void terminal_putchar(char character)
 {
-	switch (character) {
+	switch (character)
+	{
 	case '\a':
 		/*
 		 * Bell.
@@ -96,12 +105,17 @@ void terminal_putchar(char character)
 		/*
 		 * Backspace: move back one position and erase it.
 		 */
-		if (terminal_column > 0) {
+		if (terminal_column > 0)
+		{
 			terminal_column--;
-		} else if (terminal_row > 0) {
+		}
+		else if (terminal_row > 0)
+		{
 			terminal_row--;
 			terminal_column = VGA_WIDTH - 1;
-		} else {
+		}
+		else
+		{
 			break;
 		}
 
@@ -112,7 +126,8 @@ void terminal_putchar(char character)
 			terminal_row);
 		break;
 
-	case '\t': {
+	case '\t':
+	{
 		/*
 		 * Move to the next tab stop.
 		 */
@@ -159,7 +174,7 @@ void terminal_putchar(char character)
 
 	default:
 		terminal_putentryat(
-			(unsigned char) character,
+			(unsigned char)character,
 			terminal_color,
 			terminal_column,
 			terminal_row);
@@ -173,13 +188,13 @@ void terminal_putchar(char character)
 	}
 }
 
-void terminal_write(const char* data, size_t size)
+void terminal_write(const char *data, size_t size)
 {
 	for (size_t index = 0; index < size; index++)
 		terminal_putchar(data[index]);
 }
 
-void terminal_writestring(const char* data)
+void terminal_writestring(const char *data)
 {
 	terminal_write(data, strlen(data));
 }
