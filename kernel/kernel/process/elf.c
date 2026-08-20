@@ -8,28 +8,28 @@
 #include <kernel/paging.h>
 #include <kernel/pmm.h>
 
-#define ELF_CLASS_32                1u
-#define ELF_DATA_LSB                1u
-#define ELF_VERSION_CURRENT         1u
+#define ELF_CLASS_32 1u
+#define ELF_DATA_LSB 1u
+#define ELF_VERSION_CURRENT 1u
 
-#define ELF_TYPE_EXECUTABLE         2u
-#define ELF_MACHINE_I386            3u
+#define ELF_TYPE_EXECUTABLE 2u
+#define ELF_MACHINE_I386 3u
 
-#define ELF_PROGRAM_LOAD            1u
+#define ELF_PROGRAM_LOAD 1u
 
-#define ELF_PROGRAM_FLAG_EXECUTE    0x1u
-#define ELF_PROGRAM_FLAG_WRITE      0x2u
+#define ELF_PROGRAM_FLAG_EXECUTE 0x1u
+#define ELF_PROGRAM_FLAG_WRITE 0x2u
 
 /*
  * Keep userspace below 3 GiB for this initial loader.
  */
-#define ELF_USER_LIMIT              0xC0000000u
+#define ELF_USER_LIMIT 0xC0000000u
 
 /*
  * Temporary supervisor alias used while initializing one newly
  * allocated physical user page.
  */
-#define ELF_PAGE_SCRATCH_ADDRESS    0xE0000000u
+#define ELF_PAGE_SCRATCH_ADDRESS 0xE0000000u
 
 typedef struct __attribute__((packed))
 {
@@ -73,14 +73,14 @@ static bool file_range_valid(
         return false;
 
     return length <=
-        file_size - offset;
+           file_size - offset;
 }
 
 static uintptr_t page_align_down(
     uintptr_t address)
 {
     return address &
-        ~(uintptr_t)(PAGE_SIZE - 1u);
+           ~(uintptr_t)(PAGE_SIZE - 1u);
 }
 
 static bool bounded_string_length(
@@ -175,25 +175,21 @@ static bool populate_segment_page(
     if (copy_start < copy_end)
     {
         size_t destination_offset =
-            (size_t)(
-                copy_start -
-                page_start);
+            (size_t)(copy_start -
+                     page_start);
 
         size_t source_offset =
             (size_t)segment->offset +
-            (size_t)(
-                copy_start -
-                file_virtual_start);
+            (size_t)(copy_start -
+                     file_virtual_start);
 
         size_t copy_length =
-            (size_t)(
-                copy_end -
-                copy_start);
+            (size_t)(copy_end -
+                     copy_start);
 
         memcpy(
-            (void *)(
-                ELF_PAGE_SCRATCH_ADDRESS +
-                destination_offset),
+            (void *)(ELF_PAGE_SCRATCH_ADDRESS +
+                     destination_offset),
             file_data +
                 source_offset,
             copy_length);
@@ -327,7 +323,7 @@ static bool load_segment(
         ~(uint64_t)(PAGE_SIZE - 1u);
 
     for (uint64_t page =
-            first_page;
+             first_page;
          page < final_page_end;
          page += PAGE_SIZE)
     {
@@ -361,6 +357,9 @@ static bool map_user_stack(
 
     *initial_stack_pointer = 0;
 
+    /*
+     * Stack bottom must be page aligned.
+     */
     if ((stack_address &
          (PAGE_SIZE - 1u)) != 0)
     {
@@ -370,41 +369,66 @@ static bool map_user_stack(
         return false;
     }
 
+    /*
+     * Stack top must also be page aligned.
+     */
+    if ((stack_top &
+         (PAGE_SIZE - 1u)) != 0)
+    {
+        printf(
+            "ELF: stack top is not page aligned\n");
+
+        return false;
+    }
+
+    /*
+     * Stack must be a valid userspace range.
+     */
     if (stack_address == 0 ||
-        stack_address >= ELF_USER_LIMIT)
+        stack_address >= ELF_USER_LIMIT ||
+        stack_top > ELF_USER_LIMIT ||
+        stack_top <= stack_address)
     {
         printf(
-            "ELF: stack address is outside userspace\n");
+            "ELF: invalid user stack range\n");
 
         return false;
     }
 
-    if (stack_address >
-        UINTPTR_MAX - PAGE_SIZE)
+    /*
+     * Stack size must contain whole pages.
+     */
+    uintptr_t stack_size =
+        stack_top - stack_address;
+
+    if ((stack_size &
+         (PAGE_SIZE - 1u)) != 0)
     {
         printf(
-            "ELF: stack address overflows\n");
+            "ELF: stack size is not page aligned\n");
 
         return false;
     }
 
-    if (stack_top !=
-        stack_address + PAGE_SIZE)
+    size_t stack_page_count =
+        (size_t)(stack_size / PAGE_SIZE);
+
+    if (stack_page_count == 0)
     {
         printf(
-            "ELF: stack top does not match one-page stack\n");
+            "ELF: stack contains no pages\n");
 
         return false;
     }
 
-    if (stack_top > ELF_USER_LIMIT)
-    {
-        printf(
-            "ELF: stack top exceeds userspace\n");
+    printf(
+        "ELF: allocating user stack: %lu bytes, %lu pages\n",
+        (unsigned long)stack_size,
+        (unsigned long)stack_page_count);
 
-        return false;
-    }
-
+    /*
+     * Validate argc/argv before allocating anything.
+     */
     if (argc == 0 ||
         argc > ELF_USER_MAX_ARGS ||
         argv == NULL)
@@ -415,8 +439,7 @@ static bool map_user_stack(
         return false;
     }
 
-    size_t argument_lengths[
-        ELF_USER_MAX_ARGS];
+    size_t argument_lengths[ELF_USER_MAX_ARGS];
 
     for (size_t i = 0;
          i < argc;
@@ -435,44 +458,166 @@ static bool map_user_stack(
         }
     }
 
-    uintptr_t frame =
-        pmm_allocate_frame();
+    /*
+     * ------------------------------------------------------------------
+     * Allocate every stack page.
+     * ------------------------------------------------------------------
+     *
+     * For a 1 MiB stack:
+     *
+     *     1 MiB / 4096 = 256 physical frames
+     *
+     * Each frame is:
+     *
+     *     1. allocated
+     *     2. temporarily mapped into kernel space
+     *     3. zeroed
+     *     4. unmapped from scratch address
+     *     5. mapped into the new userspace page directory
+     */
 
-    if (frame == 0)
+    uintptr_t top_stack_frame = 0;
+
+    uintptr_t top_stack_page =
+        stack_top - PAGE_SIZE;
+
+    for (uintptr_t virtual_page = stack_address;
+         virtual_page < stack_top;
+         virtual_page += PAGE_SIZE)
+    {
+        uintptr_t frame =
+            pmm_allocate_frame();
+
+        if (frame == 0)
+        {
+            printf(
+                "ELF: stack frame allocation failed at 0x%lx\n",
+                (unsigned long)virtual_page);
+
+            return false;
+        }
+
+        /*
+         * Map physical frame temporarily into
+         * the currently active kernel address space.
+         */
+        if (!paging_map_page(
+                ELF_PAGE_SCRATCH_ADDRESS,
+                frame,
+                PAGE_WRITABLE))
+        {
+            printf(
+                "ELF: stack scratch mapping failed\n");
+
+            pmm_free_frame(frame);
+
+            return false;
+        }
+
+        /*
+         * New stack pages start zeroed.
+         */
+        memset(
+            (void *)ELF_PAGE_SCRATCH_ADDRESS,
+            0,
+            PAGE_SIZE);
+
+        if (!paging_unmap_page(
+                ELF_PAGE_SCRATCH_ADDRESS,
+                false))
+        {
+            printf(
+                "ELF: stack scratch unmap failed\n");
+
+            for (;;)
+                __asm__ volatile(
+                    "cli; hlt");
+        }
+
+        /*
+         * Map this physical frame into
+         * the userspace address space.
+         */
+        if (!paging_map_page_in_directory(
+                directory,
+                virtual_page,
+                frame,
+                PAGE_USER |
+                    PAGE_WRITABLE))
+        {
+            printf(
+                "ELF: user stack mapping failed at 0x%lx\n",
+                (unsigned long)virtual_page);
+
+            pmm_free_frame(frame);
+
+            return false;
+        }
+
+        /*
+         * Remember the physical frame belonging
+         * to the very top stack page.
+         *
+         * argc/argv will be written there.
+         */
+        if (virtual_page ==
+            top_stack_page)
+        {
+            top_stack_frame =
+                frame;
+        }
+    }
+
+    if (top_stack_frame == 0)
     {
         printf(
-            "ELF: stack frame allocation failed\n");
+            "ELF: failed finding top stack frame\n");
 
         return false;
     }
+
+    /*
+     * ------------------------------------------------------------------
+     * Construct argc/argv in the TOP stack page.
+     * ------------------------------------------------------------------
+     *
+     * Even though the process has a full 1 MiB stack,
+     * we keep the initial process-start data in the top 4 KiB.
+     *
+     * This keeps your existing startup ABI simple.
+     */
 
     if (!paging_map_page(
             ELF_PAGE_SCRATCH_ADDRESS,
-            frame,
+            top_stack_frame,
             PAGE_WRITABLE))
     {
         printf(
-            "ELF: stack scratch mapping failed\n");
-
-        pmm_free_frame(
-            frame);
+            "ELF: top stack scratch mapping failed\n");
 
         return false;
     }
 
-    memset(
-        (void *)ELF_PAGE_SCRATCH_ADDRESS,
-        0,
-        PAGE_SIZE);
-
-    uintptr_t user_argument_addresses[
-        ELF_USER_MAX_ARGS];
+    uintptr_t user_argument_addresses[ELF_USER_MAX_ARGS];
 
     uintptr_t stack_pointer =
         stack_top;
 
     /*
-     * Copy strings downward from the top of the stack page.
+     * Initial argc/argv must currently fit inside
+     * the highest stack page.
+     */
+    uintptr_t argument_page_bottom =
+        stack_top - PAGE_SIZE;
+
+    /*
+     * Copy argument strings downward.
+     *
+     * Example:
+     *
+     *     "two\0"
+     *     "one\0"
+     *     "/bin/hello.nex\0"
      */
     for (size_t remaining = argc;
          remaining > 0;
@@ -485,18 +630,15 @@ static bool map_user_stack(
             argument_lengths[index] + 1u;
 
         if (stack_pointer <
-            stack_address +
+            argument_page_bottom +
                 length_with_nul)
         {
             printf(
-                "ELF: arguments do not fit user stack\n");
+                "ELF: arguments do not fit top stack page\n");
 
             paging_unmap_page(
                 ELF_PAGE_SCRATCH_ADDRESS,
                 false);
-
-            pmm_free_frame(
-                frame);
 
             return false;
         }
@@ -504,33 +646,39 @@ static bool map_user_stack(
         stack_pointer -=
             length_with_nul;
 
-        size_t stack_offset =
-            (size_t)(
-                stack_pointer -
-                stack_address);
+        /*
+         * Offset inside the highest physical page.
+         */
+        size_t page_offset =
+            (size_t)(stack_pointer -
+                     argument_page_bottom);
 
         memcpy(
-            (void *)(
-                ELF_PAGE_SCRATCH_ADDRESS +
-                stack_offset),
+            (void *)(ELF_PAGE_SCRATCH_ADDRESS +
+                     page_offset),
             argv[index],
             length_with_nul);
 
+        /*
+         * Store USERSPACE pointer, not kernel
+         * scratch address.
+         */
         user_argument_addresses[index] =
             stack_pointer;
     }
 
     /*
-     * Keep the initial word table naturally aligned.
+     * i386 stack word alignment.
      */
     stack_pointer &=
         ~(uintptr_t)0x3u;
 
     /*
-     * Minimal i386 process-start stack:
+     * Startup table:
      *
      *     argc
      *     argv[0]
+     *     argv[1]
      *     ...
      *     argv[argc - 1]
      *     NULL
@@ -543,18 +691,15 @@ static bool map_user_stack(
         sizeof(uint32_t);
 
     if (stack_pointer <
-        stack_address +
+        argument_page_bottom +
             table_size)
     {
         printf(
-            "ELF: argument table does not fit user stack\n");
+            "ELF: argument table does not fit top stack page\n");
 
         paging_unmap_page(
             ELF_PAGE_SCRATCH_ADDRESS,
             false);
-
-        pmm_free_frame(
-            frame);
 
         return false;
     }
@@ -563,18 +708,22 @@ static bool map_user_stack(
         table_size;
 
     size_t table_offset =
-        (size_t)(
-            stack_pointer -
-            stack_address);
+        (size_t)(stack_pointer -
+                 argument_page_bottom);
 
     uint32_t *table =
-        (uint32_t *)(
-            ELF_PAGE_SCRATCH_ADDRESS +
-            table_offset);
+        (uint32_t *)(ELF_PAGE_SCRATCH_ADDRESS +
+                     table_offset);
 
+    /*
+     * argc
+     */
     table[0] =
         (uint32_t)argc;
 
+    /*
+     * argv pointers
+     */
     for (size_t i = 0;
          i < argc;
          ++i)
@@ -584,38 +733,38 @@ static bool map_user_stack(
                 user_argument_addresses[i];
     }
 
+    /*
+     * argv[argc] == NULL
+     */
     table[argc + 1u] = 0;
 
+    /*
+     * Remove temporary kernel mapping.
+     */
     if (!paging_unmap_page(
             ELF_PAGE_SCRATCH_ADDRESS,
             false))
     {
         printf(
-            "ELF: stack scratch unmap failed\n");
+            "ELF: top stack scratch unmap failed\n");
 
         for (;;)
             __asm__ volatile(
                 "cli; hlt");
     }
 
-    if (!paging_map_page_in_directory(
-            directory,
-            stack_address,
-            frame,
-            PAGE_USER |
-                PAGE_WRITABLE))
-    {
-        printf(
-            "ELF: user stack mapping failed\n");
-
-        pmm_free_frame(
-            frame);
-
-        return false;
-    }
-
+    /*
+     * ESP supplied to arch_enter_user().
+     */
     *initial_stack_pointer =
         stack_pointer;
+
+    printf(
+        "ELF: stack ready bottom=0x%lx top=0x%lx esp=0x%lx pages=%lu\n",
+        (unsigned long)stack_address,
+        (unsigned long)stack_top,
+        (unsigned long)stack_pointer,
+        (unsigned long)stack_page_count);
 
     return true;
 }
@@ -768,11 +917,10 @@ bool elf_load_user_image(
         size_t offset =
             program_table_offset +
             i *
-            sizeof(elf32_program_header_t);
+                sizeof(elf32_program_header_t);
 
         const elf32_program_header_t *segment =
-            (const elf32_program_header_t *)(
-                bytes + offset);
+            (const elf32_program_header_t *)(bytes + offset);
 
         if (segment->type !=
             ELF_PROGRAM_LOAD)

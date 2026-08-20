@@ -11,6 +11,7 @@
 #include <kernel/cpu.h>
 #include <kernel/spinlock.h>
 #include <kernel/paging.h>
+#include <kernel/logger.h>
 
 #include "../arch/i386/interrupts.h"
 
@@ -739,7 +740,7 @@ task_t *task_create_kernel_with_policy(
     return task;
 }
 
-task_t *task_create_user_with_policy(
+task_t *task_create_user_unpublished(
     void (*entry)(void *),
     void *argument,
     uintptr_t page_directory,
@@ -752,8 +753,8 @@ task_t *task_create_user_with_policy(
         return NULL;
 
     /*
-     * The U3c sharing helper currently operates from the canonical
-     * kernel address space.
+     * User-task creation currently happens from
+     * the canonical kernel address space.
      */
     if (paging_current_directory() !=
         kernel_directory)
@@ -762,7 +763,8 @@ task_t *task_create_user_with_policy(
     }
 
     /*
-     * A user task must use a distinct, page-aligned address space.
+     * Userspace must have a different,
+     * page-aligned page directory.
      */
     if (page_directory == 0 ||
         page_directory ==
@@ -774,8 +776,9 @@ task_t *task_create_user_with_policy(
     }
 
     /*
-     * allocate_task() creates the task object and its managed kernel
-     * stack, but does not publish the task to the scheduler.
+     * Allocate task_t and its kernel stack.
+     *
+     * The task is still TASK_NEW here.
      */
     task_t *task =
         allocate_task(
@@ -788,11 +791,7 @@ task_t *task_create_user_with_policy(
         return NULL;
 
     /*
-     * The user directory may have been created before this task's
-     * task_t or kernel stack existed.
-     *
-     * Ensure the supervisor PDEs containing those objects are shared
-     * into the target directory before the task can ever run.
+     * Validate kernel stack.
      */
     if (task->stack_base == 0 ||
         task->stack_size == 0)
@@ -818,6 +817,10 @@ task_t *task_create_user_with_policy(
         task->stack_size -
         1u;
 
+    /*
+     * The private user page directory still needs access
+     * to kernel task structures and the task's kernel stack.
+     */
     if (!paging_share_kernel_pde(
             page_directory,
             (uintptr_t)task) ||
@@ -828,10 +831,6 @@ task_t *task_create_user_with_policy(
             page_directory,
             stack_last))
     {
-        /*
-         * page_directory still belongs to the caller because this
-         * task was never published and ownership has not transferred.
-         */
         destroy_unpublished_task(
             task);
 
@@ -839,17 +838,77 @@ task_t *task_create_user_with_policy(
     }
 
     /*
-     * Ownership becomes authoritative before scheduler visibility.
+     * task_t now owns this address space.
      *
-     * From this point onward the reaper is responsible for destroying
-     * the private address space.
+     * BUT:
+     * the task is still TASK_NEW and is not runnable.
      */
     task->owns_page_directory =
         true;
 
+    return task;
+}
+
+void task_publish(
+    task_t *task)
+{
+    if (task == NULL)
+    {
+        log_error(
+            "TASK: publish received NULL task\n");
+
+        return;
+    }
+
+    if (task->state != TASK_NEW)
+    {
+        log_error(
+            "TASK: tid=%u is not TASK_NEW\n",
+            (unsigned)task->id);
+
+        return;
+    }
+
     scheduler_make_ready(
         task);
 
+    /*
+     * IMPORTANT:
+     *
+     * Don't access task here.
+     *
+     * Another CPU is allowed to run/reap it after
+     * scheduler_make_ready().
+     */
+}
+
+task_t *task_create_user_with_policy(
+    void (*entry)(void *),
+    void *argument,
+    uintptr_t page_directory,
+    sched_policy_t policy)
+{
+    /*
+     * Keep the original convenient API for older kernel code.
+     */
+    task_t *task =
+        task_create_user_unpublished(
+            entry,
+            argument,
+            page_directory,
+            policy);
+
+    if (task == NULL)
+        return NULL;
+
+    task_publish(
+        task);
+
+    /*
+     * Old API still returns the pointer.
+     *
+     * New SMP-safe spawn code will NOT use this API.
+     */
     return task;
 }
 
@@ -1032,25 +1091,57 @@ bool task_initialize_cpu(void)
 
     bootstrap->cleanup_next = NULL;
 
-    cpu->current_task = bootstrap;
+    /*
+     * The AP bootstrap task runs in the canonical
+     * kernel address space, just like the BSP
+     * bootstrap task.
+     *
+     * memset() above cleared page_directory, so it
+     * must be restored before this CPU starts using
+     * the scheduler.
+     */
+    bootstrap->page_directory =
+        paging_kernel_directory();
 
-    flags = spin_lock_irqsave(&task_id_lock);
+    bootstrap->owns_page_directory =
+        false;
+
+    if (bootstrap->page_directory == 0)
+        return false;
+
+    cpu->current_task =
+        bootstrap;
+
+    flags =
+        spin_lock_irqsave(
+            &task_id_lock);
+
     ++live_task_count;
-    spin_unlock_irqrestore(&task_id_lock, flags);
+
+    spin_unlock_irqrestore(
+        &task_id_lock,
+        flags);
 
     /*
      * Every CPU needs its own idle task.
      */
-    task_t *idle = allocate_kernel_task(idle_thread, NULL, SCHED_POLICY_BACKGROUND);
+    task_t *idle =
+        allocate_kernel_task(
+            idle_thread,
+            NULL,
+            SCHED_POLICY_BACKGROUND);
 
     if (idle == NULL)
         return false;
 
-    idle->state = TASK_READY;
+    idle->state =
+        TASK_READY;
 
-    cpu->idle_task = idle;
+    cpu->idle_task =
+        idle;
 
-    cpu->reschedule_pending = false;
+    cpu->reschedule_pending =
+        false;
 
     return true;
 }

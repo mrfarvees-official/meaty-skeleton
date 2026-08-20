@@ -133,10 +133,6 @@ static int32_t syscall_dispatch(
             buffer,
             length);
 
-        printf(
-            "\nU2e: debug_write accepted %lu bytes\n",
-            (unsigned long)length);
-
         return (int32_t)length;
     }
 
@@ -189,12 +185,6 @@ static void syscall_handler(
     uint32_t number =
         frame->eax;
 
-    printf(
-        "U2: syscall entry number=%lu CS=0x%lx RPL=%lu\n",
-        (unsigned long)number,
-        (unsigned long)frame->cs,
-        (unsigned long)(frame->cs & 3u));
-
     int32_t result =
         syscall_dispatch(
             frame->eax,
@@ -206,11 +196,6 @@ static void syscall_handler(
 
     frame->eax =
         (uint32_t)result;
-
-    printf(
-        "U2: syscall %lu returning %ld\n",
-        (unsigned long)number,
-        (long)result);
 }
 
 bool syscall_initialize(void)

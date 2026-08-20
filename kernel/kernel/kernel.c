@@ -30,6 +30,7 @@
 #include <kernel/ahci.h>
 #include <kernel/elf.h>
 #include <kernel/user_image.h>
+#include <kernel/spawn.h>
 
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
@@ -62,95 +63,15 @@ void validate_multiboot_magic(uint32_t magic)
 	}
 }
 
-#define U10_USER_STACK_ADDRESS 0xBFFFF000u
-#define U10_USER_STACK_TOP 0xC0000000u
-
-#define U10_EXECUTABLE_PATH "/bin/hello.nex"
-
-/*
- * Keep the initial whole-file ELF buffering deliberately bounded.
- *
- * Streaming ELF loading can come later.  One MiB is vastly larger
- * than the current hello.nex while preventing an invalid filesystem
- * size from causing an uncontrolled kernel allocation.
- */
-#define U10_MAX_EXECUTABLE_SIZE (1024u * 1024u)
-
-extern void arch_enter_user(
-	uintptr_t instruction_pointer,
-	uintptr_t stack_pointer)
-	__attribute__((noreturn));
-
-typedef struct
-{
-	uintptr_t entry;
-	uintptr_t stack_top;
-} user_launch_context_t;
-
-static user_image_t u10_user_image;
-static user_launch_context_t u10_launch_context;
-
-static void u10_user_task_entry(void *argument)
-	__attribute__((noreturn));
-
-static void u10_user_task_entry(void *argument)
-{
-	user_launch_context_t *launch =
-		(user_launch_context_t *)argument;
-
-	if (launch == NULL ||
-		launch->entry == 0 ||
-		launch->stack_top == 0)
-	{
-		printf(
-			"U10: invalid ELF launch context\n");
-
-		halt_forever();
-	}
-
-	task_t *task =
-		task_current();
-
-	if (task == NULL)
-	{
-		printf(
-			"U10: no current user task\n");
-
-		halt_forever();
-	}
-
-	uintptr_t actual_directory =
-		paging_current_directory();
-
-	if (!task->owns_page_directory ||
-		actual_directory !=
-			task->page_directory ||
-		actual_directory ==
-			paging_kernel_directory())
-	{
-		printf(
-			"U10: invalid user address space\n");
-
-		halt_forever();
-	}
-
-	printf(
-		"U10: entering ELF at 0x%lx stack=0x%lx\n",
-		(unsigned long)
-			launch->entry,
-		(unsigned long)
-			launch->stack_top);
-
-	arch_enter_user(
-		launch->entry,
-		launch->stack_top);
-}
-
-static void u10_argv_test(void)
+static void u11_spawn_test(void)
 {
 	printf(
-		"\n=== U10 USERSPACE ARGV TEST ===\n");
+		"\n=== U11 PROCESS SPAWN TEST ===\n");
 
+	/*
+	 * process_spawn_user() currently prepares new address spaces
+	 * while the canonical kernel CR3 is active.
+	 */
 	uintptr_t kernel_directory =
 		paging_kernel_directory();
 
@@ -159,196 +80,27 @@ static void u10_argv_test(void)
 			kernel_directory)
 	{
 		printf(
-			"U10: kernel CR3 is not active\n");
+			"U11: kernel CR3 is not active\n");
 
 		halt_forever();
 	}
-
-	file_t *file = NULL;
-
-	if (vfs_open(
-			U10_EXECUTABLE_PATH,
-			VFS_OPEN_READ,
-			&file) != 0 ||
-		file == NULL)
-	{
-		printf(
-			"U10: failed opening %s\n",
-			U10_EXECUTABLE_PATH);
-
-		halt_forever();
-	}
-
-	printf(
-		"U10: opened %s\n",
-		U10_EXECUTABLE_PATH);
-
-	if (file->vnode == NULL ||
-		file->vnode->type !=
-			VNODE_REGULAR)
-	{
-		printf(
-			"U10: executable vnode is not a regular file\n");
-
-		vfs_close(file);
-		halt_forever();
-	}
-
-	uint64_t executable_size_64 =
-		file->vnode->size;
-
-	if (executable_size_64 == 0)
-	{
-		printf(
-			"U10: executable is empty\n");
-
-		vfs_close(file);
-		halt_forever();
-	}
-
-	if (executable_size_64 >
-			(uint64_t)SIZE_MAX ||
-		executable_size_64 >
-			U10_MAX_EXECUTABLE_SIZE)
-	{
-		printf(
-			"U10: executable size is invalid: %llu bytes\n",
-			(unsigned long long)
-				executable_size_64);
-
-		vfs_close(file);
-		halt_forever();
-	}
-
-	size_t executable_size =
-		(size_t)executable_size_64;
-
-	uint8_t *executable_data =
-		kmalloc(executable_size);
-
-	if (executable_data == NULL)
-	{
-		printf(
-			"U10: failed allocating executable buffer\n");
-
-		vfs_close(file);
-		halt_forever();
-	}
-
-	size_t total_read = 0;
-
-	while (total_read <
-		   executable_size)
-	{
-		size_t bytes_read = 0;
-
-		if (vfs_read(
-				file,
-				executable_data +
-					total_read,
-				executable_size -
-					total_read,
-				&bytes_read) != 0)
-		{
-			printf(
-				"U10: VFS read failed at offset %lu\n",
-				(unsigned long)
-					total_read);
-
-			kfree(
-				executable_data);
-
-			vfs_close(
-				file);
-
-			halt_forever();
-		}
-
-		/*
-		 * Successful zero-byte read before reaching the vnode's
-		 * advertised size means the file was truncated or the
-		 * filesystem returned inconsistent data.
-		 */
-		if (bytes_read == 0)
-		{
-			printf(
-				"U10: unexpected EOF at %lu of %lu bytes\n",
-				(unsigned long)
-					total_read,
-				(unsigned long)
-					executable_size);
-
-			kfree(
-				executable_data);
-
-			vfs_close(
-				file);
-
-			halt_forever();
-		}
-
-		if (bytes_read >
-			executable_size -
-				total_read)
-		{
-			printf(
-				"U10: VFS returned an invalid read length\n");
-
-			kfree(
-				executable_data);
-
-			vfs_close(
-				file);
-
-			halt_forever();
-		}
-
-		total_read +=
-			bytes_read;
-	}
-
-	vfs_close(file);
-	file = NULL;
-
-	if (total_read !=
-		executable_size)
-	{
-		printf(
-			"U10: executable read length mismatch\n");
-
-		kfree(
-			executable_data);
-
-		halt_forever();
-	}
-
-	printf(
-		"U10: loaded %lu bytes from VFS\n",
-		(unsigned long)
-			executable_size);
 
 	/*
-	 * U10 initial userspace argument vector.
+	 * These are kernel-side strings.
 	 *
-	 * These strings are copied into the new private userspace stack
-	 * by elf_load_user_image(); userspace never receives pointers to
-	 * these kernel strings.
+	 * elf_load_user_image() copies them into the new process's
+	 * private userspace stack, so these pointers are not passed
+	 * directly to userspace.
 	 */
-	static const char *const user_argv[] =
+	static const char *const argv[] =
 		{
-			U10_EXECUTABLE_PATH,
+			"/bin/hello.nex",
 			"one",
 			"two"};
 
-	const size_t user_argc =
-		sizeof(user_argv) /
-		sizeof(user_argv[0]);
-
-	printf(
-		"U10: launching %s argc=%lu\n",
-		U10_EXECUTABLE_PATH,
-		(unsigned long)
-			user_argc);
+	const size_t argc =
+		sizeof(argv) /
+		sizeof(argv[0]);
 
 	size_t live_before =
 		task_live_count();
@@ -356,137 +108,40 @@ static void u10_argv_test(void)
 	uint64_t reaped_before =
 		task_cleanup_total_reaped();
 
-	if (!elf_load_user_image(
-			&u10_user_image,
-			executable_data,
-			executable_size,
-			U10_USER_STACK_ADDRESS,
-			U10_USER_STACK_TOP,
-			user_argc,
-			user_argv))
-	{
-		printf(
-			"U10: ELF loader rejected %s\n",
-			U10_EXECUTABLE_PATH);
-
-		kfree(
-			executable_data);
-
-		halt_forever();
-	}
-
-	/*
-	 * The ELF loader copied all PT_LOAD contents and argv strings
-	 * into frames owned by the prepared user image.
-	 *
-	 * The filesystem source buffer is no longer required.
-	 */
-	kfree(
-		executable_data);
-
-	executable_data = NULL;
-
-	if (u10_user_image.stack_top <
-			U10_USER_STACK_ADDRESS ||
-		u10_user_image.stack_top >=
-			U10_USER_STACK_TOP)
-	{
-		printf(
-			"U10: invalid prepared initial user ESP 0x%lx\n",
-			(unsigned long)
-				u10_user_image.stack_top);
-
-		user_image_destroy(
-			&u10_user_image);
-
-		halt_forever();
-	}
-
 	printf(
-		"U10: ELF loaded entry=0x%lx CR3=0x%lx ESP=0x%lx\n",
-		(unsigned long)
-			u10_user_image.entry,
-		(unsigned long)
-			u10_user_image.page_directory,
-		(unsigned long)
-			u10_user_image.stack_top);
-
-	u10_launch_context.entry =
-		u10_user_image.entry;
-
-	u10_launch_context.stack_top =
-		u10_user_image.stack_top;
-
-	uintptr_t user_directory =
-		u10_user_image.page_directory;
-
-	task_t *task =
-		task_create_user_with_policy(
-			u10_user_task_entry,
-			&u10_launch_context,
-			user_directory,
-			SCHED_POLICY_REALTIME);
-
-	if (task == NULL)
-	{
-		user_image_destroy(
-			&u10_user_image);
-
-		printf(
-			"U10: failed creating ELF user task\n");
-
-		halt_forever();
-	}
-
-	if (!task->owns_page_directory ||
-		task->page_directory !=
-			user_directory)
-	{
-		printf(
-			"U10: user task did not accept ELF CR3\n");
-
-		halt_forever();
-	}
-
-	uintptr_t detached_directory =
-		user_image_detach_directory(
-			&u10_user_image);
-
-	if (detached_directory !=
-		user_directory)
-	{
-		printf(
-			"U10: ELF address-space ownership transfer failed\n");
-
-		halt_forever();
-	}
+		"U11: spawning /bin/hello.nex argc=%lu\n",
+		(unsigned long)argc);
 
 	task_id_t user_tid =
-		task->id;
+		process_spawn_user(
+			"/bin/hello.nex",
+			argc,
+			argv);
 
-	printf(
-		"U10: starting %s as task %u\n",
-		U10_EXECUTABLE_PATH,
+	if (user_tid == 0)
+	{
+		log_error(
+			"U11: process_spawn_user failed\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"U11: spawned userspace tid=%u\n",
 		(unsigned)user_tid);
 
 	/*
-	 * hello.nex should now observe:
-	 *
-	 *     argc == 3
-	 *
-	 *     argv[0] == "/bin/hello.nex"
-	 *     argv[1] == "one"
-	 *     argv[2] == "two"
-	 *     argv[3] == NULL
-	 *
-	 * _start converts the initial process stack into normal cdecl
-	 * arguments for main(int argc, char **argv).
+	 * Let the scheduler run hello.nex.
 	 */
 	task_yield();
 
 	/*
-	 * The task may already have been destroyed by the reaper.
-	 * Do not dereference task after this point.
+	 * Wait for the userspace task to exit and for the reaper
+	 * to completely destroy it.
+	 *
+	 * This is only a kernel bring-up test.
+	 *
+	 * Later this becomes proper process_wait()/waitpid().
 	 */
 	for (size_t i = 0;
 		 i < 64u;
@@ -515,7 +170,7 @@ static void u10_argv_test(void)
 		reaped_before + 1u)
 	{
 		printf(
-			"U10: ELF task was not reaped exactly once\n");
+			"U11: userspace task was not reaped exactly once\n");
 
 		halt_forever();
 	}
@@ -523,7 +178,7 @@ static void u10_argv_test(void)
 	if (pending_after != 0)
 	{
 		printf(
-			"U10: ELF task cleanup did not finish\n");
+			"U11: userspace task cleanup did not finish\n");
 
 		halt_forever();
 	}
@@ -532,16 +187,22 @@ static void u10_argv_test(void)
 		live_before)
 	{
 		printf(
-			"U10: ELF task lifecycle leaked a task\n");
+			"U11: userspace task lifecycle leaked a task\n");
+
+		printf(
+			"U11: live before=%lu after=%lu\n",
+			(unsigned long)live_before,
+			(unsigned long)live_after);
 
 		halt_forever();
 	}
 
 	printf(
-		"U10: ELF task exited and was reaped\n");
+		"U11: task %u exited and was reaped\n",
+		(unsigned)user_tid);
 
 	printf(
-		"U10: argc/argv userspace ABI confirmed\n");
+		"U11: process_spawn_user test PASSED\n");
 
 	halt_forever();
 }
@@ -570,7 +231,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 		halt_forever();
 	}
 
-	log_info("U2: syscall gate initialized\n");
+	log_info("syscall gate initialized\n");
 
 	pic_initialize();
 	log_info("pic initialized\n");
@@ -824,8 +485,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	log_info("keyboard initialized\n");
 
-	u10_argv_test();
-
+	
 
 	/*
 	 * Allow hardware IRQ delivery first.
@@ -836,6 +496,8 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 * Actual scheduler context switching is still gated on this CPU.
 	 */
 	interrupt_enable();
+
+	u11_spawn_test();
 
 	yield_forever();
 }

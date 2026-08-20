@@ -8,6 +8,7 @@
 #include <kernel/smp.h>
 #include <kernel/spinlock.h>
 #include <kernel/paging.h>
+#include <kernel/logger.h>
 
 #include "../arch/i386/gdt.h"
 
@@ -217,9 +218,13 @@ void scheduler_make_ready(task_t *task)
 
     if (!policy_valid(task->policy))
     {
+        log_error(
+            "SCHED: invalid policy\n");
+
         spin_unlock_irqrestore(
             &scheduler_lock,
             flags);
+
         return;
     }
 
@@ -228,31 +233,44 @@ void scheduler_make_ready(task_t *task)
         spin_unlock_irqrestore(
             &scheduler_lock,
             flags);
+
         return;
     }
 
     scheduler_policy_slot_t *slot =
-        get_slot(task->policy);
+        get_slot(
+            task->policy);
 
     if (slot == NULL ||
         slot->algorithm == NULL)
     {
+        log_error(
+            "SCHED: missing scheduler slot/algorithm\n");
+
         spin_unlock_irqrestore(
             &scheduler_lock,
             flags);
+
         return;
     }
 
     task->state =
         TASK_READY;
 
-    task->sched_previous = NULL;
-    task->sched_next = NULL;
+    task->sched_previous =
+        NULL;
+
+    task->sched_next =
+        NULL;
 
     slot->algorithm->enqueue(
         slot->algorithm_state,
         task);
 
+    /*
+     * Important:
+     * release scheduler lock before sending SMP reschedule IPI.
+     */
     spin_unlock_irqrestore(
         &scheduler_lock,
         flags);
@@ -746,8 +764,6 @@ void scheduler_block_current_wait(
     {
         /*
          * There is no valid context to switch to.
-         *
-         * Keep interrupts disabled and stop this CPU.
          */
         spin_unlock_irqrestore(
             &scheduler_lock,
@@ -805,6 +821,22 @@ void scheduler_block_current_wait(
         true;
 
     task_internal_set_current(
+        next);
+
+    /*
+     * Install the architectural state belonging to
+     * the incoming task BEFORE physically switching
+     * to its saved kernel stack.
+     *
+     * This must match scheduler_schedule().
+     *
+     * The TSS kernel-entry stack belongs to next,
+     * and CR3 must point at next's address space.
+     */
+    scheduler_update_kernel_entry_stack(
+        next);
+
+    scheduler_update_address_space(
         next);
 
     cpu->reschedule_pending =

@@ -41,6 +41,7 @@ kernel/memory/spinlock.o 		\
 kernel/process/process.o 		\
 kernel/process/user_image.o 	\
 kernel/process/elf.o 			\
+kernel/process/spawn.o 			\
 kernel/task/task.o 				\
 kernel/task/mutex.o 			\
 kernel/task/semaphore.o 		\

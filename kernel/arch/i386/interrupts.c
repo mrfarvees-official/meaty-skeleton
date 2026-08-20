@@ -224,31 +224,16 @@ static void breakpoint_handler(struct interrupt_frame *frame)
             interrupt_halt();
         }
 
-        printf(
-            "Current TID: %lu\n",
-            (unsigned long)task->id);
-
-        printf(
-            "U2e: returned EAX=%ld\n",
-            (long)(int32_t)frame->eax);
-
         if ((int32_t)frame->eax != 19)
         {
             printf(
-                "U2e: debug_write result FAILED\n");
+                "debug_write result FAILED\n");
 
             interrupt_halt();
         }
 
-        printf(
-            "U2e: debug_write returned to CPL3 successfully\n");
-
         interrupt_halt();
     }
-
-    printf(
-        "Breakpoint at EIP=0x%lx\n",
-        (unsigned long)frame->eip);
 
     /*
      * Kernel-mode INT3 remains recoverable as before.

@@ -131,6 +131,28 @@ task_t *task_create_kernel_with_policy(
     sched_policy_t policy);
 
 /*
+ * Create a userspace task but do not make it runnable yet.
+ *
+ * The returned task remains TASK_NEW.
+ *
+ * On success the task owns page_directory.
+ */
+task_t *task_create_user_unpublished(
+    void (*entry)(void *),
+    void *argument,
+    uintptr_t page_directory,
+    sched_policy_t policy);
+
+/*
+ * Make a previously-created TASK_NEW task runnable.
+ *
+ * IMPORTANT:
+ * After this call the task may immediately run on another CPU.
+ */
+void task_publish(
+    task_t *task);
+
+/*
  * Create a scheduler task using an already prepared private address
  * space.
  *
