@@ -9,6 +9,7 @@
 #include <kernel/spinlock.h>
 #include <kernel/paging.h>
 #include <kernel/logger.h>
+#include <kernel/address_space.h>
 
 #include "../arch/i386/gdt.h"
 
@@ -361,7 +362,17 @@ static void scheduler_update_address_space(
     task_t *task)
 {
     if (task == NULL ||
-        task->page_directory == 0)
+        task->address_space == NULL)
+    {
+        for (;;)
+            __asm__ volatile("cli; hlt");
+    }
+
+    uintptr_t next_directory =
+        address_space_page_directory(
+            task->address_space);
+
+    if (next_directory == 0)
     {
         for (;;)
             __asm__ volatile("cli; hlt");
@@ -370,19 +381,23 @@ static void scheduler_update_address_space(
     uintptr_t current_directory =
         paging_current_directory();
 
+    /*
+     * Important for future multithreading:
+     *
+     * Two different tasks may intentionally use the
+     * exact same address space.
+     *
+     * In that case there is no reason to reload CR3.
+     */
     if (current_directory ==
-        task->page_directory)
+        next_directory)
     {
         return;
     }
 
     if (!paging_switch_directory(
-            task->page_directory))
+            next_directory))
     {
-        /*
-         * A task with an unusable page directory is an unrecoverable
-         * scheduler invariant violation at this stage.
-         */
         for (;;)
             __asm__ volatile("cli; hlt");
     }

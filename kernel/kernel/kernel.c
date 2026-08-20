@@ -7,6 +7,7 @@
 #include <kernel/logger.h>
 #include <kernel/multiboot.h>
 #include <kernel/paging.h>
+#include <kernel/address_space.h>
 #include <kernel/pmm.h>
 #include <kernel/process.h>
 #include <kernel/heap.h>
@@ -51,6 +52,790 @@ static void yield_forever(void)
 {
 	for (;;)
 		task_yield();
+}
+
+/*
+ * ==========================================================================
+ * U12.2 SHARED ADDRESS-SPACE LIFETIME TEST
+ * ==========================================================================
+ *
+ * This is intentionally a kernel-controlled test.
+ *
+ * The two tasks execute kernel entry functions while using the same
+ * userspace page directory.
+ *
+ * We are not creating real ring-3 threads yet.
+ *
+ * The purpose of this test is narrower:
+ *
+ *     prove that multiple task_t objects can safely reference one
+ *     address_space_t, and that destroying one task does not destroy
+ *     memory still required by another task.
+ */
+
+#define U12_SHARED_TEST_ADDRESS \
+	((uintptr_t)0x40000000u)
+
+#define U12_SHARED_MAGIC_A \
+	((uint32_t)0xA12A12A1u)
+
+#define U12_SHARED_MAGIC_B \
+	((uint32_t)0xB12B12B2u)
+
+/*
+ * These live in kernel memory.
+ *
+ * They let the BSP test task observe what the two worker tasks proved.
+ */
+static volatile bool u12_task_a_passed =
+	false;
+
+static volatile bool u12_task_b_passed =
+	false;
+
+/*
+ * --------------------------------------------------------------------------
+ * TASK A
+ * --------------------------------------------------------------------------
+ *
+ * Both tasks already exist before either is published.
+ *
+ * Therefore the expected address-space reference count when A runs is:
+ *
+ *     test owner = 1
+ *     task A     = 1
+ *     task B     = 1
+ *                  ---
+ *                  3
+ *
+ * Task A writes a value into an actual PAGE_USER mapping and exits.
+ */
+static void u12_shared_space_task_a(
+	void *argument)
+{
+	address_space_t *space =
+		(address_space_t *)argument;
+
+	task_t *task =
+		task_current();
+
+	if (space == NULL ||
+		task == NULL ||
+		task->address_space != space)
+	{
+		log_error(
+			"U12.2: task A invalid task/address space\n");
+
+		task_exit();
+	}
+
+	if (address_space_is_kernel(
+			space))
+	{
+		log_error(
+			"U12.2: task A unexpectedly uses kernel address space\n");
+
+		task_exit();
+	}
+
+	uintptr_t expected_directory =
+		address_space_page_directory(
+			space);
+
+	uintptr_t current_directory =
+		paging_current_directory();
+
+	if (expected_directory == 0 ||
+		current_directory !=
+			expected_directory)
+	{
+		log_error(
+			"U12.2: task A CR3 mismatch "
+			"current=0x%lx expected=0x%lx\n",
+			(unsigned long)current_directory,
+			(unsigned long)expected_directory);
+
+		task_exit();
+	}
+
+	size_t references =
+		address_space_reference_count(
+			space);
+
+	if (references != 3u)
+	{
+		log_error(
+			"U12.2: task A expected refs=3, got %lu\n",
+			(unsigned long)references);
+
+		task_exit();
+	}
+
+	/*
+	 * This virtual address exists only inside the shared
+	 * userspace address space.
+	 *
+	 * Task A writes it.
+	 *
+	 * Task B must still be able to read this exact value
+	 * after task A has exited AND been completely reaped.
+	 */
+	volatile uint32_t *shared_value =
+		(volatile uint32_t *)
+			U12_SHARED_TEST_ADDRESS;
+
+	*shared_value =
+		U12_SHARED_MAGIC_A;
+
+	u12_task_a_passed =
+		true;
+
+	log_success(
+		"U12.2: task A tid=%u wrote shared page "
+		"refs=%lu value=0x%lx\n",
+		(unsigned)task->id,
+		(unsigned long)references,
+		(unsigned long)*shared_value);
+
+	/*
+	 * The reaper should release only A's reference.
+	 *
+	 * The shared address space must survive because task B
+	 * and the BSP test owner still reference it.
+	 */
+	task_exit();
+}
+
+/*
+ * --------------------------------------------------------------------------
+ * TASK B
+ * --------------------------------------------------------------------------
+ *
+ * Task B begins using the same address space as task A.
+ *
+ * It immediately blocks.
+ *
+ * The BSP will wake it only AFTER task A has been fully reaped.
+ */
+static void u12_shared_space_task_b(
+	void *argument)
+{
+	address_space_t *space =
+		(address_space_t *)argument;
+
+	task_t *task =
+		task_current();
+
+	if (space == NULL ||
+		task == NULL ||
+		task->address_space != space)
+	{
+		log_error(
+			"U12.2: task B invalid task/address space\n");
+
+		task_exit();
+	}
+
+	if (address_space_is_kernel(
+			space))
+	{
+		log_error(
+			"U12.2: task B unexpectedly uses kernel address space\n");
+
+		task_exit();
+	}
+
+	/*
+	 * Wait until task A's address-space reference
+	 * has disappeared.
+	 *
+	 * Initial ownership:
+	 *
+	 *     test owner = 1
+	 *     task A     = 1
+	 *     task B     = 1
+	 *                  ---
+	 *                  3
+	 *
+	 * After task A has been reaped:
+	 *
+	 *     test owner = 1
+	 *     task B     = 1
+	 *                  ---
+	 *                  2
+	 *
+	 * Do NOT busy-spin.
+	 *
+	 * Yield so the reaper and the other CPUs can make
+	 * forward progress.
+	 */
+	for (;;)
+	{
+		size_t references =
+			address_space_reference_count(
+				space);
+
+		if (references == 2u)
+			break;
+
+		/*
+		 * refs should never drop below 2 while task B
+		 * and the test owner are both alive.
+		 */
+		if (references < 2u)
+		{
+			log_error(
+				"U12.2: task B observed invalid refs=%lu\n",
+				(unsigned long)references);
+
+			task_exit();
+		}
+
+		task_yield();
+	}
+
+	/*
+	 * Seeing refs == 2 proves task A's address-space
+	 * reference has been released.
+	 */
+	size_t references =
+		address_space_reference_count(
+			space);
+
+	uintptr_t expected_directory =
+		address_space_page_directory(
+			space);
+
+	uintptr_t current_directory =
+		paging_current_directory();
+
+	if (expected_directory == 0 ||
+		current_directory !=
+			expected_directory)
+	{
+		log_error(
+			"U12.2: task B CR3 mismatch "
+			"current=0x%lx expected=0x%lx\n",
+			(unsigned long)current_directory,
+			(unsigned long)expected_directory);
+
+		task_exit();
+	}
+
+	/*
+	 * Task A wrote this before exiting.
+	 *
+	 * If A's cleanup incorrectly destroyed the shared
+	 * address space, this access cannot remain valid.
+	 */
+	volatile uint32_t *shared_value =
+		(volatile uint32_t *)
+			U12_SHARED_TEST_ADDRESS;
+
+	uint32_t value =
+		*shared_value;
+
+	if (value !=
+		U12_SHARED_MAGIC_A)
+	{
+		log_error(
+			"U12.2: task B shared value mismatch "
+			"expected=0x%lx got=0x%lx\n",
+			(unsigned long)U12_SHARED_MAGIC_A,
+			(unsigned long)value);
+
+		task_exit();
+	}
+
+	/*
+	 * Also prove that B can still write into the
+	 * surviving address space.
+	 */
+	*shared_value =
+		U12_SHARED_MAGIC_B;
+
+	u12_task_b_passed =
+		true;
+
+	log_success(
+		"U12.2: task B tid=%u survived task A "
+		"refs=%lu value=0x%lx\n",
+		(unsigned)task->id,
+		(unsigned long)references,
+		(unsigned long)*shared_value);
+
+	task_exit();
+}
+
+/*
+ * --------------------------------------------------------------------------
+ * TEST DRIVER
+ * --------------------------------------------------------------------------
+ */
+static void u12_shared_address_space_test(void)
+{
+	printf(
+		"\n=== U12.2 SHARED ADDRESS SPACE TEST ===\n");
+
+	uintptr_t kernel_directory =
+		paging_kernel_directory();
+
+	/*
+	 * Address-space construction and destruction currently
+	 * require the canonical kernel CR3.
+	 */
+	if (kernel_directory == 0 ||
+		paging_current_directory() !=
+			kernel_directory)
+	{
+		log_error(
+			"U12.2: canonical kernel CR3 is not active\n");
+
+		halt_forever();
+	}
+
+	u12_task_a_passed =
+		false;
+
+	u12_task_b_passed =
+		false;
+
+	/*
+	 * Record task/reaper accounting before creating
+	 * anything belonging to this test.
+	 */
+	size_t live_before =
+		task_live_count();
+
+	uint64_t reaped_before =
+		task_cleanup_total_reaped();
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 1
+	 *
+	 * Create one empty userspace page directory.
+	 * --------------------------------------------------------------
+	 */
+	uintptr_t directory =
+		0;
+
+	if (!paging_create_user_directory(
+			&directory))
+	{
+		log_error(
+			"U12.2: failed creating user directory\n");
+
+		halt_forever();
+	}
+
+	if (directory == 0 ||
+		directory ==
+			kernel_directory)
+	{
+		log_error(
+			"U12.2: invalid user directory\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 2
+	 *
+	 * Create one real userspace page shared by both tasks.
+	 * --------------------------------------------------------------
+	 */
+	uintptr_t shared_frame =
+		pmm_allocate_frame();
+
+	if (shared_frame == 0)
+	{
+		log_error(
+			"U12.2: failed allocating shared frame\n");
+
+		halt_forever();
+	}
+
+	if (!paging_map_page_in_directory(
+			directory,
+			U12_SHARED_TEST_ADDRESS,
+			shared_frame,
+			PAGE_USER |
+				PAGE_WRITABLE))
+	{
+		log_error(
+			"U12.2: failed mapping shared user page\n");
+
+		/*
+		 * Bring-up invariant failure.
+		 *
+		 * We intentionally stop here rather than trying to
+		 * continue from a partially constructed test object.
+		 */
+		halt_forever();
+	}
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 3
+	 *
+	 * Wrap the raw directory in address_space_t.
+	 *
+	 * Initial:
+	 *
+	 *     refs = 1
+	 *
+	 * owned by this test function.
+	 * --------------------------------------------------------------
+	 */
+	address_space_t *space =
+		address_space_adopt_user(
+			directory);
+
+	if (space == NULL)
+	{
+		log_error(
+			"U12.2: failed adopting address space\n");
+
+		halt_forever();
+	}
+
+	size_t references =
+		address_space_reference_count(
+			space);
+
+	if (references != 1u)
+	{
+		log_error(
+			"U12.2: initial refs expected=1 got=%lu\n",
+			(unsigned long)references);
+
+		halt_forever();
+	}
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 4
+	 *
+	 * Create TWO tasks referencing the exact same address_space_t.
+	 *
+	 * Neither task is runnable yet.
+	 * --------------------------------------------------------------
+	 */
+	task_t *task_a =
+		task_create_user_unpublished(
+			u12_shared_space_task_a,
+			space,
+			space,
+			SCHED_POLICY_REALTIME);
+
+	if (task_a == NULL)
+	{
+		log_error(
+			"U12.2: failed creating task A\n");
+
+		halt_forever();
+	}
+
+	task_t *task_b =
+		task_create_user_unpublished(
+			u12_shared_space_task_b,
+			space,
+			space,
+			SCHED_POLICY_REALTIME);
+
+	if (task_b == NULL)
+	{
+		log_error(
+			"U12.2: failed creating task B\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * The creator plus two tasks now own references.
+	 */
+	references =
+		address_space_reference_count(
+			space);
+
+	if (references != 3u)
+	{
+		log_error(
+			"U12.2: expected refs=3 after creation, got=%lu\n",
+			(unsigned long)references);
+
+		halt_forever();
+	}
+
+	/*
+	 * Save IDs BEFORE publication.
+	 *
+	 * Once task_publish() runs, another CPU may execute
+	 * and eventually free that task_t.
+	 */
+	task_id_t tid_a =
+		task_a->id;
+
+	task_id_t tid_b =
+		task_b->id;
+
+	log_success(
+		"U12.2: shared CR3=0x%lx "
+		"taskA=%u taskB=%u refs=%lu\n",
+		(unsigned long)
+			address_space_page_directory(
+				space),
+		(unsigned)tid_a,
+		(unsigned)tid_b,
+		(unsigned long)references);
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 5
+	 *
+	 * Publish B first.
+	 *
+	 * It will enter and block on u12_shared_space_gate.
+	 *
+	 * Then publish A, which writes the shared page and exits.
+	 * --------------------------------------------------------------
+	 */
+	task_publish(
+		task_b);
+
+	task_publish(
+		task_a);
+
+	/*
+	 * DO NOT dereference task_a or task_b after this point.
+	 */
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 6
+	 *
+	 * Wait until exactly one new task has been COMPLETELY reaped.
+	 *
+	 * B is blocked, therefore the first reaped worker must be A.
+	 * --------------------------------------------------------------
+	 */
+	for (size_t i = 0;
+		 i < 256u;
+		 ++i)
+	{
+		if (task_cleanup_total_reaped() >=
+			reaped_before + 1u)
+		{
+			break;
+		}
+
+		task_yield();
+	}
+
+	if (task_cleanup_total_reaped() <
+		reaped_before + 1u)
+	{
+		log_error(
+			"U12.2: task A was not reaped\n");
+
+		halt_forever();
+	}
+
+	if (!u12_task_a_passed)
+	{
+		log_error(
+			"U12.2: task A validation failed\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * A's task reference must now be gone.
+	 *
+	 * The address space MUST still exist because:
+	 *
+	 *     test owner = 1
+	 *     task B     = 1
+	 */
+	references =
+		address_space_reference_count(
+			space);
+
+	if (references != 2u)
+	{
+		log_error(
+			"U12.2: after reaping A expected refs=2 got=%lu\n",
+			(unsigned long)references);
+
+		halt_forever();
+	}
+
+	log_success(
+		"U12.2: task A reaped, shared address space survived "
+		"refs=%lu\n",
+		(unsigned long)references);
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 7
+	 *
+	 * Allow B to continue.
+	 *
+	 * B will verify that:
+	 *
+	 *     - it still uses the same CR3
+	 *     - refs == 2
+	 *     - A's userspace memory value still exists
+	 * --------------------------------------------------------------
+	 */
+
+	/*
+	 * DO NOT dereference task_a or task_b after publication.
+	 */
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 6
+	 *
+	 * Wait for B to prove that A's reference was released
+	 * and that the shared userspace memory survived.
+	 *
+	 * Unlike the previous test, this is NOT a 256-yield
+	 * "timeout".
+	 *
+	 * B itself detects the exact lifetime transition:
+	 *
+	 *     refs 3 -> 2
+	 *
+	 * and only sets u12_task_b_passed after successfully
+	 * reading A's value from the shared userspace page.
+	 * --------------------------------------------------------------
+	 */
+
+	while (!u12_task_b_passed)
+	{
+		task_yield();
+	}
+
+	if (!u12_task_a_passed)
+	{
+		log_error(
+			"U12.2: task A validation failed\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"U12.2: task B proved shared address-space survival\n");
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 7
+	 *
+	 * B has called task_exit(), but it may not have been
+	 * completely reaped yet.
+	 *
+	 * Wait until both new zombies have completed cleanup.
+	 *
+	 * There is deliberately no arbitrary yield count here.
+	 * --------------------------------------------------------------
+	 */
+
+	while (task_cleanup_total_reaped() <
+		   reaped_before + 2u)
+	{
+		task_yield();
+	}
+
+	/*
+	 * Both task references are now gone.
+	 *
+	 * Only this test function's original reference remains.
+	 */
+	references =
+		address_space_reference_count(
+			space);
+
+	if (references != 1u)
+	{
+		log_error(
+			"U12.2: after worker cleanup "
+			"expected refs=1 got=%lu\n",
+			(unsigned long)references);
+
+		halt_forever();
+	}
+
+	/*
+	 * Both temporary task_t objects must also be gone.
+	 */
+	size_t live_after =
+		task_live_count();
+
+	if (live_after !=
+		live_before)
+	{
+		log_error(
+			"U12.2: task leak "
+			"live before=%lu after=%lu\n",
+			(unsigned long)live_before,
+			(unsigned long)live_after);
+
+		halt_forever();
+	}
+
+	if (task_cleanup_pending_count() != 0)
+	{
+		log_error(
+			"U12.2: cleanup queue still contains tasks\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 8
+	 *
+	 * Drop the final test-owner reference.
+	 *
+	 *     refs 1 -> 0
+	 *
+	 * This destroys the shared user address space.
+	 * --------------------------------------------------------------
+	 */
+
+	if (paging_current_directory() !=
+		kernel_directory)
+	{
+		log_error(
+			"U12.2: kernel CR3 not restored "
+			"before final release\n");
+
+		halt_forever();
+	}
+
+	if (!address_space_release(
+			space))
+	{
+		log_error(
+			"U12.2: final address-space release failed\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * space is invalid from here onward.
+	 */
+
+	log_success(
+		"U12.2: both tasks reaped and "
+		"final address space destroyed\n");
+
+	log_success(
+		"U12.2: shared address-space "
+		"lifetime test PASSED\n");
 }
 
 void validate_multiboot_magic(uint32_t magic)
@@ -241,6 +1026,14 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	heap_initialize();
 	log_info("heap initialized\n");
+
+	if (!address_space_initialize())
+	{
+		log_error("address-space initialization failed\n");
+
+		halt_forever();
+	}
+	log_info("address-space subsystem initialized\n");
 
 	if (!acpi_initialize())
 	{
@@ -485,8 +1278,6 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 
 	log_info("keyboard initialized\n");
 
-	
-
 	/*
 	 * Allow hardware IRQ delivery first.
 	 *
@@ -497,6 +1288,15 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 
+	/*
+	 * First prove that multiple tasks can safely share one
+	 * address-space object.
+	 */
+	u12_shared_address_space_test();
+
+	/*
+	 * Then make sure normal ELF userspace spawning still works.
+	 */
 	u11_spawn_test();
 
 	yield_forever();

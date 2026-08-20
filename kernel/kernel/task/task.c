@@ -11,6 +11,7 @@
 #include <kernel/cpu.h>
 #include <kernel/spinlock.h>
 #include <kernel/paging.h>
+#include <kernel/address_space.h>
 #include <kernel/logger.h>
 
 #include "../arch/i386/interrupts.h"
@@ -317,47 +318,35 @@ static void task_reaper_thread(void *argument)
         }
 
         /*
-         * User tasks exclusively own their private address spaces.
+         * Drop this task/thread's reference to its address space.
          *
-         * By the time a zombie reaches this queue:
+         * For a userspace address space:
          *
-         *     - execution is on another task's kernel stack
-         *     - the scheduler has installed the incoming task's CR3
+         *     refs > 1
+         *         another task still uses it, so it survives
          *
-         * The reaper itself is a kernel task, so destruction occurs
-         * from the canonical kernel address space as required by
-         * paging_destroy_user_directory().
+         *     refs == 1
+         *         this is the final task/reference, so releasing
+         *         it destroys the private page directory
+         *
+         * Kernel address space is immortal.
+         *
+         * The reaper itself executes in the canonical kernel
+         * address space, which satisfies final-release requirements.
          */
-        if (task->owns_page_directory)
+        address_space_t *address_space =
+            task->address_space;
+
+        if (address_space == NULL)
+            task_halt_forever();
+
+        task->address_space =
+            NULL;
+
+        if (!address_space_release(
+                address_space))
         {
-            uintptr_t kernel_directory =
-                paging_kernel_directory();
-
-            uintptr_t owned_directory =
-                task->page_directory;
-
-            if (kernel_directory == 0 ||
-                paging_current_directory() !=
-                    kernel_directory ||
-                owned_directory == 0 ||
-                owned_directory ==
-                    kernel_directory)
-            {
-                task_halt_forever();
-            }
-
-            /*
-             * Remove ownership from the zombie before destroying the
-             * actual paging structures.
-             */
-            task->owns_page_directory =
-                false;
-
-            task->page_directory =
-                kernel_directory;
-
-            paging_destroy_user_directory(
-                owned_directory);
+            task_halt_forever();
         }
 
         /*
@@ -526,17 +515,24 @@ static bool initialize_new_stack(
 static task_t *allocate_task(
     void (*entry)(void *),
     void *argument,
-    uintptr_t page_directory,
+    address_space_t *address_space,
     sched_policy_t policy)
 {
-    if (entry == NULL)
+    if (entry == NULL ||
+        address_space == NULL)
+    {
         return NULL;
+    }
 
     if (policy < 0 ||
         policy >= SCHED_POLICY_COUNT)
     {
         return NULL;
     }
+
+    uintptr_t page_directory =
+        address_space_page_directory(
+            address_space);
 
     if (page_directory == 0 ||
         (page_directory &
@@ -545,11 +541,29 @@ static task_t *allocate_task(
         return NULL;
     }
 
+    /*
+     * The caller owns one reference.
+     *
+     * The new task must obtain an independent reference so its
+     * address-space lifetime does not depend on the creator.
+     */
+    if (!address_space_retain(
+            address_space))
+    {
+        return NULL;
+    }
+
     task_t *task =
-        kmalloc(sizeof(task_t));
+        kmalloc(
+            sizeof(task_t));
 
     if (task == NULL)
+    {
+        address_space_release(
+            address_space);
+
         return NULL;
+    }
 
     memset(
         task,
@@ -557,17 +571,22 @@ static task_t *allocate_task(
         sizeof(task_t));
 
     void *stack =
-        kmalloc(KERNEL_TASK_STACK_SIZE);
+        kmalloc(
+            KERNEL_TASK_STACK_SIZE);
 
     if (stack == NULL)
     {
         kfree(task);
+
+        address_space_release(
+            address_space);
+
         return NULL;
     }
 
     /*
-     * Protect next_task_id against concurrent allocation from
-     * multiple CPUs.
+     * Protect next_task_id against concurrent allocation
+     * from multiple CPUs.
      */
     uint32_t flags =
         spin_lock_irqsave(
@@ -593,11 +612,12 @@ static task_t *allocate_task(
         KERNEL_TASK_STACK_SIZE;
 
     /*
-     * The address space is authoritative before this task can ever
-     * become visible to the scheduler.
+     * The task now holds its own reference.
+     *
+     * Several tasks may legally point at this same object.
      */
-    task->page_directory =
-        page_directory;
+    task->address_space =
+        address_space;
 
     task->priority = 0;
     task->runtime_ticks = 0;
@@ -608,36 +628,30 @@ static task_t *allocate_task(
     task->argument =
         argument;
 
-    /*
-     * Scheduler linkage.
-     */
     task->sched_previous = NULL;
     task->sched_next = NULL;
 
-    /*
-     * Wait-queue linkage.
-     */
     task->wait_previous = NULL;
     task->wait_next = NULL;
     task->waiting_on = NULL;
 
-    /*
-     * Sleep-queue linkage.
-     */
     task->sleep_previous = NULL;
     task->sleep_next = NULL;
     task->wake_tick = 0;
 
-    /*
-     * Cleanup linkage.
-     */
     task->cleanup_next = NULL;
 
     if (!initialize_new_stack(
             task))
     {
+        task->address_space =
+            NULL;
+
         kfree(stack);
         kfree(task);
+
+        address_space_release(
+            address_space);
 
         return NULL;
     }
@@ -663,8 +677,16 @@ static void destroy_unpublished_task(
 
     /*
      * This helper is used only before scheduler_make_ready().
+     *
      * Therefore no scheduler queue can contain this task.
      */
+
+    address_space_t *address_space =
+        task->address_space;
+
+    task->address_space =
+        NULL;
+
     if (task->stack_base != 0)
     {
         kfree(
@@ -687,6 +709,20 @@ static void destroy_unpublished_task(
         flags);
 
     kfree(task);
+
+    /*
+     * Drop only the task's reference.
+     *
+     * The creator still owns its original reference.
+     */
+    if (address_space != NULL)
+    {
+        if (!address_space_release(
+                address_space))
+        {
+            task_halt_forever();
+        }
+    }
 }
 
 static task_t *allocate_kernel_task(
@@ -694,16 +730,16 @@ static task_t *allocate_kernel_task(
     void *argument,
     sched_policy_t policy)
 {
-    uintptr_t kernel_directory =
-        paging_kernel_directory();
+    address_space_t *kernel_space =
+        address_space_kernel();
 
-    if (kernel_directory == 0)
+    if (kernel_space == NULL)
         return NULL;
 
     return allocate_task(
         entry,
         argument,
-        kernel_directory,
+        kernel_space,
         policy);
 }
 
@@ -712,23 +748,22 @@ static task_t *allocate_kernel_task(
  * PUBLIC CREATION
  * --------------------------------------------------------------------------
  */
-
 task_t *task_create_kernel_with_policy(
     void (*entry)(void *),
     void *argument,
     sched_policy_t policy)
 {
-    uintptr_t kernel_directory =
-        paging_kernel_directory();
+    address_space_t *kernel_space =
+        address_space_kernel();
 
-    if (kernel_directory == 0)
+    if (kernel_space == NULL)
         return NULL;
 
     task_t *task =
         allocate_task(
             entry,
             argument,
-            kernel_directory,
+            kernel_space,
             policy);
 
     if (task == NULL)
@@ -743,7 +778,7 @@ task_t *task_create_kernel_with_policy(
 task_t *task_create_user_unpublished(
     void (*entry)(void *),
     void *argument,
-    uintptr_t page_directory,
+    address_space_t *address_space,
     sched_policy_t policy)
 {
     uintptr_t kernel_directory =
@@ -753,7 +788,7 @@ task_t *task_create_user_unpublished(
         return NULL;
 
     /*
-     * User-task creation currently happens from
+     * User-task construction currently occurs from
      * the canonical kernel address space.
      */
     if (paging_current_directory() !=
@@ -762,10 +797,23 @@ task_t *task_create_user_unpublished(
         return NULL;
     }
 
+    if (address_space == NULL)
+        return NULL;
+
     /*
-     * Userspace must have a different,
-     * page-aligned page directory.
+     * A userspace task may not use the canonical
+     * kernel address space.
      */
+    if (address_space_is_kernel(
+            address_space))
+    {
+        return NULL;
+    }
+
+    uintptr_t page_directory =
+        address_space_page_directory(
+            address_space);
+
     if (page_directory == 0 ||
         page_directory ==
             kernel_directory ||
@@ -776,23 +824,21 @@ task_t *task_create_user_unpublished(
     }
 
     /*
-     * Allocate task_t and its kernel stack.
+     * allocate_task() takes an independent reference
+     * to address_space.
      *
-     * The task is still TASK_NEW here.
+     * The caller keeps its original reference.
      */
     task_t *task =
         allocate_task(
             entry,
             argument,
-            page_directory,
+            address_space,
             policy);
 
     if (task == NULL)
         return NULL;
 
-    /*
-     * Validate kernel stack.
-     */
     if (task->stack_base == 0 ||
         task->stack_size == 0)
     {
@@ -818,8 +864,13 @@ task_t *task_create_user_unpublished(
         1u;
 
     /*
-     * The private user page directory still needs access
-     * to kernel task structures and the task's kernel stack.
+     * The user page directory must be able to access:
+     *
+     *     - task_t
+     *     - task kernel stack
+     *     - shared address_space_t metadata
+     *
+     * All are supervisor-only kernel objects.
      */
     if (!paging_share_kernel_pde(
             page_directory,
@@ -829,7 +880,10 @@ task_t *task_create_user_unpublished(
             task->stack_base) ||
         !paging_share_kernel_pde(
             page_directory,
-            stack_last))
+            stack_last) ||
+        !paging_share_kernel_pde(
+            page_directory,
+            (uintptr_t)address_space))
     {
         destroy_unpublished_task(
             task);
@@ -838,14 +892,11 @@ task_t *task_create_user_unpublished(
     }
 
     /*
-     * task_t now owns this address space.
+     * Task remains TASK_NEW.
      *
-     * BUT:
-     * the task is still TASK_NEW and is not runnable.
+     * It owns one reference to address_space but is
+     * not scheduler-visible yet.
      */
-    task->owns_page_directory =
-        true;
-
     return task;
 }
 
@@ -885,17 +936,14 @@ void task_publish(
 task_t *task_create_user_with_policy(
     void (*entry)(void *),
     void *argument,
-    uintptr_t page_directory,
+    address_space_t *address_space,
     sched_policy_t policy)
 {
-    /*
-     * Keep the original convenient API for older kernel code.
-     */
     task_t *task =
         task_create_user_unpublished(
             entry,
             argument,
-            page_directory,
+            address_space,
             policy);
 
     if (task == NULL)
@@ -905,9 +953,7 @@ task_t *task_create_user_with_policy(
         task);
 
     /*
-     * Old API still returns the pointer.
-     *
-     * New SMP-safe spawn code will NOT use this API.
+     * Caller still owns its original address_space reference.
      */
     return task;
 }
@@ -966,11 +1012,14 @@ void task_initialize(void)
 
     bootstrap->cleanup_next = NULL;
 
-    bootstrap->page_directory =
-        paging_kernel_directory();
+    address_space_t *kernel_space =
+        address_space_kernel();
 
-    if (bootstrap->page_directory == 0)
+    if (kernel_space == NULL)
         task_halt_forever();
+
+    bootstrap->address_space =
+        kernel_space;
 
     cpu->current_task = bootstrap;
 
@@ -1100,14 +1149,14 @@ bool task_initialize_cpu(void)
      * must be restored before this CPU starts using
      * the scheduler.
      */
-    bootstrap->page_directory =
-        paging_kernel_directory();
+    address_space_t *kernel_space =
+        address_space_kernel();
 
-    bootstrap->owns_page_directory =
-        false;
-
-    if (bootstrap->page_directory == 0)
+    if (kernel_space == NULL)
         return false;
+
+    bootstrap->address_space =
+        kernel_space;
 
     cpu->current_task =
         bootstrap;

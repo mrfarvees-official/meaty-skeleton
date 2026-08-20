@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <kernel/address_space.h>
+
 typedef uint32_t task_id_t;
 
 typedef enum
@@ -45,24 +47,30 @@ typedef struct task
     uintptr_t stack_pointer;
 
     /*
-     * Stack allocation.
+     * Kernel stack allocation.
+     *
+     * Every normal task/thread owns its own kernel stack.
      */
     uintptr_t stack_base;
     size_t stack_size;
 
     /*
-     * Address space installed by the scheduler when this task runs.
-     */
-    uintptr_t page_directory;
-
-    /*
-     * True when this task exclusively owns page_directory and the
-     * reaper must destroy it when the task exits.
+     * Address space used while this task executes.
      *
-     * Kernel/bootstrap/idle/reaper tasks leave this false because
-     * they share the canonical kernel page directory.
+     * Multiple tasks may reference the same address_space_t.
+     *
+     * This is the foundation required for future userspace
+     * multithreading:
+     *
+     *     one address_space_t
+     *          |
+     *          +-- task TID 5
+     *          +-- task TID 6
+     *          +-- task TID 7
+     *
+     * task_t itself no longer owns a page directory directly.
      */
-    bool owns_page_directory;
+    address_space_t *address_space;
 
     /*
      * Generic scheduler/accounting information.
@@ -71,7 +79,7 @@ typedef struct task
     uint64_t runtime_ticks;
 
     /*
-     * Kernel-thread entry point.
+     * Kernel-mode entry point used when this task starts.
      */
     void (*entry)(void *);
     void *argument;
@@ -115,12 +123,17 @@ typedef struct task
  */
 void task_initialize(void);
 
-/* Initialize bootstrap and idle contexts for one already-online AP. */
+/*
+ * Initialize bootstrap and idle contexts for one already-online AP.
+ */
 bool task_initialize_cpu(void);
 
 /*
- * Create kernel threads.
+ * --------------------------------------------------------------------------
+ * KERNEL TASK CREATION
+ * --------------------------------------------------------------------------
  */
+
 task_t *task_create_kernel(
     void (*entry)(void *),
     void *argument);
@@ -131,43 +144,59 @@ task_t *task_create_kernel_with_policy(
     sched_policy_t policy);
 
 /*
+ * --------------------------------------------------------------------------
+ * USER TASK CREATION
+ * --------------------------------------------------------------------------
+ *
+ * address_space is a BORROWED caller reference.
+ *
+ * On successful task creation the task retains its own independent
+ * reference to address_space.
+ *
+ * Therefore:
+ *
+ *     caller reference
+ *          +
+ *     task reference
+ *
+ * may coexist.
+ *
+ * The caller remains responsible for releasing its original reference.
+ */
+
+/*
  * Create a userspace task but do not make it runnable yet.
  *
  * The returned task remains TASK_NEW.
  *
- * On success the task owns page_directory.
+ * The task retains one reference to address_space.
  */
 task_t *task_create_user_unpublished(
     void (*entry)(void *),
     void *argument,
-    uintptr_t page_directory,
+    address_space_t *address_space,
     sched_policy_t policy);
 
 /*
  * Make a previously-created TASK_NEW task runnable.
  *
  * IMPORTANT:
+ *
  * After this call the task may immediately run on another CPU.
  */
 void task_publish(
     task_t *task);
 
 /*
- * Create a scheduler task using an already prepared private address
- * space.
+ * Convenience API which creates and immediately publishes a user task.
  *
- * On success the task takes exclusive ownership of page_directory.
- * The caller must not destroy that directory afterward.
- *
- * On failure ownership remains with the caller.
- *
- * At this stage creation must occur while the canonical kernel CR3
- * is active.
+ * The caller still owns its original address_space reference and must
+ * release it separately.
  */
 task_t *task_create_user_with_policy(
     void (*entry)(void *),
     void *argument,
-    uintptr_t page_directory,
+    address_space_t *address_space,
     sched_policy_t policy);
 
 /*
@@ -196,6 +225,8 @@ void task_yield(void);
  *
  * The task becomes TASK_ZOMBIE and is later destroyed by
  * the reaper from a different kernel stack.
+ *
+ * Reaping releases this task's reference to its address space.
  */
 void task_exit(void)
     __attribute__((noreturn));
@@ -204,25 +235,18 @@ void task_exit(void)
  * --------------------------------------------------------------------------
  * CLEANUP / REAPER DIAGNOSTICS
  * --------------------------------------------------------------------------
- *
- * Primarily useful for tests/debugging.
  */
 
-/*
- * Number of exited tasks that have been queued for cleanup but have
- * not yet been completely destroyed.
- */
 size_t task_cleanup_pending_count(void);
 
-/*
- * Total number of tasks successfully destroyed by the reaper since
- * task initialization.
- */
 uint64_t task_cleanup_total_reaped(void);
 
-/* Number of currently allocated kernel task contexts. */
 size_t task_live_count(void);
 
-void task_internal_finish_switch(task_t *previous);
+/*
+ * Internal scheduler handoff helper.
+ */
+void task_internal_finish_switch(
+    task_t *previous);
 
 #endif

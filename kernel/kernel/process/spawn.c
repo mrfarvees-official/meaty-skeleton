@@ -7,6 +7,7 @@
 #include <kernel/elf.h>
 #include <kernel/heap.h>
 #include <kernel/paging.h>
+#include <kernel/address_space.h>
 #include <kernel/scheduler.h>
 #include <kernel/task.h>
 #include <kernel/user_image.h>
@@ -98,67 +99,101 @@ static void process_user_task_entry(
 
 static void process_user_task_entry(void *argument)
 {
-    process_user_launch_context_t *launch = (process_user_launch_context_t *)argument;
+    process_user_launch_context_t *launch =
+        (process_user_launch_context_t *)argument;
 
     if (launch == NULL)
     {
-        log_error("spawn: missign user launch context\n");
+        log_error(
+            "spawn: missing user launch context\n");
+
         task_exit();
     }
 
-    uintptr_t entry = launch->entry;
-    uintptr_t stack_pointer = launch->stack_pointer;
+    uintptr_t entry =
+        launch->entry;
 
-    /**
-     * We no longer need this kernel heap object.
-     *
-     * arch_enter_user() never returns, so it must be freed BEFORE
-     * entering userspace.
+    uintptr_t stack_pointer =
+        launch->stack_pointer;
+
+    /*
+     * arch_enter_user() never returns.
      */
     kfree(launch);
 
-    /**
-     * Defensive validation.
-     */
     if (entry == 0 ||
-        stack_pointer < PROCESS_USER_STACK_ADDRESS ||
-        stack_pointer >= PROCESS_USER_STACK_TOP)
+        stack_pointer <
+            PROCESS_USER_STACK_ADDRESS ||
+        stack_pointer >=
+            PROCESS_USER_STACK_TOP)
     {
-        log_error("spawn: invalid user entry/stack entry=0x%lx esp=0x%lx\n", (unsigned long)entry, (unsigned long)stack_pointer);
+        log_error(
+            "spawn: invalid user entry/stack "
+            "entry=0x%lx esp=0x%lx\n",
+            (unsigned long)entry,
+            (unsigned long)stack_pointer);
+
         task_exit();
     }
 
-    task_t *task = task_current();
+    task_t *task =
+        task_current();
 
-    if (task == NULL)
+    if (task == NULL ||
+        task->address_space == NULL)
     {
-        log_error("spawn: no current task\n");
+        log_error(
+            "spawn: no current task/address space\n");
+
         task_exit();
     }
 
-    uintptr_t current_directory = paging_current_directory();
-
-    /**
-     * Userspace task must
-     *
-     * 1. own its page directory
-     * 2. actually have that CR3 active
-     * 3. not be running in the kernel page directory
+    /*
+     * A userspace task must not execute in the immortal
+     * kernel address space.
      */
-    if (!task->owns_page_directory ||
-        current_directory != task->page_directory ||
-        current_directory == paging_kernel_directory())
+    if (address_space_is_kernel(
+            task->address_space))
     {
-        log_error("spawn: invalid user address space tid=%u CR3=0x%lx expected=0x%lx\n", (unsigned)task->id, (unsigned long)current_directory, (unsigned long)task->page_directory);
+        log_error(
+            "spawn: userspace task has kernel address space\n");
+
         task_exit();
     }
 
-    log_success("spawn: entering userspace tid=%u entry=0x%lx esp=0x%lx\n", (unsigned)task->id, (unsigned long)entry, (unsigned long)stack_pointer);
+    uintptr_t expected_directory =
+        address_space_page_directory(
+            task->address_space);
 
-    /**
-     * Does not return
-     */
-    arch_enter_user(entry, stack_pointer);
+    uintptr_t current_directory =
+        paging_current_directory();
+
+    if (expected_directory == 0 ||
+        current_directory !=
+            expected_directory ||
+        current_directory ==
+            paging_kernel_directory())
+    {
+        log_error(
+            "spawn: invalid user address space "
+            "tid=%u CR3=0x%lx expected=0x%lx\n",
+            (unsigned)task->id,
+            (unsigned long)current_directory,
+            (unsigned long)expected_directory);
+
+        task_exit();
+    }
+
+    log_success(
+        "spawn: entering userspace "
+        "tid=%u entry=0x%lx esp=0x%lx\n",
+        (unsigned)task->id,
+        (unsigned long)entry,
+        (unsigned long)stack_pointer);
+
+    arch_enter_user(
+        entry,
+        stack_pointer);
 }
 
 /**
@@ -381,37 +416,30 @@ task_id_t process_spawn_user(
     launch->entry = image.entry;
     launch->stack_pointer = image.stack_top;
 
-    uintptr_t user_directory = image.page_directory;
+    uintptr_t user_directory =
+        image.page_directory;
 
     /*
      * ------------------------------------------------------------------
      * STEP 8
      *
-     * Create the task, but DO NOT publish it yet.
+     * Detach the raw page directory from user_image_t.
      *
-     * This prevents another CPU from running it while spawn.c
-     * is still finishing the ownership setup.
+     * From this point the image no longer owns it.
      * ------------------------------------------------------------------
      */
 
-    task_t *task =
-        task_create_user_unpublished(
-            process_user_task_entry,
-            launch,
-            user_directory,
-            SCHED_POLICY_REALTIME);
+    uintptr_t detached_directory =
+        user_image_detach_directory(
+            &image);
 
-    if (task == NULL)
+    if (detached_directory == 0 ||
+        detached_directory !=
+            user_directory)
     {
         log_error(
-            "spawn: failed creating unpublished userspace task for %s\n",
-            path);
+            "spawn: failed detaching user address space\n");
 
-        /*
-         * Task creation failed.
-         *
-         * Ownership of the user image still belongs here.
-         */
         kfree(
             launch);
 
@@ -422,41 +450,95 @@ task_id_t process_spawn_user(
     }
 
     /*
-     * The task exists but cannot run yet because its state
-     * is still TASK_NEW.
+     * Wrap the raw CR3 in the new shared/refcounted
+     * address-space object.
      *
-     * Therefore accessing task here is safe.
+     * Initial reference count:
+     *
+     *     spawn reference = 1
      */
-    if (!task->owns_page_directory ||
-        task->page_directory !=
-            user_directory)
+    address_space_t *user_space =
+        address_space_adopt_user(
+            detached_directory);
+
+    if (user_space == NULL)
     {
         log_error(
-            "spawn: task did not accept user address-space ownership\n");
+            "spawn: failed adopting user address space\n");
 
-        for (;;)
-            __asm__ volatile(
-                "cli; hlt");
+        /*
+         * The directory was detached from user_image_t,
+         * so we must destroy it directly on this failure path.
+         */
+        paging_destroy_user_directory(
+            detached_directory);
+
+        kfree(
+            launch);
+
+        return 0;
     }
 
     /*
      * ------------------------------------------------------------------
      * STEP 9
      *
-     * Transfer the user_image_t address-space ownership marker
-     * completely to task_t.
+     * Create the task but DO NOT publish it.
+     *
+     * allocate_task() retains another reference:
+     *
+     *     spawn reference = 1
+     *     task reference  = 1
+     *     total           = 2
      * ------------------------------------------------------------------
      */
 
-    uintptr_t detached_directory =
-        user_image_detach_directory(
-            &image);
+    task_t *task =
+        task_create_user_unpublished(
+            process_user_task_entry,
+            launch,
+            user_space,
+            SCHED_POLICY_REALTIME);
 
-    if (detached_directory !=
-        user_directory)
+    if (task == NULL)
     {
         log_error(
-            "spawn: address-space ownership transfer failed\n");
+            "spawn: failed creating unpublished "
+            "userspace task for %s\n",
+            path);
+
+        /*
+         * No task reference survived the failed creation.
+         *
+         * Drop spawn's reference. Because it is the final
+         * reference, this also destroys the user page directory.
+         */
+        if (!address_space_release(
+                user_space))
+        {
+            for (;;)
+                __asm__ volatile(
+                    "cli; hlt");
+        }
+
+        kfree(
+            launch);
+
+        return 0;
+    }
+
+    /*
+     * Task is still TASK_NEW, so it cannot run yet.
+     */
+    if (task->address_space !=
+            user_space ||
+        address_space_page_directory(
+            task->address_space) !=
+            user_directory)
+    {
+        log_error(
+            "spawn: task did not retain "
+            "the expected address space\n");
 
         for (;;)
             __asm__ volatile(
@@ -467,10 +549,7 @@ task_id_t process_spawn_user(
      * ------------------------------------------------------------------
      * STEP 10
      *
-     * SAVE EVERYTHING WE NEED BEFORE PUBLISHING.
-     *
-     * Once task_publish() runs, another CPU may execute and
-     * eventually destroy task_t and launch.
+     * Save everything needed before publication.
      * ------------------------------------------------------------------
      */
 
@@ -478,7 +557,8 @@ task_id_t process_spawn_user(
         task->id;
 
     uintptr_t task_directory =
-        task->page_directory;
+        address_space_page_directory(
+            task->address_space);
 
     uintptr_t user_entry =
         launch->entry;
@@ -491,13 +571,41 @@ task_id_t process_spawn_user(
         "entry=0x%lx ESP=0x%lx stack=%lu KiB\n",
         path,
         (unsigned)tid,
-        (unsigned long)
-            task_directory,
-        (unsigned long)
-            user_entry,
-        (unsigned long)
-            user_esp,
+        (unsigned long)task_directory,
+        (unsigned long)user_entry,
+        (unsigned long)user_esp,
         (unsigned long)(PROCESS_USER_STACK_SIZE / 1024u));
+
+    /*
+     * spawn no longer needs its address-space reference.
+     *
+     * Before:
+     *
+     *     refs = 2
+     *
+     * After:
+     *
+     *     refs = 1
+     *            ^
+     *            owned by task
+     *
+     * The address space therefore remains alive when the task
+     * becomes scheduler-visible.
+     */
+    if (!address_space_release(
+            user_space))
+    {
+        log_error(
+            "spawn: failed releasing creator "
+            "address-space reference\n");
+
+        for (;;)
+            __asm__ volatile(
+                "cli; hlt");
+    }
+
+    user_space =
+        NULL;
 
     /*
      * ------------------------------------------------------------------

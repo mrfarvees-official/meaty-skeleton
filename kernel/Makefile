@@ -35,6 +35,7 @@ kernel/kernel.o 				\
 kernel/logger.o 				\
 kernel/memory/pmm.o 			\
 kernel/memory/paging.o 			\
+kernel/memory/address_space.o   \
 kernel/memory/usercopy.o 		\
 kernel/memory/heap.o 			\
 kernel/memory/spinlock.o 		\
