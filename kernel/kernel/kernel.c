@@ -1215,7 +1215,7 @@ static void u11_spawn_test(void)
 		paging_current_directory() !=
 			kernel_directory)
 	{
-		printf(
+		log_error(
 			"U11: kernel CR3 is not active\n");
 
 		halt_forever();
@@ -1267,20 +1267,28 @@ static void u11_spawn_test(void)
 		(unsigned)user_tid);
 
 	/*
-	 * Let the scheduler run hello.nex.
+	 * U12.4 changes /bin/hello.nex from one userspace task into:
+	 *
+	 *     main ELF thread
+	 *          +
+	 *     one worker thread
+	 *
+	 * Therefore this test now expects TWO task reap events.
 	 */
-	task_yield();
+	const uint64_t expected_reaped =
+		reaped_before + 2u;
 
 	/*
-	 * Wait for the userspace task to exit and for the reaper
-	 * to completely destroy it.
+	 * Do not use an arbitrary yield count here.
 	 *
-	 * This is only a kernel bring-up test.
+	 * Wait for the actual lifecycle condition:
 	 *
-	 * Later this becomes proper process_wait()/waitpid().
+	 *     both userspace tasks have been fully reaped
+	 *     AND
+	 *     the cleanup queue is empty
 	 */
 	while (task_cleanup_total_reaped() <
-			   reaped_before + 1u ||
+			   expected_reaped ||
 		   task_cleanup_pending_count() != 0)
 	{
 		task_yield();
@@ -1295,44 +1303,67 @@ static void u11_spawn_test(void)
 	size_t pending_after =
 		task_cleanup_pending_count();
 
+	/*
+	 * Exactly two new tasks must have completed cleanup:
+	 *
+	 *     1. worker thread
+	 *     2. main ELF thread
+	 */
 	if (reaped_after !=
-		reaped_before + 1u)
+		expected_reaped)
 	{
-		printf(
-			"U11: userspace task was not reaped exactly once\n");
+		log_error(
+			"U12.4: expected exactly two userspace tasks reaped "
+			"before=%llu after=%llu\n",
+			(unsigned long long)reaped_before,
+			(unsigned long long)reaped_after);
 
 		halt_forever();
 	}
 
+	/*
+	 * Nothing may remain waiting for the reaper.
+	 */
 	if (pending_after != 0)
 	{
-		printf(
-			"U11: userspace task cleanup did not finish\n");
+		log_error(
+			"U12.4: userspace cleanup queue not empty "
+			"pending=%lu\n",
+			(unsigned long)pending_after);
 
 		halt_forever();
 	}
 
+	/*
+	 * Both temporary userspace task_t objects must be gone.
+	 *
+	 * This also indirectly proves that the worker task's additional
+	 * address-space reference was released successfully.
+	 */
 	if (live_after !=
 		live_before)
 	{
-		printf(
-			"U11: userspace task lifecycle leaked a task\n");
-
-		printf(
-			"U11: live before=%lu after=%lu\n",
+		log_error(
+			"U12.4: userspace task lifecycle leaked tasks "
+			"live before=%lu after=%lu\n",
 			(unsigned long)live_before,
 			(unsigned long)live_after);
 
 		halt_forever();
 	}
 
-	printf(
-		"U11: task %u exited and was reaped\n",
-		(unsigned)user_tid);
+	log_success(
+		"U12.4: main and worker exited and were reaped\n");
 
-	printf(
-		"U11: process_spawn_user test PASSED\n");
+	log_success(
+		"U12.4: userspace multithreading test PASSED\n");
 
+	/*
+	 * Bring-up test complete.
+	 *
+	 * Stop here so later unrelated kernel work cannot obscure
+	 * the U12.4 result.
+	 */
 	halt_forever();
 }
 

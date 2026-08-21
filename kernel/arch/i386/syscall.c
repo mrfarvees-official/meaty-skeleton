@@ -4,6 +4,7 @@
 #include <kernel/tty.h>
 #include <kernel/task.h>
 #include <kernel/usercopy.h>
+#include <kernel/user_thread.h>
 
 #include "interrupts.h"
 #include "syscall.h"
@@ -157,6 +158,38 @@ static int32_t syscall_dispatch(
         task_exit();
     }
 
+    case I386_SYSCALL_THREAD_CREATE:
+    {
+        uintptr_t entry =
+            (uintptr_t)arg0;
+
+        task_id_t tid =
+            user_thread_create_current(
+                entry);
+
+        if (tid == 0)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        return (int32_t)tid;
+    }
+
+    case I386_SYSCALL_YIELD:
+    {
+        task_t *task =
+            task_current();
+
+        if (task == NULL)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        task_yield();
+
+        return 0;
+    }
+    
     default:
         return I386_SYSCALL_ERROR_NO_SUCH_SYSCALL;
     }

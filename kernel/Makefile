@@ -43,6 +43,7 @@ kernel/process/process.o 		\
 kernel/process/user_image.o 	\
 kernel/process/elf.o 			\
 kernel/process/spawn.o 			\
+kernel/process/user_thread.o 	\
 kernel/task/task.o 				\
 kernel/task/mutex.o 			\
 kernel/task/semaphore.o 		\
