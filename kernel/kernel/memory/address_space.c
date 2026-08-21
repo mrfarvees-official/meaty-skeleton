@@ -6,6 +6,7 @@
 #include <kernel/address_space.h>
 #include <kernel/heap.h>
 #include <kernel/paging.h>
+#include <kernel/pmm.h>
 #include <kernel/spinlock.h>
 
 #include "../arch/i386/interrupts.h"
@@ -74,6 +75,339 @@ static bool address_space_initialized =
 
 static spinlock_t address_space_initialization_lock =
     SPINLOCK_INITIALIZER;
+
+/*
+ * Dedicated temporary mapping used while zeroing newly allocated
+ * userspace stack frames.
+ *
+ * Kernel heap ends at 0xE0000000, so keep this safely above it.
+ *
+ * This address belongs only to address-space stack construction.
+ */
+#define ADDRESS_SPACE_STACK_SCRATCH_ADDRESS ((uintptr_t)0xE1000000u)
+
+/*
+ * Serializes use of ADDRESS_SPACE_STACK_SCRATCH_ADDRESS.
+ *
+ * Multiple CPUs may create userspace threads simultaneously.
+ */
+static spinlock_t address_space_stack_mapping_lock = SPINLOCK_INITIALIZER;
+
+/*
+ * --------------------------------------------------------------------------
+ * PHYSICALLY-BACKED USER STACKS
+ * --------------------------------------------------------------------------
+ */
+
+static void address_space_user_stack_from_slot(
+    const address_space_user_stack_slot_t *slot,
+    address_space_user_stack_t *stack)
+{
+    if (slot == NULL ||
+        stack == NULL)
+    {
+        return;
+    }
+
+    stack->slot_index =
+        slot->index;
+
+    stack->stack_bottom =
+        slot->stack_bottom;
+
+    stack->stack_top =
+        slot->stack_top;
+
+    stack->guard_bottom =
+        slot->guard_bottom;
+
+    stack->guard_top =
+        slot->guard_top;
+
+    stack->mapped_page_count =
+        0;
+}
+
+
+bool address_space_user_stack_register_existing(
+    address_space_t *space,
+    size_t slot_index,
+    address_space_user_stack_t *out_stack)
+{
+    if (space == NULL ||
+        out_stack == NULL)
+    {
+        return false;
+    }
+
+    memset(
+        out_stack,
+        0,
+        sizeof(*out_stack));
+
+    address_space_user_stack_slot_t slot;
+
+    if (!address_space_user_stack_slot_reserve_index(
+            space,
+            slot_index,
+            &slot))
+    {
+        return false;
+    }
+
+    address_space_user_stack_from_slot(
+        &slot,
+        out_stack);
+
+    /*
+     * Existing stacks are already mapped by another subsystem.
+     *
+     * The ELF loader currently creates the complete 1 MiB main
+     * thread stack.
+     */
+    out_stack->mapped_page_count =
+        ADDRESS_SPACE_USER_STACK_SIZE /
+        PAGE_SIZE;
+
+    return true;
+}
+
+
+/*
+ * Allocate one physical frame, zero it through a temporary supervisor
+ * mapping, then map it into the requested userspace page directory.
+ */
+static bool address_space_map_zeroed_user_stack_page(
+    uintptr_t directory,
+    uintptr_t virtual_address)
+{
+    if (directory == 0)
+        return false;
+
+    if ((virtual_address &
+         (PAGE_SIZE - 1u)) != 0)
+    {
+        return false;
+    }
+
+    uintptr_t frame =
+        pmm_allocate_frame();
+
+    if (frame == 0)
+        return false;
+
+    /*
+     * Temporarily expose the physical frame to the kernel so it can
+     * be zeroed before userspace receives access.
+     */
+    if (!paging_map_page(
+            ADDRESS_SPACE_STACK_SCRATCH_ADDRESS,
+            frame,
+            PAGE_WRITABLE))
+    {
+        pmm_free_frame(
+            frame);
+
+        return false;
+    }
+
+    memset(
+        (void *)
+            ADDRESS_SPACE_STACK_SCRATCH_ADDRESS,
+        0,
+        PAGE_SIZE);
+
+    /*
+     * Remove only the temporary mapping.
+     *
+     * The frame itself must remain allocated because it is about to
+     * become the backing store for the userspace stack page.
+     */
+    if (!paging_unmap_page(
+            ADDRESS_SPACE_STACK_SCRATCH_ADDRESS,
+            false))
+    {
+        /*
+         * Losing control of the scratch mapping is an architectural
+         * invariant failure. Continuing could alias later frames.
+         */
+        for (;;)
+            __asm__ volatile(
+                "cli; hlt");
+    }
+
+    /*
+     * Install the zeroed frame into the inactive user directory.
+     */
+    if (!paging_map_page_in_directory(
+            directory,
+            virtual_address,
+            frame,
+            PAGE_USER |
+                PAGE_WRITABLE))
+    {
+        /*
+         * Mapping failed, therefore no userspace mapping owns this
+         * frame yet.
+         */
+        pmm_free_frame(
+            frame);
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool address_space_user_stack_create(
+    address_space_t *space,
+    address_space_user_stack_t *out_stack)
+{
+    if (space == NULL ||
+        out_stack == NULL)
+    {
+        return false;
+    }
+
+    if (address_space_is_kernel(
+            space))
+    {
+        return false;
+    }
+
+    /*
+     * U12.3B constructs stack mappings from the canonical kernel
+     * address space.
+     *
+     * paging_map_page_in_directory() currently requires this.
+     */
+    uintptr_t kernel_directory =
+        paging_kernel_directory();
+
+    if (kernel_directory == 0 ||
+        paging_current_directory() !=
+            kernel_directory)
+    {
+        return false;
+    }
+
+    uintptr_t directory =
+        address_space_page_directory(
+            space);
+
+    if (directory == 0 ||
+        directory ==
+            kernel_directory)
+    {
+        return false;
+    }
+
+    memset(
+        out_stack,
+        0,
+        sizeof(*out_stack));
+
+    address_space_user_stack_slot_t slot;
+
+    /*
+     * Reserve the virtual range first.
+     *
+     * The address-space lock inside the slot allocator prevents two
+     * CPUs from selecting the same user stack slot.
+     */
+    if (!address_space_user_stack_slot_reserve(
+            space,
+            &slot))
+    {
+        return false;
+    }
+
+    address_space_user_stack_from_slot(
+        &slot,
+        out_stack);
+
+    /*
+     * Protect the temporary scratch VA while frames are being zeroed.
+     *
+     * Keep this lock across construction of the complete stack so
+     * another CPU cannot attempt to use the same scratch mapping.
+     */
+    uint32_t mapping_flags =
+        spin_lock_irqsave(
+            &address_space_stack_mapping_lock);
+
+    size_t mapped_pages =
+        0;
+
+    for (uintptr_t virtual_page =
+             slot.stack_bottom;
+         virtual_page <
+             slot.stack_top;
+         virtual_page +=
+             PAGE_SIZE)
+    {
+        if (!address_space_map_zeroed_user_stack_page(
+                directory,
+                virtual_page))
+        {
+            /*
+             * U12.3B bring-up rule:
+             *
+             * paging.c does not yet expose
+             * paging_unmap_page_in_directory().
+             *
+             * Therefore a partially constructed stack cannot yet be
+             * safely rolled back page-by-page.
+             *
+             * Release the allocator lock and report failure.
+             *
+             * The containing address space must then be destroyed by
+             * the caller, which releases all PAGE_USER mappings and
+             * their frames through paging_destroy_user_directory().
+             */
+            spin_unlock_irqrestore(
+                &address_space_stack_mapping_lock,
+                mapping_flags);
+
+            out_stack->mapped_page_count =
+                mapped_pages;
+
+            return false;
+        }
+
+        ++mapped_pages;
+    }
+
+    spin_unlock_irqrestore(
+        &address_space_stack_mapping_lock,
+        mapping_flags);
+
+    out_stack->mapped_page_count =
+        mapped_pages;
+
+    /*
+     * Exactly one MiB / 4096 = 256 pages must exist.
+     */
+    if (mapped_pages !=
+        ADDRESS_SPACE_USER_STACK_SIZE /
+            PAGE_SIZE)
+    {
+        return false;
+    }
+
+    /*
+     * IMPORTANT:
+     *
+     * Nothing maps:
+     *
+     *     [slot.guard_bottom, slot.guard_top)
+     *
+     * The guard page remains absent by construction.
+     */
+
+    return true;
+}
 
 /*
  * --------------------------------------------------------------------------

@@ -1336,6 +1336,173 @@ static void u11_spawn_test(void)
 	halt_forever();
 }
 
+/*
+ * ==========================================================================
+ * U12.3B PHYSICALLY-BACKED USER STACK TEST
+ * ==========================================================================
+ */
+
+static void u12_user_stack_mapping_test(void)
+{
+	printf(
+		"\n=== U12.3B PHYSICAL USER STACK TEST ===\n");
+
+	uintptr_t kernel_directory =
+		paging_kernel_directory();
+
+	if (kernel_directory == 0 ||
+		paging_current_directory() !=
+			kernel_directory)
+	{
+		log_error(
+			"U12.3B: canonical kernel CR3 is not active\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * Create a temporary userspace address space.
+	 */
+	uintptr_t directory =
+		0;
+
+	if (!paging_create_user_directory(
+			&directory))
+	{
+		log_error(
+			"U12.3B: failed creating user directory\n");
+
+		halt_forever();
+	}
+
+	address_space_t *space =
+		address_space_adopt_user(
+			directory);
+
+	if (space == NULL)
+	{
+		log_error(
+			"U12.3B: failed adopting user directory\n");
+
+		paging_destroy_user_directory(
+			directory);
+
+		halt_forever();
+	}
+
+	/*
+	 * Reserve slot 0 to simulate the ELF main thread.
+	 *
+	 * We intentionally do not physically map slot 0 in this test.
+	 * Its reservation merely forces the new worker stack into slot 1.
+	 */
+	address_space_user_stack_slot_t main_slot;
+
+	if (!address_space_user_stack_slot_reserve_index(
+			space,
+			0u,
+			&main_slot))
+	{
+		log_error(
+			"U12.3B: failed reserving simulated main stack\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * Create one genuinely physically-backed worker stack.
+	 */
+	address_space_user_stack_t worker_stack;
+
+	if (!address_space_user_stack_create(
+			space,
+			&worker_stack))
+	{
+		log_error(
+			"U12.3B: physical stack creation failed\n");
+
+		/*
+		 * The final address-space release destroys any user mappings
+		 * which may have been created before a failure.
+		 */
+		if (!address_space_release(
+				space))
+		{
+			halt_forever();
+		}
+
+		halt_forever();
+	}
+
+	if (worker_stack.slot_index !=
+		1u)
+	{
+		log_error(
+			"U12.3B: expected worker slot 1, got %lu\n",
+			(unsigned long)
+				worker_stack.slot_index);
+
+		halt_forever();
+	}
+
+	size_t expected_pages =
+		ADDRESS_SPACE_USER_STACK_SIZE /
+		PAGE_SIZE;
+
+	if (worker_stack.mapped_page_count !=
+		expected_pages)
+	{
+		log_error(
+			"U12.3B: expected %lu mapped pages, got %lu\n",
+			(unsigned long)
+				expected_pages,
+			(unsigned long)
+				worker_stack.mapped_page_count);
+
+		halt_forever();
+	}
+
+	log_success(
+		"U12.3B: worker slot=%lu "
+		"stack=[0x%lx,0x%lx)\n",
+		(unsigned long)
+			worker_stack.slot_index,
+		(unsigned long)
+			worker_stack.stack_bottom,
+		(unsigned long)
+			worker_stack.stack_top);
+
+	log_success(
+		"U12.3B: mapped %lu physical stack pages\n",
+		(unsigned long)
+			worker_stack.mapped_page_count);
+
+	log_success(
+		"U12.3B: guard=[0x%lx,0x%lx) left unmapped\n",
+		(unsigned long)
+			worker_stack.guard_bottom,
+		(unsigned long)
+			worker_stack.guard_top);
+
+	/*
+	 * We don't manually free the worker mappings here.
+	 *
+	 * Releasing the final address-space reference destroys the user
+	 * directory and releases its PAGE_USER frames.
+	 */
+	if (!address_space_release(
+			space))
+	{
+		log_error(
+			"U12.3B: failed destroying temporary address space\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"U12.3B: physical user stack PASSED\n");
+}
+
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
@@ -1632,16 +1799,23 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 
-	u12_shared_address_space_test();
-
 	/*
-	 * First prove that multiple tasks can safely share one
-	 * address-space object.
+	 * Shared address-space ownership/lifetime.
 	 */
 	u12_shared_address_space_test();
 
 	/*
-	 * Then make sure normal ELF userspace spawning still works.
+	 * Virtual user-stack slot allocation.
+	 */
+	u12_user_stack_slot_test();
+
+	/*
+	 * Real physical worker-stack allocation.
+	 */
+	u12_user_stack_mapping_test();
+
+	/*
+	 * Existing ELF spawn regression.
 	 */
 	u11_spawn_test();
 

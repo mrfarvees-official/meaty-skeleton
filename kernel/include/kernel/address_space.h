@@ -60,7 +60,6 @@
 #define ADDRESS_SPACE_USER_STACK_REGION_TOP \
     ((uintptr_t)0xC0000000u)
 
-
 /*
  * Description of one reserved user-stack virtual slot.
  *
@@ -88,6 +87,36 @@ typedef struct address_space_user_stack_slot
 
 } address_space_user_stack_slot_t;
 
+/*
+ * A physically-backed userspace thread stack.
+ *
+ * The slot describes the reserved virtual range.
+ *
+ * All pages in:
+ *
+ *     [stack_bottom, stack_top)
+ *
+ * are mapped PAGE_USER | PAGE_WRITABLE.
+ *
+ * The guard range:
+ *
+ *     [guard_bottom, guard_top)
+ *
+ * remains deliberately unmapped.
+ */
+typedef struct address_space_user_stack
+{
+    size_t slot_index;
+
+    uintptr_t stack_bottom;
+    uintptr_t stack_top;
+
+    uintptr_t guard_bottom;
+    uintptr_t guard_top;
+
+    size_t mapped_page_count;
+
+} address_space_user_stack_t;
 
 /*
  * --------------------------------------------------------------------------
@@ -97,7 +126,6 @@ typedef struct address_space_user_stack_slot
 
 typedef struct address_space address_space_t;
 
-
 /*
  * Initialize the address-space subsystem.
  *
@@ -105,12 +133,10 @@ typedef struct address_space address_space_t;
  */
 bool address_space_initialize(void);
 
-
 /*
  * Return the immortal canonical kernel address space.
  */
 address_space_t *address_space_kernel(void);
-
 
 /*
  * Adopt an already-created userspace page directory.
@@ -127,7 +153,6 @@ address_space_t *address_space_kernel(void);
 address_space_t *address_space_adopt_user(
     uintptr_t page_directory);
 
-
 /*
  * --------------------------------------------------------------------------
  * REFERENCE MANAGEMENT
@@ -139,7 +164,6 @@ bool address_space_retain(
 
 bool address_space_release(
     address_space_t *space);
-
 
 /*
  * --------------------------------------------------------------------------
@@ -155,7 +179,6 @@ bool address_space_is_kernel(
 
 size_t address_space_reference_count(
     address_space_t *space);
-
 
 /*
  * --------------------------------------------------------------------------
@@ -174,7 +197,6 @@ size_t address_space_reference_count(
  * U12.3B will build physical stack allocation on top of this layer.
  */
 
-
 /*
  * Reserve the first free user-stack slot.
  *
@@ -188,7 +210,6 @@ size_t address_space_reference_count(
 bool address_space_user_stack_slot_reserve(
     address_space_t *space,
     address_space_user_stack_slot_t *out_slot);
-
 
 /*
  * Reserve one specific slot.
@@ -206,7 +227,6 @@ bool address_space_user_stack_slot_reserve_index(
     size_t index,
     address_space_user_stack_slot_t *out_slot);
 
-
 /*
  * Release one previously-reserved slot.
  *
@@ -218,7 +238,6 @@ bool address_space_user_stack_slot_release(
     address_space_t *space,
     size_t index);
 
-
 /*
  * Diagnostic helper.
  *
@@ -226,5 +245,36 @@ bool address_space_user_stack_slot_release(
  */
 size_t address_space_user_stack_slot_reserved_count(
     address_space_t *space);
+
+/*
+ * Register a stack which has already been physically mapped.
+ *
+ * This is used for the ELF main thread because elf.c already creates
+ * its initial 1 MiB userspace stack.
+ *
+ * No physical frames are allocated here.
+ */
+bool address_space_user_stack_register_existing(
+    address_space_t *space,
+    size_t slot_index,
+    address_space_user_stack_t *out_stack);
+
+/*
+ * Allocate and map a new userspace thread stack.
+ *
+ * The function:
+ *
+ *     - reserves one free stack slot
+ *     - allocates physical frames
+ *     - zeroes every frame
+ *     - maps every stack page PAGE_USER | PAGE_WRITABLE
+ *     - leaves the guard page unmapped
+ *
+ * For U12.3B this must be called while the canonical kernel
+ * address space is active.
+ */
+bool address_space_user_stack_create(
+    address_space_t *space,
+    address_space_user_stack_t *out_stack);
 
 #endif
