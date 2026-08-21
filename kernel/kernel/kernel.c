@@ -66,352 +66,343 @@ static void yield_forever(void)
  */
 static void u12_user_stack_slot_test(void)
 {
-    printf(
-        "\n=== U12.3A USER STACK SLOT TEST ===\n");
+	printf(
+		"\n=== U12.3A USER STACK SLOT TEST ===\n");
 
-    uintptr_t kernel_directory =
-        paging_kernel_directory();
+	uintptr_t kernel_directory =
+		paging_kernel_directory();
 
-    if (kernel_directory == 0 ||
-        paging_current_directory() !=
-            kernel_directory)
-    {
-        log_error(
-            "U12.3A: canonical kernel CR3 is not active\n");
+	if (kernel_directory == 0 ||
+		paging_current_directory() !=
+			kernel_directory)
+	{
+		log_error(
+			"U12.3A: canonical kernel CR3 is not active\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    /*
-     * --------------------------------------------------------------
-     * STEP 1
-     *
-     * Create an otherwise-empty userspace address space.
-     * --------------------------------------------------------------
-     */
-    uintptr_t directory =
-        0;
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 1
+	 *
+	 * Create an otherwise-empty userspace address space.
+	 * --------------------------------------------------------------
+	 */
+	uintptr_t directory =
+		0;
 
-    if (!paging_create_user_directory(
-            &directory))
-    {
-        log_error(
-            "U12.3A: failed creating user directory\n");
+	if (!paging_create_user_directory(
+			&directory))
+	{
+		log_error(
+			"U12.3A: failed creating user directory\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    address_space_t *space =
-        address_space_adopt_user(
-            directory);
+	address_space_t *space =
+		address_space_adopt_user(
+			directory);
 
-    if (space == NULL)
-    {
-        log_error(
-            "U12.3A: failed adopting user address space\n");
+	if (space == NULL)
+	{
+		log_error(
+			"U12.3A: failed adopting user address space\n");
 
-        paging_destroy_user_directory(
-            directory);
+		paging_destroy_user_directory(
+			directory);
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 2
+	 *
+	 * Explicitly reserve slot 0.
+	 *
+	 * This simulates the already-existing main-thread stack:
+	 *
+	 *     0xBFF00000 - 0xC0000000
+	 *
+	 * We are NOT mapping it in this test.
+	 * --------------------------------------------------------------
+	 */
+	address_space_user_stack_slot_t main_slot;
 
-    /*
-     * --------------------------------------------------------------
-     * STEP 2
-     *
-     * Explicitly reserve slot 0.
-     *
-     * This simulates the already-existing main-thread stack:
-     *
-     *     0xBFF00000 - 0xC0000000
-     *
-     * We are NOT mapping it in this test.
-     * --------------------------------------------------------------
-     */
-    address_space_user_stack_slot_t main_slot;
+	if (!address_space_user_stack_slot_reserve_index(
+			space,
+			0u,
+			&main_slot))
+	{
+		log_error(
+			"U12.3A: failed reserving main stack slot\n");
 
-    if (!address_space_user_stack_slot_reserve_index(
-            space,
-            0u,
-            &main_slot))
-    {
-        log_error(
-            "U12.3A: failed reserving main stack slot\n");
+		halt_forever();
+	}
 
-        halt_forever();
-    }
+	if (main_slot.index != 0u ||
+		main_slot.stack_top !=
+			ADDRESS_SPACE_USER_STACK_REGION_TOP ||
+		main_slot.stack_top -
+				main_slot.stack_bottom !=
+			ADDRESS_SPACE_USER_STACK_SIZE ||
+		main_slot.guard_top !=
+			main_slot.stack_bottom ||
+		main_slot.guard_top -
+				main_slot.guard_bottom !=
+			ADDRESS_SPACE_USER_STACK_GUARD_SIZE)
+	{
+		log_error(
+			"U12.3A: main stack slot layout invalid\n");
 
-    if (main_slot.index != 0u ||
-        main_slot.stack_top !=
-            ADDRESS_SPACE_USER_STACK_REGION_TOP ||
-        main_slot.stack_top -
-            main_slot.stack_bottom !=
-                ADDRESS_SPACE_USER_STACK_SIZE ||
-        main_slot.guard_top !=
-            main_slot.stack_bottom ||
-        main_slot.guard_top -
-            main_slot.guard_bottom !=
-                ADDRESS_SPACE_USER_STACK_GUARD_SIZE)
-    {
-        log_error(
-            "U12.3A: main stack slot layout invalid\n");
+		halt_forever();
+	}
 
-        halt_forever();
-    }
+	log_success(
+		"U12.3A: slot %lu "
+		"stack=[0x%lx,0x%lx) "
+		"guard=[0x%lx,0x%lx)\n",
+		(unsigned long)main_slot.index,
+		(unsigned long)main_slot.stack_bottom,
+		(unsigned long)main_slot.stack_top,
+		(unsigned long)main_slot.guard_bottom,
+		(unsigned long)main_slot.guard_top);
 
-    log_success(
-        "U12.3A: slot %lu "
-        "stack=[0x%lx,0x%lx) "
-        "guard=[0x%lx,0x%lx)\n",
-        (unsigned long)main_slot.index,
-        (unsigned long)main_slot.stack_bottom,
-        (unsigned long)main_slot.stack_top,
-        (unsigned long)main_slot.guard_bottom,
-        (unsigned long)main_slot.guard_top);
+	/*
+	 * Reserving the same explicit slot twice must fail.
+	 */
+	address_space_user_stack_slot_t duplicate_slot;
 
+	if (address_space_user_stack_slot_reserve_index(
+			space,
+			0u,
+			&duplicate_slot))
+	{
+		log_error(
+			"U12.3A: duplicate reservation of slot 0 succeeded\n");
 
-    /*
-     * Reserving the same explicit slot twice must fail.
-     */
-    address_space_user_stack_slot_t duplicate_slot;
+		halt_forever();
+	}
 
-    if (address_space_user_stack_slot_reserve_index(
-            space,
-            0u,
-            &duplicate_slot))
-    {
-        log_error(
-            "U12.3A: duplicate reservation of slot 0 succeeded\n");
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 3
+	 *
+	 * Allocate two worker-thread slots automatically.
+	 *
+	 * Since slot 0 is occupied, they must become:
+	 *
+	 *     worker A -> slot 1
+	 *     worker B -> slot 2
+	 * --------------------------------------------------------------
+	 */
+	address_space_user_stack_slot_t worker_a;
 
-        halt_forever();
-    }
+	address_space_user_stack_slot_t worker_b;
 
+	if (!address_space_user_stack_slot_reserve(
+			space,
+			&worker_a))
+	{
+		log_error(
+			"U12.3A: failed allocating worker A stack slot\n");
 
-    /*
-     * --------------------------------------------------------------
-     * STEP 3
-     *
-     * Allocate two worker-thread slots automatically.
-     *
-     * Since slot 0 is occupied, they must become:
-     *
-     *     worker A -> slot 1
-     *     worker B -> slot 2
-     * --------------------------------------------------------------
-     */
-    address_space_user_stack_slot_t worker_a;
+		halt_forever();
+	}
 
-    address_space_user_stack_slot_t worker_b;
+	if (!address_space_user_stack_slot_reserve(
+			space,
+			&worker_b))
+	{
+		log_error(
+			"U12.3A: failed allocating worker B stack slot\n");
 
-    if (!address_space_user_stack_slot_reserve(
-            space,
-            &worker_a))
-    {
-        log_error(
-            "U12.3A: failed allocating worker A stack slot\n");
+		halt_forever();
+	}
 
-        halt_forever();
-    }
+	if (worker_a.index != 1u ||
+		worker_b.index != 2u)
+	{
+		log_error(
+			"U12.3A: unexpected automatic slots "
+			"A=%lu B=%lu\n",
+			(unsigned long)worker_a.index,
+			(unsigned long)worker_b.index);
 
-    if (!address_space_user_stack_slot_reserve(
-            space,
-            &worker_b))
-    {
-        log_error(
-            "U12.3A: failed allocating worker B stack slot\n");
+		halt_forever();
+	}
 
-        halt_forever();
-    }
+	/*
+	 * Stack slots descend through userspace with exactly one
+	 * guard page separating neighboring stacks.
+	 *
+	 * Therefore:
+	 *
+	 *     slot 0 guard bottom == slot 1 stack top
+	 *
+	 * and:
+	 *
+	 *     slot 1 guard bottom == slot 2 stack top
+	 */
+	if (main_slot.guard_bottom !=
+			worker_a.stack_top ||
+		worker_a.guard_bottom !=
+			worker_b.stack_top)
+	{
+		log_error(
+			"U12.3A: neighboring slot layout overlaps/gaps incorrectly\n");
 
-    if (worker_a.index != 1u ||
-        worker_b.index != 2u)
-    {
-        log_error(
-            "U12.3A: unexpected automatic slots "
-            "A=%lu B=%lu\n",
-            (unsigned long)worker_a.index,
-            (unsigned long)worker_b.index);
+		halt_forever();
+	}
 
-        halt_forever();
-    }
+	size_t reserved =
+		address_space_user_stack_slot_reserved_count(
+			space);
 
+	if (reserved != 3u)
+	{
+		log_error(
+			"U12.3A: expected 3 reserved slots, got %lu\n",
+			(unsigned long)reserved);
 
-    /*
-     * Stack slots descend through userspace with exactly one
-     * guard page separating neighboring stacks.
-     *
-     * Therefore:
-     *
-     *     slot 0 guard bottom == slot 1 stack top
-     *
-     * and:
-     *
-     *     slot 1 guard bottom == slot 2 stack top
-     */
-    if (main_slot.guard_bottom !=
-            worker_a.stack_top ||
-        worker_a.guard_bottom !=
-            worker_b.stack_top)
-    {
-        log_error(
-            "U12.3A: neighboring slot layout overlaps/gaps incorrectly\n");
+		halt_forever();
+	}
 
-        halt_forever();
-    }
+	log_success(
+		"U12.3A: worker slots A=%lu B=%lu "
+		"reserved=%lu\n",
+		(unsigned long)worker_a.index,
+		(unsigned long)worker_b.index,
+		(unsigned long)reserved);
 
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 4
+	 *
+	 * Release worker A's slot.
+	 *
+	 * The next allocation should reuse the lowest free slot:
+	 *
+	 *     slot 1
+	 * --------------------------------------------------------------
+	 */
+	if (!address_space_user_stack_slot_release(
+			space,
+			worker_a.index))
+	{
+		log_error(
+			"U12.3A: failed releasing worker A slot\n");
 
-    size_t reserved =
-        address_space_user_stack_slot_reserved_count(
-            space);
+		halt_forever();
+	}
 
-    if (reserved != 3u)
-    {
-        log_error(
-            "U12.3A: expected 3 reserved slots, got %lu\n",
-            (unsigned long)reserved);
+	reserved =
+		address_space_user_stack_slot_reserved_count(
+			space);
 
-        halt_forever();
-    }
+	if (reserved != 2u)
+	{
+		log_error(
+			"U12.3A: expected 2 slots after release, got %lu\n",
+			(unsigned long)reserved);
 
-    log_success(
-        "U12.3A: worker slots A=%lu B=%lu "
-        "reserved=%lu\n",
-        (unsigned long)worker_a.index,
-        (unsigned long)worker_b.index,
-        (unsigned long)reserved);
+		halt_forever();
+	}
 
+	address_space_user_stack_slot_t reused;
 
-    /*
-     * --------------------------------------------------------------
-     * STEP 4
-     *
-     * Release worker A's slot.
-     *
-     * The next allocation should reuse the lowest free slot:
-     *
-     *     slot 1
-     * --------------------------------------------------------------
-     */
-    if (!address_space_user_stack_slot_release(
-            space,
-            worker_a.index))
-    {
-        log_error(
-            "U12.3A: failed releasing worker A slot\n");
+	if (!address_space_user_stack_slot_reserve(
+			space,
+			&reused))
+	{
+		log_error(
+			"U12.3A: failed reallocating released slot\n");
 
-        halt_forever();
-    }
+		halt_forever();
+	}
 
-    reserved =
-        address_space_user_stack_slot_reserved_count(
-            space);
+	/*
+	 * It must be the exact same virtual range worker A had.
+	 */
+	if (reused.index !=
+			worker_a.index ||
+		reused.stack_bottom !=
+			worker_a.stack_bottom ||
+		reused.stack_top !=
+			worker_a.stack_top ||
+		reused.guard_bottom !=
+			worker_a.guard_bottom ||
+		reused.guard_top !=
+			worker_a.guard_top)
+	{
+		log_error(
+			"U12.3A: released slot was not reused correctly\n");
 
-    if (reserved != 2u)
-    {
-        log_error(
-            "U12.3A: expected 2 slots after release, got %lu\n",
-            (unsigned long)reserved);
+		halt_forever();
+	}
 
-        halt_forever();
-    }
+	log_success(
+		"U12.3A: released slot %lu was reused "
+		"at stack=[0x%lx,0x%lx)\n",
+		(unsigned long)reused.index,
+		(unsigned long)reused.stack_bottom,
+		(unsigned long)reused.stack_top);
 
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 5
+	 *
+	 * Release all remaining reservations.
+	 * --------------------------------------------------------------
+	 */
+	if (!address_space_user_stack_slot_release(
+			space,
+			main_slot.index) ||
+		!address_space_user_stack_slot_release(
+			space,
+			reused.index) ||
+		!address_space_user_stack_slot_release(
+			space,
+			worker_b.index))
+	{
+		log_error(
+			"U12.3A: failed releasing final stack slots\n");
 
-    address_space_user_stack_slot_t reused;
+		halt_forever();
+	}
 
-    if (!address_space_user_stack_slot_reserve(
-            space,
-            &reused))
-    {
-        log_error(
-            "U12.3A: failed reallocating released slot\n");
+	reserved =
+		address_space_user_stack_slot_reserved_count(
+			space);
 
-        halt_forever();
-    }
+	if (reserved != 0u)
+	{
+		log_error(
+			"U12.3A: stack-slot leak count=%lu\n",
+			(unsigned long)reserved);
 
-    /*
-     * It must be the exact same virtual range worker A had.
-     */
-    if (reused.index !=
-            worker_a.index ||
-        reused.stack_bottom !=
-            worker_a.stack_bottom ||
-        reused.stack_top !=
-            worker_a.stack_top ||
-        reused.guard_bottom !=
-            worker_a.guard_bottom ||
-        reused.guard_top !=
-            worker_a.guard_top)
-    {
-        log_error(
-            "U12.3A: released slot was not reused correctly\n");
+		halt_forever();
+	}
 
-        halt_forever();
-    }
+	/*
+	 * No slot pages were ever mapped in U12.3A.
+	 *
+	 * The final address-space reference can therefore simply
+	 * destroy the empty userspace page directory.
+	 */
+	if (!address_space_release(
+			space))
+	{
+		log_error(
+			"U12.3A: final address-space release failed\n");
 
-    log_success(
-        "U12.3A: released slot %lu was reused "
-        "at stack=[0x%lx,0x%lx)\n",
-        (unsigned long)reused.index,
-        (unsigned long)reused.stack_bottom,
-        (unsigned long)reused.stack_top);
+		halt_forever();
+	}
 
-
-    /*
-     * --------------------------------------------------------------
-     * STEP 5
-     *
-     * Release all remaining reservations.
-     * --------------------------------------------------------------
-     */
-    if (!address_space_user_stack_slot_release(
-            space,
-            main_slot.index) ||
-        !address_space_user_stack_slot_release(
-            space,
-            reused.index) ||
-        !address_space_user_stack_slot_release(
-            space,
-            worker_b.index))
-    {
-        log_error(
-            "U12.3A: failed releasing final stack slots\n");
-
-        halt_forever();
-    }
-
-    reserved =
-        address_space_user_stack_slot_reserved_count(
-            space);
-
-    if (reserved != 0u)
-    {
-        log_error(
-            "U12.3A: stack-slot leak count=%lu\n",
-            (unsigned long)reserved);
-
-        halt_forever();
-    }
-
-
-    /*
-     * No slot pages were ever mapped in U12.3A.
-     *
-     * The final address-space reference can therefore simply
-     * destroy the empty userspace page directory.
-     */
-    if (!address_space_release(
-            space))
-    {
-        log_error(
-            "U12.3A: final address-space release failed\n");
-
-        halt_forever();
-    }
-
-    log_success(
-        "U12.3A: unique reusable user-stack slots PASSED\n");
+	log_success(
+		"U12.3A: unique reusable user-stack slots PASSED\n");
 }
 
 /*
@@ -1288,17 +1279,10 @@ static void u11_spawn_test(void)
 	 *
 	 * Later this becomes proper process_wait()/waitpid().
 	 */
-	for (size_t i = 0;
-		 i < 64u;
-		 ++i)
+	while (task_cleanup_total_reaped() <
+			   reaped_before + 1u ||
+		   task_cleanup_pending_count() != 0)
 	{
-		if (task_cleanup_total_reaped() >=
-				reaped_before + 1u &&
-			task_cleanup_pending_count() == 0)
-		{
-			break;
-		}
-
 		task_yield();
 	}
 

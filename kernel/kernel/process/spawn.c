@@ -480,6 +480,61 @@ task_id_t process_spawn_user(
     }
 
     /*
+     * The ELF loader already mapped the process's initial 1 MiB
+     * userspace stack at stack slot 0:
+     *
+     *     [0xBFF00000, 0xC0000000)
+     *
+     * Register that existing stack with the address-space stack
+     * allocator before any future userspace worker thread can
+     * reserve a stack.
+     *
+     * No pages are allocated here. The ELF loader already created
+     * the mappings; this records virtual-range ownership only.
+     */
+    address_space_user_stack_slot_t main_stack_slot;
+
+    if (!address_space_user_stack_slot_reserve_index(
+            user_space,
+            0u,
+            &main_stack_slot))
+    {
+        log_error(
+            "spawn: failed reserving ELF main-thread stack slot\n");
+
+        if (!address_space_release(
+                user_space))
+        {
+            for (;;)
+                __asm__ volatile(
+                    "cli; hlt");
+        }
+
+        kfree(
+            launch);
+
+        return 0;
+    }
+
+    if (main_stack_slot.stack_bottom !=
+            PROCESS_USER_STACK_ADDRESS ||
+        main_stack_slot.stack_top !=
+            PROCESS_USER_STACK_TOP)
+    {
+        log_error(
+            "spawn: ELF stack does not match address-space slot 0 "
+            "stack=[0x%lx,0x%lx) expected=[0x%lx,0x%lx)\n",
+            (unsigned long)main_stack_slot.stack_bottom,
+            (unsigned long)main_stack_slot.stack_top,
+            (unsigned long)PROCESS_USER_STACK_ADDRESS,
+            (unsigned long)PROCESS_USER_STACK_TOP);
+
+        for (;;)
+            __asm__ volatile(
+                "cli; hlt");
+    }
+
+    /*
      * ------------------------------------------------------------------
      * STEP 9
      *
