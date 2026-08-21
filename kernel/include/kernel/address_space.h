@@ -7,109 +7,224 @@
 
 /*
  * --------------------------------------------------------------------------
- * ADDRESS SPACE
+ * USER THREAD STACK LAYOUT
  * --------------------------------------------------------------------------
  *
- * An address space represents one virtual-memory environment.
+ * Userspace ends at:
  *
- * Multiple tasks/threads will eventually be able to reference the same
- * address_space_t.
+ *     0xC0000000
  *
- * Example:
+ * Each thread receives one fixed 1 MiB stack slot.
  *
- *     address_space_t
- *         |
- *         +---- task TID 5
- *         +---- task TID 6
- *         +---- task TID 7
+ * Beneath every stack is one unmapped 4 KiB guard page.
  *
- * All three tasks may therefore execute using the same CR3 while retaining
- * their own scheduler state and kernel stacks.
+ * Layout:
  *
- * The underlying page directory is destroyed only after the final reference
- * to a userspace address space is released.
+ *     0xC0000000
+ *          |
+ *          | slot 0 stack: 1 MiB
+ *          |
+ *     0xBFF00000
+ *          |
+ *          | guard page
+ *          |
+ *     0xBFEFF000
+ *          |
+ *          | slot 1 stack: 1 MiB
+ *          |
+ *          ...
+ *
+ * The guard page is only a RESERVED virtual region in U12.3A.
+ *
+ * Actual physical stack pages are introduced in U12.3B.
  */
+
+#define ADDRESS_SPACE_USER_STACK_SIZE \
+    (1024u * 1024u)
+
+#define ADDRESS_SPACE_USER_STACK_GUARD_SIZE \
+    4096u
+
+/*
+ * Initial implementation supports 32 simultaneous stack slots
+ * per userspace address space.
+ *
+ * This is intentionally a simple uint32_t bitmap for now.
+ *
+ * It can later become a larger dynamic bitmap without changing
+ * the task/thread ownership model.
+ */
+#define ADDRESS_SPACE_USER_STACK_SLOT_COUNT \
+    32u
+
+#define ADDRESS_SPACE_USER_STACK_REGION_TOP \
+    ((uintptr_t)0xC0000000u)
+
+
+/*
+ * Description of one reserved user-stack virtual slot.
+ *
+ * Ranges use the normal half-open convention:
+ *
+ *     stack:
+ *         [stack_bottom, stack_top)
+ *
+ *     guard:
+ *         [guard_bottom, guard_top)
+ *
+ * and:
+ *
+ *     guard_top == stack_bottom
+ */
+typedef struct address_space_user_stack_slot
+{
+    size_t index;
+
+    uintptr_t stack_bottom;
+    uintptr_t stack_top;
+
+    uintptr_t guard_bottom;
+    uintptr_t guard_top;
+
+} address_space_user_stack_slot_t;
+
+
+/*
+ * --------------------------------------------------------------------------
+ * ADDRESS SPACE
+ * --------------------------------------------------------------------------
+ */
+
 typedef struct address_space address_space_t;
+
 
 /*
  * Initialize the address-space subsystem.
- *
- * This records the canonical kernel address space.
  *
  * Must be called after paging_initialize().
  */
 bool address_space_initialize(void);
 
+
 /*
- * Return the immortal shared kernel address space.
- *
- * Returns NULL if address_space_initialize() has not succeeded.
+ * Return the immortal canonical kernel address space.
  */
 address_space_t *address_space_kernel(void);
+
 
 /*
  * Adopt an already-created userspace page directory.
  *
  * On success:
  *
- *     - the returned address_space_t owns page_directory
- *     - initial reference count is 1
- *     - caller must eventually call address_space_release()
+ *     returned address_space_t owns page_directory
+ *     reference_count == 1
  *
  * On failure:
  *
- *     - ownership of page_directory remains with the caller
- *
- * The directory must have been created by the userspace paging machinery
- * and must not be the canonical kernel directory.
+ *     ownership remains with caller
  */
 address_space_t *address_space_adopt_user(
-                    uintptr_t page_directory);
+    uintptr_t page_directory);
+
 
 /*
- * Add one reference.
- *
- * Kernel address space is immortal, so retain/release operations on it
- * succeed without changing its lifetime.
+ * --------------------------------------------------------------------------
+ * REFERENCE MANAGEMENT
+ * --------------------------------------------------------------------------
  */
+
 bool address_space_retain(
-                    address_space_t *space);
+    address_space_t *space);
 
-/*
- * Release one reference.
- *
- * When the final reference to a userspace address space disappears,
- * its page directory and address_space_t object are destroyed.
- *
- * Final userspace release currently must happen while the canonical
- * kernel CR3 is active.
- */
 bool address_space_release(
-                    address_space_t *space);
+    address_space_t *space);
+
 
 /*
- * Return the physical page-directory frame suitable for CR3.
- *
- * Returns 0 for NULL/invalid input.
+ * --------------------------------------------------------------------------
+ * BASIC ACCESSORS
+ * --------------------------------------------------------------------------
  */
+
 uintptr_t address_space_page_directory(
-                    const address_space_t *space);
+    const address_space_t *space);
+
+bool address_space_is_kernel(
+    const address_space_t *space);
+
+size_t address_space_reference_count(
+    address_space_t *space);
+
 
 /*
- * True only for the canonical kernel address space.
+ * --------------------------------------------------------------------------
+ * USER STACK SLOT MANAGEMENT
+ * --------------------------------------------------------------------------
+ *
+ * U12.3A manages only virtual-range ownership.
+ *
+ * These functions DO NOT:
+ *
+ *     allocate physical frames
+ *     create page mappings
+ *     unmap pages
+ *     modify CR3
+ *
+ * U12.3B will build physical stack allocation on top of this layer.
  */
-bool address_space_is_kernel(
-                    const address_space_t *space);
+
+
+/*
+ * Reserve the first free user-stack slot.
+ *
+ * On success:
+ *
+ *     - the slot becomes unavailable to other threads
+ *     - out_slot describes its virtual stack and guard ranges
+ *
+ * Kernel address spaces cannot allocate user-stack slots.
+ */
+bool address_space_user_stack_slot_reserve(
+    address_space_t *space,
+    address_space_user_stack_slot_t *out_slot);
+
+
+/*
+ * Reserve one specific slot.
+ *
+ * This is important for the existing ELF main-thread stack:
+ *
+ *     slot 0
+ *     0xBFF00000 - 0xC0000000
+ *
+ * Later spawn.c can explicitly register that already-created stack
+ * instead of allowing a worker thread to reuse its virtual range.
+ */
+bool address_space_user_stack_slot_reserve_index(
+    address_space_t *space,
+    size_t index,
+    address_space_user_stack_slot_t *out_slot);
+
+
+/*
+ * Release one previously-reserved slot.
+ *
+ * U12.3A only releases allocator metadata.
+ *
+ * Physical stack mappings do not exist yet.
+ */
+bool address_space_user_stack_slot_release(
+    address_space_t *space,
+    size_t index);
+
 
 /*
  * Diagnostic helper.
  *
- * Returns 0 for NULL.
- *
- * The kernel address space is immortal; its count is not intended for
- * lifetime management.
+ * Returns the number of currently reserved stack slots.
  */
-size_t address_space_reference_count(
-                    address_space_t *space);
+size_t address_space_user_stack_slot_reserved_count(
+    address_space_t *space);
 
 #endif
