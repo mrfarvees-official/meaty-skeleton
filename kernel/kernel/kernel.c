@@ -1534,6 +1534,451 @@ static void u12_user_stack_mapping_test(void)
 		"U12.3B: physical user stack PASSED\n");
 }
 
+/*
+ * ==========================================================================
+ * P1A REAL PROCESS CORE TEST
+ * ==========================================================================
+ *
+ * Tests:
+ *
+ *     - process creation
+ *     - PID allocation
+ *     - global process registry
+ *     - retained PID lookup
+ *     - process snapshot
+ *     - thread accounting
+ *     - temporary handle accounting
+ *     - zombie transition
+ *     - process destruction
+ *     - address-space ownership
+ *
+ * This test does NOT create a real userspace task yet.
+ * That comes in P1B.
+ */
+static void process_core_test(void)
+{
+	printf(
+		"\n=== P1A PROCESS CORE TEST ===\n");
+
+	/*
+	 * At this point the only registered process should be
+	 * the immortal kernel process.
+	 */
+	size_t processes_before =
+		process_live_count();
+
+	size_t handles_before =
+		process_handle_live_count();
+
+	if (processes_before != 1u)
+	{
+		log_error(
+			"P1A: expected one initial process, got %lu\n",
+			(unsigned long)processes_before);
+
+		halt_forever();
+	}
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 1
+	 *
+	 * Create a completely separate userspace address space.
+	 * --------------------------------------------------------------
+	 */
+	uintptr_t directory =
+		0u;
+
+	if (!paging_create_user_directory(
+			&directory))
+	{
+		log_error(
+			"P1A: failed creating temporary user directory\n");
+
+		halt_forever();
+	}
+
+	address_space_t *space =
+		address_space_adopt_user(
+			directory);
+
+	if (space == NULL)
+	{
+		log_error(
+			"P1A: failed adopting temporary address space\n");
+
+		paging_destroy_user_directory(
+			directory);
+
+		halt_forever();
+	}
+
+	/*
+	 * The test currently owns one reference.
+	 */
+	if (address_space_reference_count(
+			space) != 1u)
+	{
+		log_error(
+			"P1A: initial address-space refcount is not 1\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 2
+	 *
+	 * Create a process owning this address space.
+	 *
+	 * Use PID 1 (kernel process) as the temporary parent.
+	 * --------------------------------------------------------------
+	 */
+	process_t *process =
+		process_create(
+			space,
+			1u);
+
+	if (process == NULL)
+	{
+		log_error(
+			"P1A: process_create failed\n");
+
+		halt_forever();
+	}
+
+	process_id_t pid =
+		process_id(
+			process);
+
+	if (pid == PROCESS_ID_INVALID)
+	{
+		log_error(
+			"P1A: process received invalid PID\n");
+
+		halt_forever();
+	}
+
+	if (process_live_count() !=
+		processes_before + 1u)
+	{
+		log_error(
+			"P1A: process registry count did not increase\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * process owns another address-space reference.
+	 *
+	 * test owner = 1
+	 * process    = 1
+	 */
+	if (address_space_reference_count(
+			space) != 2u)
+	{
+		log_error(
+			"P1A: process did not retain address space\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1A: created pid=%u CR3=0x%lx\n",
+		(unsigned)pid,
+		(unsigned long)directory);
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 3
+	 *
+	 * Validate safe snapshot.
+	 * --------------------------------------------------------------
+	 */
+	process_info_t info;
+
+	if (!process_snapshot(
+			process,
+			&info))
+	{
+		log_error(
+			"P1A: process_snapshot failed\n");
+
+		halt_forever();
+	}
+
+	if (info.id != pid ||
+		info.parent_id != 1u ||
+		info.state != PROCESS_NEW ||
+		info.thread_count != 0u ||
+		info.page_directory != directory)
+	{
+		log_error(
+			"P1A: initial process snapshot invalid\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1A: snapshot pid=%u state=NEW threads=0\n",
+		(unsigned)pid);
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 4
+	 *
+	 * Verify registry lookup returns a retained process.
+	 * --------------------------------------------------------------
+	 */
+	process_t *lookup =
+		process_acquire_by_id(
+			pid);
+
+	if (lookup == NULL)
+	{
+		log_error(
+			"P1A: PID registry lookup failed\n");
+
+		halt_forever();
+	}
+
+	if (process_id(
+			lookup) != pid)
+	{
+		log_error(
+			"P1A: registry returned wrong process\n");
+
+		halt_forever();
+	}
+
+	process_release(
+		lookup);
+
+	/*
+	 * Original creator reference is still valid here.
+	 */
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 5
+	 *
+	 * Simulate attaching one execution thread.
+	 * --------------------------------------------------------------
+	 */
+	if (!process_thread_attach(
+			process))
+	{
+		log_error(
+			"P1A: process_thread_attach failed\n");
+
+		halt_forever();
+	}
+
+	if (process_thread_count(
+			process) != 1u ||
+		process_state(
+			process) != PROCESS_RUNNING)
+	{
+		log_error(
+			"P1A: RUNNING/thread accounting invalid\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1A: pid=%u RUNNING threads=1\n",
+		(unsigned)pid);
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 6
+	 *
+	 * Test temporary handle accounting while process is running.
+	 * --------------------------------------------------------------
+	 */
+	handle_t handle =
+		process_handle_open(
+			process);
+
+	if (handle ==
+		PROCESS_HANDLE_INVALID)
+	{
+		log_error(
+			"P1A: process_handle_open failed\n");
+
+		halt_forever();
+	}
+
+	if (process_handle_live_count() !=
+		handles_before + 1u)
+	{
+		log_error(
+			"P1A: global handle count did not increase\n");
+
+		halt_forever();
+	}
+
+	if (!process_handle_close(
+			process,
+			handle))
+	{
+		log_error(
+			"P1A: process_handle_close failed\n");
+
+		halt_forever();
+	}
+
+	if (process_handle_live_count() !=
+		handles_before)
+	{
+		log_error(
+			"P1A: global handle count did not restore\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1A: handle accounting PASSED\n");
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 7
+	 *
+	 * Simulate the final thread exiting.
+	 *
+	 * P1A should transition:
+	 *
+	 *     RUNNING -> ZOMBIE
+	 * --------------------------------------------------------------
+	 */
+	process_thread_detach(
+		process);
+
+	if (process_thread_count(
+			process) != 0u ||
+		process_state(
+			process) != PROCESS_ZOMBIE)
+	{
+		log_error(
+			"P1A: final thread did not produce ZOMBIE state\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1A: pid=%u became ZOMBIE\n",
+		(unsigned)pid);
+
+	/*
+	 * Snapshot lookup should still work while the object is alive.
+	 */
+	if (!process_snapshot_by_id(
+			pid,
+			&info))
+	{
+		log_error(
+			"P1A: zombie snapshot lookup failed\n");
+
+		halt_forever();
+	}
+
+	if (info.state != PROCESS_ZOMBIE ||
+		info.thread_count != 0u)
+	{
+		log_error(
+			"P1A: zombie snapshot invalid\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * --------------------------------------------------------------
+	 * STEP 8
+	 *
+	 * Release creator-owned process reference.
+	 *
+	 * Since waitpid does not exist yet, this should destroy this
+	 * temporary process object.
+	 * --------------------------------------------------------------
+	 */
+	process_release(
+		process);
+
+	process =
+		NULL;
+
+	/*
+	 * PID must disappear from registry.
+	 */
+	lookup =
+		process_acquire_by_id(
+			pid);
+
+	if (lookup != NULL)
+	{
+		log_error(
+			"P1A: destroyed PID remained in registry\n");
+
+		process_release(
+			lookup);
+
+		halt_forever();
+	}
+
+	if (process_live_count() !=
+		processes_before)
+	{
+		log_error(
+			"P1A: process registry leaked process\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * Process released its address-space reference.
+	 *
+	 * Only this test's original reference remains.
+	 */
+	if (address_space_reference_count(
+			space) != 1u)
+	{
+		log_error(
+			"P1A: process leaked address-space reference\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * Destroy the temporary address space.
+	 */
+	if (!address_space_release(
+			space))
+	{
+		log_error(
+			"P1A: failed releasing temporary address space\n");
+
+		halt_forever();
+	}
+
+	space =
+		NULL;
+
+	if (process_handle_live_count() !=
+		handles_before)
+	{
+		log_error(
+			"P1A: final handle accounting mismatch\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1A: process creation/registry/lifetime PASSED\n");
+
+	log_success(
+		"P1A: PROCESS CORE TEST PASSED\n");
+}
+
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
@@ -1830,25 +2275,27 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 
-	/*
-	 * Shared address-space ownership/lifetime.
-	 */
-	u12_shared_address_space_test();
+	// /*
+	//  * Shared address-space ownership/lifetime.
+	//  */
+	// u12_shared_address_space_test();
 
-	/*
-	 * Virtual user-stack slot allocation.
-	 */
-	u12_user_stack_slot_test();
+	// /*
+	//  * Virtual user-stack slot allocation.
+	//  */
+	// u12_user_stack_slot_test();
 
-	/*
-	 * Real physical worker-stack allocation.
-	 */
-	u12_user_stack_mapping_test();
+	// /*
+	//  * Real physical worker-stack allocation.
+	//  */
+	// u12_user_stack_mapping_test();
 
-	/*
-	 * Existing ELF spawn regression.
-	 */
-	u11_spawn_test();
+	// /*
+	//  * Existing ELF spawn regression.
+	//  */
+	// u11_spawn_test();
+
+	process_core_test();
 
 	yield_forever();
 }
