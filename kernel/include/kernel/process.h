@@ -248,5 +248,38 @@ bool process_set_exit_status(
 int process_exit_status(
     process_t *process);
 
+/*
+ * --------------------------------------------------------------------------
+ * PARENT / CHILD OWNERSHIP
+ * --------------------------------------------------------------------------
+ *
+ * A parent owns one retained reference to every attached child.
+ *
+ * This keeps a child process alive after its final task disappears,
+ * allowing the child to remain PROCESS_ZOMBIE until waitpid() collects it.
+ */
+
+bool process_add_child(
+    process_t *parent,
+    process_t *child);
+
+bool process_remove_child(
+    process_t *parent,
+    process_id_t child_id);
+
+size_t process_child_count(
+    process_t *parent);
+
+/*
+ * Search only this parent's children.
+ *
+ * Returns a RETAINED reference if the requested child is currently
+ * PROCESS_ZOMBIE.
+ *
+ * Caller must process_release() the returned process.
+ */
+process_t *process_acquire_zombie_child(
+    process_t *parent,
+    process_id_t child_id);
 
 #endif

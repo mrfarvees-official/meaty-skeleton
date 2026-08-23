@@ -253,8 +253,7 @@ task_id_t process_spawn_user(
     }
 
     /*
-     * ELF loading currently requires the canonical
-     * kernel page directory to be active.
+     * ELF loading currently requires canonical kernel CR3.
      */
     uintptr_t kernel_directory =
         paging_kernel_directory();
@@ -272,6 +271,38 @@ task_id_t process_spawn_user(
     /*
      * ----------------------------------------------------------
      * STEP 1
+     * Determine parent PID.
+     *
+     * Kernel-launched programs currently belong to PID 1.
+     *
+     * Later, when a userspace process invokes spawn(), its own
+     * PID automatically becomes the parent.
+     * ----------------------------------------------------------
+     */
+    process_id_t parent_pid =
+        1u;
+
+    task_t *current =
+        task_current();
+
+    if (current != NULL &&
+        current->process != NULL)
+    {
+        process_id_t current_pid =
+            process_id(
+                current->process);
+
+        if (current_pid !=
+            PROCESS_ID_INVALID)
+        {
+            parent_pid =
+                current_pid;
+        }
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * STEP 2
      * Open executable.
      * ----------------------------------------------------------
      */
@@ -307,7 +338,7 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 2
+     * STEP 3
      * Validate executable size.
      * ----------------------------------------------------------
      */
@@ -349,7 +380,7 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 3
+     * STEP 4
      * Read ELF into temporary kernel buffer.
      * ----------------------------------------------------------
      */
@@ -474,8 +505,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 4
-     * Load ELF into new private userspace image.
+     * STEP 5
+     * Load ELF image.
      * ----------------------------------------------------------
      */
     user_image_t image;
@@ -525,8 +556,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 5
-     * Prepare task launch context.
+     * STEP 6
+     * Allocate launch metadata.
      * ----------------------------------------------------------
      */
     process_user_launch_context_t *launch =
@@ -556,8 +587,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 6
-     * Detach raw page directory from user_image.
+     * STEP 7
+     * Detach page directory from user_image_t.
      * ----------------------------------------------------------
      */
     uintptr_t detached_directory =
@@ -583,12 +614,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 7
-     * Wrap CR3 in address_space_t.
-     *
-     * refs:
-     *
-     *     spawn = 1
+     * STEP 8
+     * Adopt address space.
      * ----------------------------------------------------------
      */
     address_space_t *user_space =
@@ -611,7 +638,7 @@ task_id_t process_spawn_user(
     }
 
     /*
-     * Register the ELF main stack as stack slot 0.
+     * Register ELF main stack as stack slot zero.
      */
     address_space_user_stack_slot_t
         main_stack_slot;
@@ -655,21 +682,14 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 8
-     * Create real process.
-     *
-     * process_create() retains user_space.
-     *
-     * address-space refs:
-     *
-     *     spawn   = 1
-     *     process = 1
+     * STEP 9
+     * Create process with REAL parent PID.
      * ----------------------------------------------------------
      */
     process_t *process =
         process_create(
             user_space,
-            PROCESS_ID_INVALID);
+            parent_pid);
 
     if (process == NULL)
     {
@@ -698,16 +718,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 9
-     * Create unpublished main userspace task.
-     *
-     * task creation retains user_space.
-     *
-     * address-space refs:
-     *
-     *     spawn   = 1
-     *     process = 1
-     *     task    = 1
+     * STEP 10
+     * Create unpublished main task.
      * ----------------------------------------------------------
      */
     task_t *task =
@@ -744,9 +756,6 @@ task_id_t process_spawn_user(
         return 0;
     }
 
-    /*
-     * Verify raw task creation before process binding.
-     */
     if (task->address_space !=
             user_space ||
         address_space_page_directory(
@@ -764,16 +773,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 10
-     * Bind task into process.
-     *
-     * After success:
-     *
-     *     task->process == process
-     *     process threads == 1
-     *     process state == RUNNING
-     *
-     * task_bind_process() also retains process.
+     * STEP 11
+     * Bind main task to process.
      * ----------------------------------------------------------
      */
     if (!task_bind_process(
@@ -786,20 +787,11 @@ task_id_t process_spawn_user(
             (unsigned)task->id,
             (unsigned)pid);
 
-        /*
-         * Temporary fatal path.
-         *
-         * Later expose a proper unpublished-task
-         * destruction helper to spawn.c.
-         */
         for (;;)
             __asm__ volatile(
                 "cli; hlt");
     }
 
-    /*
-     * Verify final ownership relationship.
-     */
     if (task->process !=
             process ||
         process_address_space(
@@ -823,8 +815,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 11
-     * Copy everything needed before publication.
+     * STEP 12
+     * Copy scheduler-visible values before publication.
      * ----------------------------------------------------------
      */
     task_id_t tid =
@@ -842,11 +834,12 @@ task_id_t process_spawn_user(
 
     log_success(
         "spawn: prepared %s "
-        "pid=%u tid=%u CR3=0x%lx "
-        "entry=0x%lx ESP=0x%lx "
-        "stack=%lu KiB\n",
+        "pid=%u parent=%u tid=%u "
+        "CR3=0x%lx entry=0x%lx "
+        "ESP=0x%lx stack=%lu KiB\n",
         path,
         (unsigned)pid,
+        (unsigned)parent_pid,
         (unsigned)tid,
         (unsigned long)
             task_directory,
@@ -860,10 +853,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 12
-     * Drop creator-owned process reference.
-     *
-     * task still owns one process reference.
+     * STEP 13
+     * Drop creator process reference.
      * ----------------------------------------------------------
      */
     process_release(
@@ -874,13 +865,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 13
-     * Drop creator-owned address-space reference.
-     *
-     * Remaining address-space refs:
-     *
-     *     process = 1
-     *     task    = 1
+     * STEP 14
+     * Drop creator address-space reference.
      * ----------------------------------------------------------
      */
     if (!address_space_release(
@@ -900,10 +886,8 @@ task_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 14
-     * Publish.
-     *
-     * DO NOT dereference task or launch after this.
+     * STEP 15
+     * Publish task.
      * ----------------------------------------------------------
      */
     task_publish(
@@ -911,15 +895,15 @@ task_id_t process_spawn_user(
 
     log_success(
         "spawn: published %s "
-        "pid=%u tid=%u\n",
+        "pid=%u parent=%u tid=%u\n",
         path,
         (unsigned)pid,
+        (unsigned)parent_pid,
         (unsigned)tid);
 
     /*
-     * Keep returning TID for current U12 compatibility.
-     *
-     * Later process spawning should return PID.
+     * Keep returning TID until the process-spawn ABI
+     * is intentionally changed later.
      */
     return tid;
 }

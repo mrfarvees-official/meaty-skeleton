@@ -9,10 +9,17 @@
 #include <kernel/process.h>
 #include <kernel/spinlock.h>
 
-
 #define PROCESS_MAX_HANDLES \
     64u
 
+typedef struct process_child_link
+{
+    process_t *child;
+
+    struct process_child_link *previous;
+    struct process_child_link *next;
+
+} process_child_link_t;
 
 struct process
 {
@@ -21,7 +28,6 @@ struct process
      */
     process_id_t id;
     process_id_t parent_id;
-
 
     /*
      * Lifetime.
@@ -39,17 +45,10 @@ struct process
 
     int exit_status;
 
-
     /*
      * Process-owned address space.
-     *
-     * Dynamic processes retain an independent reference.
-     *
-     * The immortal kernel process points at the immortal kernel
-     * address space.
      */
     address_space_t *address_space;
-
 
     /*
      * Execution membership/accounting.
@@ -58,32 +57,44 @@ struct process
 
     process_accounting_t accounting;
 
+    /*
+     * ----------------------------------------------------------
+     * Child ownership.
+     * ----------------------------------------------------------
+     *
+     * Every entry owns one retained reference to child.
+     *
+     * Protected by this process's lock.
+     */
+    process_child_link_t *children;
+
+    size_t child_count;
 
     /*
      * Temporary generic handle implementation.
-     *
-     * This deliberately remains private so we can replace it later
-     * with real kernel-object handles without ABI damage.
      */
     bool handles[PROCESS_MAX_HANDLES];
 
-
     /*
-     * Protect mutable fields belonging to this process.
+     * Protect mutable process-local fields:
      *
-     * reference_count and registry links are instead protected by
+     *     state
+     *     termination information
+     *     thread accounting
+     *     children
+     *     handle/accounting fields
+     *
+     * reference_count and registry links remain protected by
      * process_registry_lock.
      */
     spinlock_t lock;
 
-
     /*
-     * Global process-registry linkage.
+     * Global registry linkage.
      */
     struct process *registry_previous;
     struct process *registry_next;
 };
-
 
 /*
  * --------------------------------------------------------------------------
@@ -108,7 +119,6 @@ static size_t live_handles =
 static bool process_system_initialized =
     false;
 
-
 /*
  * This lock protects:
  *
@@ -120,7 +130,6 @@ static bool process_system_initialized =
  */
 static spinlock_t process_registry_lock =
     SPINLOCK_INITIALIZER;
-
 
 /*
  * --------------------------------------------------------------------------
@@ -142,15 +151,13 @@ static void process_registry_insert_locked(
 
     if (process_registry_head != NULL)
     {
-        process_registry_head->
-            registry_previous =
-                process;
+        process_registry_head->registry_previous =
+            process;
     }
 
     process_registry_head =
         process;
 }
-
 
 static void process_registry_remove_locked(
     process_t *process)
@@ -160,9 +167,8 @@ static void process_registry_remove_locked(
 
     if (process->registry_previous != NULL)
     {
-        process->registry_previous->
-            registry_next =
-                process->registry_next;
+        process->registry_previous->registry_next =
+            process->registry_next;
     }
     else
     {
@@ -172,9 +178,8 @@ static void process_registry_remove_locked(
 
     if (process->registry_next != NULL)
     {
-        process->registry_next->
-            registry_previous =
-                process->registry_previous;
+        process->registry_next->registry_previous =
+            process->registry_previous;
     }
 
     process->registry_previous =
@@ -183,7 +188,6 @@ static void process_registry_remove_locked(
     process->registry_next =
         NULL;
 }
-
 
 static process_t *process_registry_find_locked(
     process_id_t id)
@@ -203,7 +207,6 @@ static process_t *process_registry_find_locked(
 
     return NULL;
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -247,7 +250,6 @@ void process_initialize(void)
             "PROCESS: kernel address space unavailable");
     }
 
-
     /*
      * PID 1 is reserved for the immortal kernel process.
      *
@@ -278,7 +280,6 @@ void process_initialize(void)
     kernel_process.address_space =
         kernel_space;
 
-
     /*
      * Preserve the existing standard-handle accounting.
      *
@@ -298,7 +299,6 @@ void process_initialize(void)
     kernel_process.accounting.peak_handles =
         PROCESS_STANDARD_HANDLE_COUNT;
 
-
     process_registry_insert_locked(
         &kernel_process);
 
@@ -314,12 +314,10 @@ void process_initialize(void)
     process_system_initialized =
         true;
 
-
     spin_unlock_irqrestore(
         &process_registry_lock,
         flags);
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -334,16 +332,15 @@ process_t *process_create(
     if (address_space == NULL)
         return NULL;
 
-
     /*
-     * The process itself owns one independent reference.
+     * The process itself owns one independent reference
+     * to its address space.
      */
     if (!address_space_retain(
             address_space))
     {
         return NULL;
     }
-
 
     process_t *process =
         kmalloc(
@@ -357,7 +354,6 @@ process_t *process_create(
         return NULL;
     }
 
-
     memset(
         process,
         0,
@@ -365,7 +361,6 @@ process_t *process_create(
 
     spinlock_initialize(
         &process->lock);
-
 
     process->parent_id =
         parent_id;
@@ -388,14 +383,20 @@ process_t *process_create(
     process->address_space =
         address_space;
 
+    process->children =
+        NULL;
+
+    process->child_count =
+        0u;
 
     /*
-     * Publish identity and registry membership atomically.
+     * ----------------------------------------------------------
+     * Publish process into registry and assign PID.
+     * ----------------------------------------------------------
      */
     uint32_t flags =
         spin_lock_irqsave(
             &process_registry_lock);
-
 
     if (!process_system_initialized)
     {
@@ -412,14 +413,6 @@ process_t *process_create(
         return NULL;
     }
 
-
-    /*
-     * PID zero is permanently invalid.
-     *
-     * Running out of a 32-bit PID space indicates a kernel-lifetime
-     * accounting problem at this stage, so fail hard rather than
-     * silently reusing an active PID.
-     */
     if (next_process_id ==
         PROCESS_ID_INVALID)
     {
@@ -437,25 +430,71 @@ process_t *process_create(
             "PROCESS: PID space exhausted");
     }
 
-
     process->id =
         next_process_id++;
-
 
     process_registry_insert_locked(
         process);
 
     ++live_processes;
 
-
     spin_unlock_irqrestore(
         &process_registry_lock,
         flags);
 
+    /*
+     * ----------------------------------------------------------
+     * Attach to real parent.
+     *
+     * parent_id == 0 means intentionally parentless.
+     *
+     * Normal userspace spawn should pass a valid parent PID.
+     * ----------------------------------------------------------
+     */
+    if (parent_id !=
+        PROCESS_ID_INVALID)
+    {
+        process_t *parent =
+            process_acquire_by_id(
+                parent_id);
+
+        if (parent == NULL)
+        {
+            /*
+             * Process was already registered, so clean it up
+             * through normal reference destruction.
+             */
+            process_release(
+                process);
+
+            return NULL;
+        }
+
+        if (!process_add_child(
+                parent,
+                process))
+        {
+            process_release(
+                parent);
+
+            process_release(
+                process);
+
+            return NULL;
+        }
+
+        /*
+         * process_add_child() gave parent its own retained
+         * reference to the child.
+         *
+         * Drop only our temporary parent lookup reference.
+         */
+        process_release(
+            parent);
+    }
 
     return process;
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -469,11 +508,9 @@ bool process_retain(
     if (process == NULL)
         return false;
 
-
     uint32_t flags =
         spin_lock_irqsave(
             &process_registry_lock);
-
 
     if (process->immortal)
     {
@@ -483,7 +520,6 @@ bool process_retain(
 
         return true;
     }
-
 
     if (process->reference_count == 0u ||
         process->state == PROCESS_DEAD)
@@ -495,18 +531,14 @@ bool process_retain(
         return false;
     }
 
-
     ++process->reference_count;
-
 
     spin_unlock_irqrestore(
         &process_registry_lock,
         flags);
 
-
     return true;
 }
-
 
 void process_release(
     process_t *process)
@@ -514,18 +546,15 @@ void process_release(
     if (process == NULL)
         return;
 
-
     address_space_t *address_space =
         NULL;
 
     bool destroy =
         false;
 
-
     uint32_t flags =
         spin_lock_irqsave(
             &process_registry_lock);
-
 
     if (process->immortal)
     {
@@ -535,7 +564,6 @@ void process_release(
 
         return;
     }
-
 
     if (process->reference_count == 0u)
     {
@@ -547,9 +575,7 @@ void process_release(
             "PROCESS: reference-count underflow");
     }
 
-
     --process->reference_count;
-
 
     if (process->reference_count == 0u)
     {
@@ -559,7 +585,6 @@ void process_release(
          */
         process_registry_remove_locked(
             process);
-
 
         if (live_processes == 0u)
         {
@@ -571,9 +596,7 @@ void process_release(
                 "PROCESS: live-process count underflow");
         }
 
-
         --live_processes;
-
 
         /*
          * Remove any temporary handle accounting that still belongs
@@ -590,14 +613,11 @@ void process_release(
                 "PROCESS: handle accounting underflow");
         }
 
-
         live_handles -=
             process->accounting.current_handles;
 
-
         process->state =
             PROCESS_DEAD;
-
 
         address_space =
             process->address_space;
@@ -605,20 +625,16 @@ void process_release(
         process->address_space =
             NULL;
 
-
         destroy =
             true;
     }
-
 
     spin_unlock_irqrestore(
         &process_registry_lock,
         flags);
 
-
     if (!destroy)
         return;
-
 
     /*
      * Never release potentially complicated resources while holding
@@ -634,11 +650,16 @@ void process_release(
         }
     }
 
+    if (process->children != NULL ||
+        process->child_count != 0u)
+    {
+        kernel_panic(
+            "PROCESS: destroying process with owned children");
+    }
 
     kfree(
         process);
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -652,16 +673,13 @@ process_t *process_acquire_by_id(
     if (id == PROCESS_ID_INVALID)
         return NULL;
 
-
     uint32_t flags =
         spin_lock_irqsave(
             &process_registry_lock);
 
-
     process_t *process =
         process_registry_find_locked(
             id);
-
 
     if (process == NULL ||
         process->state == PROCESS_DEAD)
@@ -672,7 +690,6 @@ process_t *process_acquire_by_id(
 
         return NULL;
     }
-
 
     if (!process->immortal)
     {
@@ -688,15 +705,12 @@ process_t *process_acquire_by_id(
         ++process->reference_count;
     }
 
-
     spin_unlock_irqrestore(
         &process_registry_lock,
         flags);
 
-
     return process;
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -713,13 +727,11 @@ process_id_t process_id(
     return process->id;
 }
 
-
 process_id_t process_parent_id(
     process_t *process)
 {
     if (process == NULL)
         return PROCESS_ID_INVALID;
-
 
     uint32_t flags =
         spin_lock_irqsave(
@@ -735,13 +747,11 @@ process_id_t process_parent_id(
     return id;
 }
 
-
 process_state_t process_state(
     process_t *process)
 {
     if (process == NULL)
         return PROCESS_DEAD;
-
 
     uint32_t flags =
         spin_lock_irqsave(
@@ -757,7 +767,6 @@ process_state_t process_state(
     return state;
 }
 
-
 address_space_t *process_address_space(
     process_t *process)
 {
@@ -772,7 +781,6 @@ address_space_t *process_address_space(
     return process->address_space;
 }
 
-
 /*
  * --------------------------------------------------------------------------
  * THREAD ACCOUNTING
@@ -785,11 +793,9 @@ bool process_thread_attach(
     if (process == NULL)
         return false;
 
-
     uint32_t flags =
         spin_lock_irqsave(
             &process->lock);
-
 
     if (process->state != PROCESS_NEW &&
         process->state != PROCESS_RUNNING)
@@ -801,9 +807,7 @@ bool process_thread_attach(
         return false;
     }
 
-
     ++process->live_threads;
-
 
     if (process->live_threads >
         process->accounting.peak_threads)
@@ -812,19 +816,15 @@ bool process_thread_attach(
             process->live_threads;
     }
 
-
     process->state =
         PROCESS_RUNNING;
-
 
     spin_unlock_irqrestore(
         &process->lock,
         flags);
 
-
     return true;
 }
-
 
 void process_thread_detach(
     process_t *process)
@@ -832,11 +832,9 @@ void process_thread_detach(
     if (process == NULL)
         return;
 
-
     uint32_t flags =
         spin_lock_irqsave(
             &process->lock);
-
 
     if (process->live_threads == 0u)
     {
@@ -848,9 +846,7 @@ void process_thread_detach(
             "PROCESS: thread-count underflow");
     }
 
-
     --process->live_threads;
-
 
     /*
      * Phase P1A has no waitpid() yet.
@@ -877,19 +873,16 @@ void process_thread_detach(
         }
     }
 
-
     spin_unlock_irqrestore(
         &process->lock,
         flags);
 }
-
 
 size_t process_thread_count(
     process_t *process)
 {
     if (process == NULL)
         return 0u;
-
 
     uint32_t flags =
         spin_lock_irqsave(
@@ -904,7 +897,6 @@ size_t process_thread_count(
 
     return count;
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -922,21 +914,17 @@ void process_account_runtime(
         return;
     }
 
-
     uint32_t flags =
         spin_lock_irqsave(
             &process->lock);
 
-
     process->accounting.runtime_ticks +=
         ticks;
-
 
     spin_unlock_irqrestore(
         &process->lock,
         flags);
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -954,11 +942,9 @@ bool process_snapshot(
         return false;
     }
 
-
     uint32_t flags =
         spin_lock_irqsave(
             &process->lock);
-
 
     info->id =
         process->id;
@@ -974,8 +960,8 @@ bool process_snapshot(
 
     info->thread_count =
         process->live_threads;
-        
-    info->exit_status = 
+
+    info->exit_status =
         process->exit_status;
 
     info->handle_count =
@@ -990,15 +976,12 @@ bool process_snapshot(
                   process->address_space)
             : 0u;
 
-
     spin_unlock_irqrestore(
         &process->lock,
         flags);
 
-
     return true;
 }
-
 
 bool process_snapshot_by_id(
     process_id_t id,
@@ -1007,7 +990,6 @@ bool process_snapshot_by_id(
     if (info == NULL)
         return false;
 
-
     process_t *process =
         process_acquire_by_id(
             id);
@@ -1015,20 +997,16 @@ bool process_snapshot_by_id(
     if (process == NULL)
         return false;
 
-
     bool result =
         process_snapshot(
             process,
             info);
 
-
     process_release(
         process);
 
-
     return result;
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -1042,15 +1020,12 @@ handle_t process_handle_open(
     if (process == NULL)
         return PROCESS_HANDLE_INVALID;
 
-
     size_t selected =
         PROCESS_MAX_HANDLES;
-
 
     uint32_t flags =
         spin_lock_irqsave(
             &process->lock);
-
 
     if (process->state ==
             PROCESS_DEAD ||
@@ -1063,7 +1038,6 @@ handle_t process_handle_open(
 
         return PROCESS_HANDLE_INVALID;
     }
-
 
     for (size_t i =
              PROCESS_STANDARD_HANDLE_COUNT;
@@ -1091,18 +1065,15 @@ handle_t process_handle_open(
         }
     }
 
-
     spin_unlock_irqrestore(
         &process->lock,
         flags);
-
 
     if (selected ==
         PROCESS_MAX_HANDLES)
     {
         return PROCESS_HANDLE_INVALID;
     }
-
 
     flags =
         spin_lock_irqsave(
@@ -1114,14 +1085,11 @@ handle_t process_handle_open(
         &process_registry_lock,
         flags);
 
-
     /*
      * Preserve your existing one-based generic handle numbering.
      */
-    return (handle_t)(
-        selected + 1u);
+    return (handle_t)(selected + 1u);
 }
-
 
 bool process_handle_close(
     process_t *process,
@@ -1134,15 +1102,12 @@ bool process_handle_close(
         return false;
     }
 
-
     size_t index =
         (size_t)handle - 1u;
-
 
     uint32_t flags =
         spin_lock_irqsave(
             &process->lock);
-
 
     if (!process->handles[index])
     {
@@ -1153,10 +1118,8 @@ bool process_handle_close(
         return false;
     }
 
-
     process->handles[index] =
         false;
-
 
     if (process->accounting.current_handles ==
         0u)
@@ -1169,19 +1132,15 @@ bool process_handle_close(
             "PROCESS: local handle-count underflow");
     }
 
-
     --process->accounting.current_handles;
-
 
     spin_unlock_irqrestore(
         &process->lock,
         flags);
 
-
     flags =
         spin_lock_irqsave(
             &process_registry_lock);
-
 
     if (live_handles == 0u)
     {
@@ -1193,18 +1152,14 @@ bool process_handle_close(
             "PROCESS: global handle-count underflow");
     }
 
-
     --live_handles;
-
 
     spin_unlock_irqrestore(
         &process_registry_lock,
         flags);
 
-
     return true;
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -1227,7 +1182,6 @@ size_t process_live_count(void)
 
     return count;
 }
-
 
 size_t process_handle_live_count(void)
 {
@@ -1287,4 +1241,340 @@ bool process_set_exit_status(
         flags);
 
     return true;
+}
+
+bool process_add_child(
+    process_t *parent,
+    process_t *child)
+{
+    if (parent == NULL ||
+        child == NULL ||
+        parent == child)
+    {
+        return false;
+    }
+
+    process_id_t parent_id =
+        process_id(
+            parent);
+
+    process_id_t child_parent_id =
+        process_parent_id(
+            child);
+
+    /*
+     * The metadata relationship must already agree.
+     */
+    if (parent_id == PROCESS_ID_INVALID ||
+        child_parent_id != parent_id)
+    {
+        return false;
+    }
+
+    /*
+     * Allocate bookkeeping before changing ownership.
+     */
+    process_child_link_t *link =
+        kmalloc(
+            sizeof(*link));
+
+    if (link == NULL)
+        return false;
+
+    memset(
+        link,
+        0,
+        sizeof(*link));
+
+    /*
+     * Parent owns one real process reference.
+     */
+    if (!process_retain(
+            child))
+    {
+        kfree(
+            link);
+
+        return false;
+    }
+
+    link->child =
+        child;
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &parent->lock);
+
+    /*
+     * Don't attach children to a dying/dead parent.
+     */
+    if (parent->state ==
+            PROCESS_EXITING ||
+        parent->state ==
+            PROCESS_ZOMBIE ||
+        parent->state ==
+            PROCESS_DEAD)
+    {
+        spin_unlock_irqrestore(
+            &parent->lock,
+            flags);
+
+        process_release(
+            child);
+
+        kfree(
+            link);
+
+        return false;
+    }
+
+    /*
+     * Prevent duplicate child ownership.
+     */
+    for (process_child_link_t *current =
+             parent->children;
+         current != NULL;
+         current = current->next)
+    {
+        if (current->child == child ||
+            process_id(
+                current->child) ==
+                process_id(child))
+        {
+            spin_unlock_irqrestore(
+                &parent->lock,
+                flags);
+
+            process_release(
+                child);
+
+            kfree(
+                link);
+
+            return false;
+        }
+    }
+
+    link->previous =
+        NULL;
+
+    link->next =
+        parent->children;
+
+    if (parent->children != NULL)
+    {
+        parent->children->previous =
+            link;
+    }
+
+    parent->children =
+        link;
+
+    ++parent->child_count;
+
+    spin_unlock_irqrestore(
+        &parent->lock,
+        flags);
+
+    return true;
+}
+
+bool process_remove_child(
+    process_t *parent,
+    process_id_t child_id)
+{
+    if (parent == NULL ||
+        child_id == PROCESS_ID_INVALID)
+    {
+        return false;
+    }
+
+    process_child_link_t *removed =
+        NULL;
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &parent->lock);
+
+    for (process_child_link_t *current =
+             parent->children;
+         current != NULL;
+         current = current->next)
+    {
+        if (process_id(
+                current->child) !=
+            child_id)
+        {
+            continue;
+        }
+
+        if (current->previous != NULL)
+        {
+            current->previous->next =
+                current->next;
+        }
+        else
+        {
+            parent->children =
+                current->next;
+        }
+
+        if (current->next != NULL)
+        {
+            current->next->previous =
+                current->previous;
+        }
+
+        if (parent->child_count == 0u)
+        {
+            spin_unlock_irqrestore(
+                &parent->lock,
+                flags);
+
+            kernel_panic(
+                "PROCESS: child-count underflow");
+        }
+
+        --parent->child_count;
+
+        current->previous =
+            NULL;
+
+        current->next =
+            NULL;
+
+        removed =
+            current;
+
+        break;
+    }
+
+    spin_unlock_irqrestore(
+        &parent->lock,
+        flags);
+
+    if (removed == NULL)
+        return false;
+
+    /*
+     * Drop parent's ownership reference outside spinlock.
+     */
+    process_release(
+        removed->child);
+
+    kfree(
+        removed);
+
+    return true;
+}
+
+size_t process_child_count(
+    process_t *parent)
+{
+    if (parent == NULL)
+        return 0u;
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &parent->lock);
+
+    size_t count =
+        parent->child_count;
+
+    spin_unlock_irqrestore(
+        &parent->lock,
+        flags);
+
+    return count;
+}
+
+process_t *process_acquire_zombie_child(
+    process_t *parent,
+    process_id_t child_id)
+{
+    if (parent == NULL ||
+        child_id == PROCESS_ID_INVALID)
+    {
+        return NULL;
+    }
+
+    process_t *child =
+        NULL;
+
+    /*
+     * Find the child while holding the parent's child-list lock.
+     *
+     * The child cannot disappear while linked because the parent
+     * owns one retained reference to it.
+     */
+    uint32_t flags =
+        spin_lock_irqsave(
+            &parent->lock);
+
+    for (process_child_link_t *current =
+             parent->children;
+         current != NULL;
+         current = current->next)
+    {
+        if (current->child == NULL)
+            continue;
+
+        if (process_id(
+                current->child) ==
+            child_id)
+        {
+            child =
+                current->child;
+
+            break;
+        }
+    }
+
+    spin_unlock_irqrestore(
+        &parent->lock,
+        flags);
+
+    if (child == NULL)
+        return NULL;
+
+    /*
+     * Parent ownership still keeps child alive because we have not
+     * removed it from the child list.
+     *
+     * Now inspect child state without holding parent->lock.
+     */
+    if (process_state(
+            child) !=
+        PROCESS_ZOMBIE)
+    {
+        return NULL;
+    }
+
+    /*
+     * Obtain an independent caller-owned reference.
+     */
+    if (!process_retain(
+            child))
+    {
+        return NULL;
+    }
+
+    /*
+     * State could theoretically change between the state check and
+     * retain once more lifecycle transitions exist.
+     *
+     * For the current model ZOMBIE only proceeds to DEAD when the
+     * final ownership reference is released, and we now own a ref.
+     */
+    if (process_state(
+            child) !=
+        PROCESS_ZOMBIE)
+    {
+        process_release(
+            child);
+
+        return NULL;
+    }
+
+    return child;
 }
