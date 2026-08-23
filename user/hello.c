@@ -6,6 +6,7 @@
 #define SYS_EXIT          5u
 #define SYS_THREAD_CREATE 6u
 #define SYS_YIELD         7u
+#define SYS_WAITPID       8u
 
 
 /*
@@ -140,6 +141,17 @@ static void thread_yield(void)
         SYS_YIELD);
 }
 
+static int32_t waitpid_nonblocking(
+    uint32_t pid,
+    int *status)
+{
+    return syscall2(
+        SYS_WAITPID,
+        pid,
+        (uint32_t)
+            (uintptr_t)status);
+}
+
 
 static void thread_exit(
     int status)
@@ -178,16 +190,16 @@ static void worker_thread(void)
 static void worker_thread(void)
 {
     static const char started[] =
-        "U12.4 user: worker entered ring3\n";
+        "user: worker entered ring3\n";
 
     static const char shared_ok[] =
-        "U12.4 user: worker observed shared value=123\n";
+        "user: worker observed shared value=123\n";
 
     static const char updated[] =
-        "U12.4 user: worker changed shared value=456\n";
+        "user: worker changed shared value=456\n";
 
     static const char failed[] =
-        "U12.4 user: worker shared-memory test FAILED\n";
+        "user: worker shared-memory test FAILED\n";
 
     worker_tid =
         gettid();
@@ -248,7 +260,7 @@ static void worker_thread(void)
 /*
  * --------------------------------------------------------------------------
  * MAIN ELF THREAD
- * --------------------------------------------------------------------------
+ * ------sssssss--------------------------------------------------------------------
  */
 
 int main(
@@ -259,35 +271,48 @@ int main(
         "Hello from ELF userspace!\n";
 
     static const char argc_ok[] =
-        "U10 user: argc=3\n";
+        "user: argc=3\n";
 
     static const char argv0_prefix[] =
-        "U10 user: argv[0]=";
+        "user: argv[0]=";
 
     static const char argv1_prefix[] =
-        "U10 user: argv[1]=";
+        "user: argv[1]=";
 
     static const char argv2_prefix[] =
-        "U10 user: argv[2]=";
+        "user: argv[2]=";
 
     static const char newline[] =
         "\n";
 
+    static const char waitpid_starting[] =
+        "user: testing waitpid syscall\n";
+
+    static const char waitpid_nonchild_ok[] =
+        "user: non-child waitpid returned false\n";
+
+    static const char waitpid_bad_address_ok[] =
+        "user: invalid status pointer rejected\n";
+
+    static const char waitpid_passed[] =
+        "user: WAITPID SYSCALL PLUMBING PASSED\n";
+
     static const char starting[] =
-        "U12.4 user: creating worker thread\n";
+        "user: creating worker thread\n";
 
     static const char created[] =
-        "U12.4 user: worker has different TID\n";
+        "user: worker has different TID\n";
 
     static const char shared_ok[] =
-        "U12.4 user: main observed worker value=456\n";
+        "user: main observed worker value=456\n";
 
     static const char passed[] =
-        "U12.4 user: MULTITHREADING PASSED\n";
-
+        "user: MULTITHREADING PASSED\n";
 
     /*
-     * Keep the existing ELF argc/argv regression test.
+     * ----------------------------------------------------------
+     * Existing ELF argc/argv regression test.
+     * ----------------------------------------------------------
      */
     if (write_string(
             greeting) != 0)
@@ -341,13 +366,95 @@ int main(
         return 6;
     }
 
+    /*
+     * ----------------------------------------------------------
+     * P1E
+     *
+     * Basic userspace waitpid syscall plumbing.
+     *
+     * This process is PID 2 and currently owns no children.
+     * PID 1 is its parent, not its child, so attempting to wait
+     * on PID 1 must return 0 without modifying status.
+     * ----------------------------------------------------------
+     */
+    if (write_string(
+            waitpid_starting) != 0)
+    {
+        return 40;
+    }
+
+    int wait_status =
+        12345;
+
+    int32_t wait_result =
+        waitpid_nonblocking(
+            1u,
+            &wait_status);
+
+    if (wait_result !=
+            0 ||
+        wait_status !=
+            12345)
+    {
+        return 41;
+    }
+
+    if (write_string(
+            waitpid_nonchild_ok) != 0)
+    {
+        return 42;
+    }
 
     /*
-     * ------------------------------------------------------------------
-     * U12.4
-     * ------------------------------------------------------------------
+     * The syscall validates a non-NULL status destination before
+     * attempting collection.
+     *
+     * Address 1 is not valid userspace storage.
      */
+    wait_result =
+        waitpid_nonblocking(
+            1u,
+            (int *)(uintptr_t)1u);
 
+    if (wait_result !=
+        -3)
+    {
+        return 43;
+    }
+
+    if (write_string(
+            waitpid_bad_address_ok) != 0)
+    {
+        return 44;
+    }
+
+    /*
+     * NULL status is valid: caller may discard child status.
+     *
+     * PID 1 is still not our child, so result remains 0.
+     */
+    wait_result =
+        waitpid_nonblocking(
+            1u,
+            NULL);
+
+    if (wait_result !=
+        0)
+    {
+        return 45;
+    }
+
+    if (write_string(
+            waitpid_passed) != 0)
+    {
+        return 46;
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * U12.4
+     * ----------------------------------------------------------
+     */
     int32_t main_tid =
         gettid();
 
@@ -377,23 +484,12 @@ int main(
         return 32;
     }
 
-    /*
-     * Wait until worker proves shared address-space visibility.
-     *
-     * Yield rather than burning the current CPU.
-     */
     while (shared_value !=
            456u)
     {
         thread_yield();
     }
 
-    /*
-     * The kernel returned the newly allocated TID.
-     * The worker independently obtains gettid().
-     *
-     * Both must agree and must differ from main.
-     */
     if (worker_tid <= 0 ||
         worker_tid !=
             created_tid ||
@@ -427,8 +523,6 @@ int main(
         return 37;
     }
 
-    /*
-     * crt0 converts this into SYS_EXIT(0).
-     */
     return 0;
 }
+

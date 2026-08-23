@@ -147,12 +147,6 @@ static int32_t syscall_dispatch(
         int status =
             (int)(int32_t)arg0;
 
-        /*
-         * Userspace tasks created through the real process path
-         * must have a process.
-         *
-         * Keep kernel/internal tasks outside this syscall path.
-         */
         if (task->process == NULL)
         {
             return I386_SYSCALL_ERROR_INVALID_STATE;
@@ -162,11 +156,8 @@ static int32_t syscall_dispatch(
             process_id(
                 task->process);
 
-        /*
-         * Record exit status before task_exit().
-         *
-         * task_exit() eventually queues this task for the reaper.
-         */
+        (void)pid;
+
         if (!process_set_exit_status(
                 task->process,
                 status))
@@ -174,9 +165,6 @@ static int32_t syscall_dispatch(
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
 
-        /*
-         * Does not return.
-         */
         task_exit();
     }
 
@@ -210,6 +198,101 @@ static int32_t syscall_dispatch(
         task_yield();
 
         return 0;
+    }
+
+    case I386_SYSCALL_WAITPID:
+    {
+        task_t *task =
+            task_current();
+
+        if (task == NULL ||
+            task->process == NULL)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        process_id_t child_pid =
+            (process_id_t)arg0;
+
+        if (child_pid ==
+            PROCESS_ID_INVALID)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        int *user_status =
+            (int *)(uintptr_t)arg1;
+
+        /*
+         * Validate a non-NULL userspace status destination BEFORE
+         * collecting anything.
+         *
+         * process_waitpid() consumes the parent's ownership
+         * reference when it succeeds. We must therefore never
+         * discover an invalid userspace destination afterward.
+         *
+         * copy_from_user + copy_to_user of the same value verifies
+         * both readability and writability without changing the
+         * caller-visible value.
+         */
+        if (user_status != NULL)
+        {
+            int original_status =
+                0;
+
+            if (!copy_from_user(
+                    &original_status,
+                    user_status,
+                    sizeof(original_status)))
+            {
+                return I386_SYSCALL_ERROR_BAD_ADDRESS;
+            }
+
+            if (!copy_to_user(
+                    user_status,
+                    &original_status,
+                    sizeof(original_status)))
+            {
+                return I386_SYSCALL_ERROR_BAD_ADDRESS;
+            }
+        }
+
+        int status =
+            0;
+
+        if (!process_waitpid(
+                task->process,
+                child_pid,
+                &status))
+        {
+            return 0;
+        }
+
+        /*
+         * Destination was already validated above while the child
+         * was still owned by the parent.
+         */
+        if (user_status != NULL)
+        {
+            if (!copy_to_user(
+                    user_status,
+                    &status,
+                    sizeof(status)))
+            {
+                /*
+                 * This should not normally become possible without
+                 * concurrent address-space mutation, which the
+                 * current userspace model does not support.
+                 *
+                 * The child has already been collected, so report
+                 * the address failure rather than pretending the
+                 * wait did not happen.
+                 */
+                return I386_SYSCALL_ERROR_BAD_ADDRESS;
+            }
+        }
+
+        return 1;
     }
 
     default:

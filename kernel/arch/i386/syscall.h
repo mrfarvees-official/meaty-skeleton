@@ -34,6 +34,20 @@
  */
 #define I386_SYSCALL_YIELD          7u
 
+/*
+ * Non-blocking child collection.
+ *
+ * EBX = child PID.
+ * ECX = userspace int *status, or NULL to discard status.
+ *
+ * Returns:
+ *
+ *     1   zombie child collected
+ *     0   child still running or PID is not a child
+ *    <0   syscall error
+ */
+#define I386_SYSCALL_WAITPID        8u
+
 
 /*
  * Syscall result convention:

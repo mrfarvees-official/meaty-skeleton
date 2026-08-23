@@ -1502,10 +1502,17 @@ process_t *process_acquire_zombie_child(
         NULL;
 
     /*
-     * Find the child while holding the parent's child-list lock.
+     * The parent-owned child reference guarantees that a linked
+     * child remains alive.
      *
-     * The child cannot disappear while linked because the parent
-     * owns one retained reference to it.
+     * IMPORTANT:
+     *
+     * Take our independent reference BEFORE releasing parent->lock.
+     *
+     * Otherwise another CPU could remove the child from the parent
+     * immediately after we drop parent->lock, release the parent's
+     * final ownership reference, and destroy the child before we
+     * retain or inspect it.
      */
     uint32_t flags =
         spin_lock_irqsave(
@@ -1520,14 +1527,24 @@ process_t *process_acquire_zombie_child(
             continue;
 
         if (process_id(
-                current->child) ==
+                current->child) !=
             child_id)
+        {
+            continue;
+        }
+
+        /*
+         * While parent->lock is held the link cannot be removed,
+         * so the parent's retained reference keeps this object alive.
+         */
+        if (process_retain(
+                current->child))
         {
             child =
                 current->child;
-
-            break;
         }
+
+        break;
     }
 
     spin_unlock_irqrestore(
@@ -1538,33 +1555,9 @@ process_t *process_acquire_zombie_child(
         return NULL;
 
     /*
-     * Parent ownership still keeps child alive because we have not
-     * removed it from the child list.
-     *
-     * Now inspect child state without holding parent->lock.
-     */
-    if (process_state(
-            child) !=
-        PROCESS_ZOMBIE)
-    {
-        return NULL;
-    }
-
-    /*
-     * Obtain an independent caller-owned reference.
-     */
-    if (!process_retain(
-            child))
-    {
-        return NULL;
-    }
-
-    /*
-     * State could theoretically change between the state check and
-     * retain once more lifecycle transitions exist.
-     *
-     * For the current model ZOMBIE only proceeds to DEAD when the
-     * final ownership reference is released, and we now own a ref.
+     * We now own an independent reference, so the child can safely
+     * be inspected even if another CPU removes it from the parent
+     * immediately after parent->lock was released.
      */
     if (process_state(
             child) !=
