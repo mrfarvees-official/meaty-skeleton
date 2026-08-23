@@ -22,6 +22,7 @@
 #include <kernel/smp.h>
 #include <kernel/cpu.h>
 #include <kernel/mouse.h>
+#include <kernel/mouse_cursor.h>
 #include <kernel/keyboard.h>
 #include <kernel/vfs.h>
 #include <kernel/ramfs.h>
@@ -53,8 +54,20 @@ static void halt_forever(void)
 
 static void yield_forever(void)
 {
+	extern bool mouse_cursor_initialize(void);
+	extern void mouse_cursor_poll(void);
+
+	if (!mouse_cursor_initialize())
+	{
+		log_error(
+			"mouse cursor initialization failed\n");
+	}
+
 	for (;;)
+	{
+		mouse_cursor_poll();
 		task_yield();
+	}
 }
 
 void validate_multiboot_magic(uint32_t magic)
