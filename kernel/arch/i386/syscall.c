@@ -33,10 +33,6 @@ static int32_t syscall_dispatch(
         if (task == NULL)
             return I386_SYSCALL_ERROR_INVALID_STATE;
 
-        printf(
-            "U2c: gettid -> %lu\n",
-            (unsigned long)task->id);
-
         return (int32_t)task->id;
     }
 
@@ -159,11 +155,6 @@ static int32_t syscall_dispatch(
          */
         if (task->process == NULL)
         {
-            printf(
-                "U7: exit tid=%lu "
-                "without process\n",
-                (unsigned long)task->id);
-
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
 
@@ -182,12 +173,6 @@ static int32_t syscall_dispatch(
         {
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
-
-        printf(
-            "U7: exit pid=%lu tid=%lu status=%ld\n",
-            (unsigned long)pid,
-            (unsigned long)task->id,
-            (long)status);
 
         /*
          * Does not return.

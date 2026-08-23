@@ -64,29 +64,58 @@ void validate_multiboot_magic(uint32_t magic)
 	}
 }
 
-static void process_exit_status_test(void)
+static void process_waitpid_test(void)
 {
 	printf(
-		"\n=== P1C PROCESS EXIT STATUS TEST ===\n");
+		"\n=== P1D.2 KERNEL WAITPID TEST ===\n");
 
-	/*
-	 * Expected baseline:
-	 *
-	 *     PID 1 = immortal kernel process
-	 */
 	size_t processes_before =
 		process_live_count();
-
-	uint64_t reaped_before =
-		task_cleanup_total_reaped();
 
 	size_t tasks_before =
 		task_live_count();
 
+	uint64_t reaped_before =
+		task_cleanup_total_reaped();
+
 	/*
 	 * ----------------------------------------------------------
 	 * STEP 1
-	 * Spawn the real userspace ELF.
+	 * Acquire PID 1, the immortal kernel parent.
+	 * ----------------------------------------------------------
+	 */
+	process_t *parent =
+		process_acquire_by_id(
+			1u);
+
+	if (parent == NULL)
+	{
+		log_error(
+			"P1D.2: failed acquiring parent PID 1\n");
+
+		halt_forever();
+	}
+
+	if (process_child_count(
+			parent) !=
+		0u)
+	{
+		log_error(
+			"P1D.2: parent already owns children before test\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 2
+	 * Spawn the real U12.4 userspace process.
+	 *
+	 * This remains the first dynamically-created process, so:
+	 *
+	 *     PID 2 = userspace process
+	 *
+	 * process_spawn_user() still returns TID.
 	 * ----------------------------------------------------------
 	 */
 	const char *argv[] =
@@ -104,74 +133,62 @@ static void process_exit_status_test(void)
 	if (main_tid == 0u)
 	{
 		log_error(
-			"P1C: process_spawn_user failed\n");
+			"P1D.2: process_spawn_user failed\n");
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
 	}
 
-	/*
-	 * We currently know the first dynamically-created process
-	 * receives PID 2 during this isolated boot test.
-	 *
-	 * Later process_spawn_user() should return PID directly,
-	 * which will remove this temporary assumption.
-	 */
-	process_id_t pid =
+	process_id_t child_pid =
 		2u;
 
-	process_t *process =
+	process_t *child =
 		process_acquire_by_id(
-			pid);
+			child_pid);
 
-	if (process == NULL)
+	if (child == NULL)
 	{
 		log_error(
-			"P1C: failed acquiring pid=%u\n",
-			(unsigned)pid);
+			"P1D.2: failed acquiring child pid=%u\n",
+			(unsigned)child_pid);
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
 	}
 
-	/*
-	 * Holding this retained reference is important.
-	 *
-	 * Without it, the final task reaper could release the final
-	 * process reference and destroy the process before this test
-	 * gets a chance to inspect its zombie state.
-	 */
-	if (process_state(
-			process) !=
-		PROCESS_RUNNING)
+	if (process_parent_id(
+			child) !=
+		process_id(parent))
 	{
 		log_error(
-			"P1C: spawned process is not RUNNING\n");
+			"P1D.2: child parent mismatch "
+			"expected=%u actual=%u\n",
+			(unsigned)process_id(parent),
+			(unsigned)process_parent_id(child));
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
+	}
+
+	if (process_child_count(
+			parent) !=
+		1u)
+	{
+		log_error(
+			"P1D.2: parent child count expected=1 actual=%lu\n",
+			(unsigned long)
+				process_child_count(parent));
+
+		halt_forever();
 	}
 
 	log_success(
-		"P1C: spawned pid=%u main_tid=%u\n",
-		(unsigned)pid,
+		"P1D.2: parent=%u owns child=%u main_tid=%u\n",
+		(unsigned)process_id(parent),
+		(unsigned)child_pid,
 		(unsigned)main_tid);
 
 	/*
 	 * ----------------------------------------------------------
-	 * STEP 2
-	 * Wait for both userspace tasks to exit and be reaped.
-	 *
-	 * U12.4 creates:
-	 *
-	 *     main
-	 *     worker
-	 *
-	 * therefore exactly two additional tasks should eventually
-	 * pass through the reaper.
+	 * STEP 3
+	 * Wait for U12.4 main + worker to exit and be reaped.
 	 * ----------------------------------------------------------
 	 */
 	while (task_cleanup_total_reaped() <
@@ -180,263 +197,425 @@ static void process_exit_status_test(void)
 		task_yield();
 	}
 
-	/*
-	 * Make sure cleanup accounting has actually settled.
-	 */
 	while (task_cleanup_pending_count() !=
 		   0u)
 	{
 		task_yield();
 	}
 
-	/*
-	 * ----------------------------------------------------------
-	 * STEP 3
-	 * Inspect retained zombie process.
-	 * ----------------------------------------------------------
-	 */
 	process_info_t info;
 
 	if (!process_snapshot(
-			process,
+			child,
 			&info))
 	{
 		log_error(
-			"P1C: process_snapshot failed\n");
+			"P1D.2: child snapshot failed\n");
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
-	}
-
-	if (info.id !=
-		pid)
-	{
-		log_error(
-			"P1C: snapshot PID mismatch "
-			"expected=%u actual=%u\n",
-			(unsigned)pid,
-			(unsigned)info.id);
-
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
 	}
 
 	if (info.state !=
-		PROCESS_ZOMBIE)
+			PROCESS_ZOMBIE ||
+		info.thread_count !=
+			0u ||
+		info.exit_status !=
+			0 ||
+		info.parent_id !=
+			process_id(parent))
 	{
 		log_error(
-			"P1C: process did not become ZOMBIE "
-			"state=%u\n",
-			(unsigned)info.state);
-
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
-	}
-
-	if (info.thread_count !=
-		0u)
-	{
-		log_error(
-			"P1C: zombie still has threads=%lu\n",
-			(unsigned long)
-				info.thread_count);
-
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
-	}
-
-	if (info.termination_reason !=
-		PROCESS_TERMINATION_NORMAL)
-	{
-		log_error(
-			"P1C: wrong termination reason=%u\n",
-			(unsigned)
-				info.termination_reason);
-
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
-	}
-
-	if (info.exit_status !=
-		0)
-	{
-		log_error(
-			"P1C: wrong exit status=%d\n",
+			"P1D.2: invalid zombie "
+			"pid=%u parent=%u state=%u "
+			"threads=%lu status=%d\n",
+			(unsigned)info.id,
+			(unsigned)info.parent_id,
+			(unsigned)info.state,
+			(unsigned long)info.thread_count,
 			info.exit_status);
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
 	}
 
 	log_success(
-		"P1C: pid=%u ZOMBIE "
-		"threads=0 status=%d\n",
+		"P1D.2: child=%u retained as ZOMBIE "
+		"parent=%u threads=0 status=%d\n",
 		(unsigned)info.id,
+		(unsigned)info.parent_id,
 		info.exit_status);
 
 	/*
 	 * ----------------------------------------------------------
 	 * STEP 4
-	 * Verify the process is still discoverable while this test
-	 * owns its retained reference.
+	 * Collect the real zombie through process_waitpid().
 	 * ----------------------------------------------------------
 	 */
+	int status =
+		-1;
+
+	if (!process_waitpid(
+			parent,
+			child_pid,
+			&status))
+	{
+		log_error(
+			"P1D.2: waitpid failed collecting child=%u\n",
+			(unsigned)child_pid);
+
+		halt_forever();
+	}
+
+	if (status !=
+		0)
+	{
+		log_error(
+			"P1D.2: waitpid returned wrong status=%d\n",
+			status);
+
+		halt_forever();
+	}
+
+	if (process_child_count(
+			parent) !=
+		0u)
+	{
+		log_error(
+			"P1D.2: child remained attached after collection\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1D.2: waitpid collected child=%u status=%d\n",
+		(unsigned)child_pid,
+		status);
+
+	/*
+	 * A collected child cannot be collected twice.
+	 *
+	 * Also verify a failed wait leaves status untouched.
+	 */
+	status =
+		12345;
+
+	if (process_waitpid(
+			parent,
+			child_pid,
+			&status))
+	{
+		log_error(
+			"P1D.2: second waitpid unexpectedly succeeded\n");
+
+		halt_forever();
+	}
+
+	if (status !=
+		12345)
+	{
+		log_error(
+			"P1D.2: failed waitpid modified status\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1D.2: second waitpid correctly returned false\n");
+
+	/*
+	 * The test still owns its independent reference acquired above.
+	 *
+	 * Therefore waitpid removed parent ownership, but the object
+	 * remains alive until this reference is released.
+	 */
+	process_release(
+		child);
+
+	child =
+		NULL;
+
 	process_t *lookup =
 		process_acquire_by_id(
-			pid);
+			child_pid);
 
-	if (lookup == NULL)
+	if (lookup != NULL)
 	{
 		log_error(
-			"P1C: zombie disappeared from registry too early\n");
+			"P1D.2: child=%u remained after final reference release\n",
+			(unsigned)child_pid);
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		process_release(
+			lookup);
+
+		halt_forever();
 	}
 
-	process_info_t lookup_info;
-
-	if (!process_snapshot(
-			lookup,
-			&lookup_info))
-	{
-		log_error(
-			"P1C: zombie lookup snapshot failed\n");
-
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
-	}
-
-	if (lookup_info.state !=
-			PROCESS_ZOMBIE ||
-		lookup_info.exit_status !=
-			0 ||
-		lookup_info.thread_count !=
-			0u)
-	{
-		log_error(
-			"P1C: registry zombie snapshot invalid\n");
-
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
-	}
-
-	process_release(
-		lookup);
-
-	lookup =
-		NULL;
+	log_success(
+		"P1D.2: child reference released after collection\n");
 
 	/*
 	 * ----------------------------------------------------------
 	 * STEP 5
-	 * Validate task cleanup.
+	 * Deterministically test RUNNING -> false.
+	 *
+	 * Doing this with the real U12.4 task immediately after spawn
+	 * would be SMP-racy as a test: another CPU could legitimately
+	 * run and reap it before this CPU calls waitpid().
+	 *
+	 * Instead create PID 3 after U12.4 is finished and manually
+	 * attach one process execution member.
+	 *
+	 * No task is created, so U12.4 PID/TID numbering is unchanged.
+	 * ----------------------------------------------------------
+	 */
+	address_space_t *kernel_space =
+		address_space_kernel();
+
+	if (kernel_space == NULL)
+	{
+		log_error(
+			"P1D.2: kernel address space unavailable\n");
+
+		halt_forever();
+	}
+
+	process_t *running_child =
+		process_create(
+			kernel_space,
+			process_id(parent));
+
+	if (running_child == NULL)
+	{
+		log_error(
+			"P1D.2: failed creating synthetic running child\n");
+
+		halt_forever();
+	}
+
+	process_id_t running_pid =
+		process_id(
+			running_child);
+
+	if (!process_thread_attach(
+			running_child))
+	{
+		log_error(
+			"P1D.2: failed attaching synthetic process thread\n");
+
+		halt_forever();
+	}
+
+	if (process_state(
+			running_child) !=
+		PROCESS_RUNNING)
+	{
+		log_error(
+			"P1D.2: synthetic child did not become RUNNING\n");
+
+		halt_forever();
+	}
+
+	status =
+		54321;
+
+	if (process_waitpid(
+			parent,
+			running_pid,
+			&status))
+	{
+		log_error(
+			"P1D.2: waitpid collected RUNNING child=%u\n",
+			(unsigned)running_pid);
+
+		halt_forever();
+	}
+
+	if (status !=
+		54321)
+	{
+		log_error(
+			"P1D.2: RUNNING wait modified status\n");
+
+		halt_forever();
+	}
+
+	if (process_child_count(
+			parent) !=
+		1u)
+	{
+		log_error(
+			"P1D.2: RUNNING child ownership changed\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1D.2: RUNNING child=%u correctly returned false\n",
+		(unsigned)running_pid);
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 6
+	 * Turn synthetic PID 3 into a zombie and collect it.
+	 * Use a non-zero status so status propagation is explicit.
+	 * ----------------------------------------------------------
+	 */
+	if (!process_set_exit_status(
+			running_child,
+			37))
+	{
+		log_error(
+			"P1D.2: failed setting synthetic exit status\n");
+
+		halt_forever();
+	}
+
+	process_thread_detach(
+		running_child);
+
+	if (process_state(
+			running_child) !=
+		PROCESS_ZOMBIE)
+	{
+		log_error(
+			"P1D.2: synthetic child did not become ZOMBIE\n");
+
+		halt_forever();
+	}
+
+	status =
+		-1;
+
+	if (!process_waitpid(
+			parent,
+			running_pid,
+			&status))
+	{
+		log_error(
+			"P1D.2: failed collecting synthetic zombie=%u\n",
+			(unsigned)running_pid);
+
+		halt_forever();
+	}
+
+	if (status !=
+		37)
+	{
+		log_error(
+			"P1D.2: synthetic status expected=37 actual=%d\n",
+			status);
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1D.2: ZOMBIE child=%u collected status=%d\n",
+		(unsigned)running_pid,
+		status);
+
+	/*
+	 * The creator reference is now the only reference left.
+	 */
+	process_release(
+		running_child);
+
+	running_child =
+		NULL;
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 7
+	 * A PID that is not a child must return false.
+	 *
+	 * PID 1 obviously cannot be its own child.
+	 * ----------------------------------------------------------
+	 */
+	status =
+		777;
+
+	if (process_waitpid(
+			parent,
+			process_id(parent),
+			&status))
+	{
+		log_error(
+			"P1D.2: non-child PID unexpectedly collected\n");
+
+		halt_forever();
+	}
+
+	if (status !=
+		777)
+	{
+		log_error(
+			"P1D.2: non-child wait modified status\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"P1D.2: non-child PID correctly returned false\n");
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 8
+	 * Existing task/process accounting must return to baseline.
 	 * ----------------------------------------------------------
 	 */
 	if (task_live_count() !=
 		tasks_before)
 	{
 		log_error(
-			"P1C: task count did not restore "
+			"P1D.2: task count did not restore "
 			"before=%lu after=%lu\n",
-			(unsigned long)
-				tasks_before,
-			(unsigned long)
-				task_live_count());
+			(unsigned long)tasks_before,
+			(unsigned long)task_live_count());
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
 	}
 
 	if (task_cleanup_total_reaped() !=
 		reaped_before + 2u)
 	{
 		log_error(
-			"P1C: expected exactly two reaped tasks "
+			"P1D.2: unexpected reaper count "
 			"before=%llu after=%llu\n",
-			(unsigned long long)
-				reaped_before,
+			(unsigned long long)reaped_before,
 			(unsigned long long)
 				task_cleanup_total_reaped());
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
 	}
 
-	/*
-	 * ----------------------------------------------------------
-	 * STEP 6
-	 * Release the test's retained process reference.
-	 *
-	 * No task references remain now.
-	 *
-	 * Therefore this should destroy PID 2 and release its final
-	 * address-space reference.
-	 * ----------------------------------------------------------
-	 */
-	process_release(
-		process);
-
-	process =
-		NULL;
-
-	/*
-	 * PID must disappear from the registry.
-	 */
-	lookup =
-		process_acquire_by_id(
-			pid);
-
-	if (lookup != NULL)
+	if (process_child_count(
+			parent) !=
+		0u)
 	{
 		log_error(
-			"P1C: pid=%u remained after final release\n",
-			(unsigned)pid);
+			"P1D.2: parent still owns children at end of test\n");
 
-		process_release(
-			lookup);
-
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
 	}
 
-	/*
-	 * Process accounting must return to the value from before
-	 * spawning the ELF.
-	 */
 	if (process_live_count() !=
 		processes_before)
 	{
 		log_error(
-			"P1C: process count did not restore "
+			"P1D.2: process count did not restore "
 			"before=%lu after=%lu\n",
-			(unsigned long)
-				processes_before,
-			(unsigned long)
-				process_live_count());
+			(unsigned long)processes_before,
+			(unsigned long)process_live_count());
 
-		for (;;)
-			__asm__ volatile(
-				"cli; hlt");
+		halt_forever();
 	}
 
-	log_success(
-		"P1C: zombie retained exit status correctly\n");
+	process_release(
+		parent);
+
+	parent =
+		NULL;
 
 	log_success(
-		"P1C: PROCESS EXIT STATUS TEST PASSED\n");
+		"P1D.2: KERNEL WAITPID TEST PASSED\n");
 }
 
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
@@ -735,7 +914,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 
-	process_exit_status_test();
+	process_waitpid_test();
 
 	yield_forever();
 }

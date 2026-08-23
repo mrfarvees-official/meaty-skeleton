@@ -218,9 +218,6 @@ static void breakpoint_handler(struct interrupt_frame *frame)
 
         if (task == NULL)
         {
-            printf(
-                "U2c: no current task at return trap\n");
-
             interrupt_halt();
         }
 

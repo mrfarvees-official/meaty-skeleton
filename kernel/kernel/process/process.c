@@ -1578,3 +1578,181 @@ process_t *process_acquire_zombie_child(
 
     return child;
 }
+
+bool process_waitpid(
+    process_t *parent,
+    process_id_t child_pid,
+    int *status)
+{
+    if (parent == NULL ||
+        child_pid == PROCESS_ID_INVALID)
+    {
+        return false;
+    }
+
+    process_child_link_t *removed =
+        NULL;
+
+    int child_status =
+        0;
+
+    /*
+     * The parent lock protects:
+     *
+     *     - membership in the child list
+     *     - the parent-owned child reference
+     *
+     * Keeping parent->lock held while checking the child's
+     * lifecycle prevents another CPU from concurrently collecting
+     * or removing this child underneath us.
+     */
+    uint32_t parent_flags =
+        spin_lock_irqsave(
+            &parent->lock);
+
+    for (process_child_link_t *current =
+             parent->children;
+         current != NULL;
+         current = current->next)
+    {
+        process_t *child =
+            current->child;
+
+        if (child == NULL)
+            continue;
+
+        if (process_id(
+                child) !=
+            child_pid)
+        {
+            continue;
+        }
+
+        /*
+         * Lock order for this operation:
+         *
+         *     parent->lock
+         *         -> child->lock
+         *
+         * We must inspect state and exit_status together.
+         *
+         * The parent still owns a retained reference through
+         * 'current', so child cannot disappear while these locks
+         * are held.
+         */
+        uint32_t child_flags =
+            spin_lock_irqsave(
+                &child->lock);
+
+        if (child->state !=
+            PROCESS_ZOMBIE)
+        {
+            spin_unlock_irqrestore(
+                &child->lock,
+                child_flags);
+
+            spin_unlock_irqrestore(
+                &parent->lock,
+                parent_flags);
+
+            return false;
+        }
+
+        child_status =
+            child->exit_status;
+
+        spin_unlock_irqrestore(
+            &child->lock,
+            child_flags);
+
+        /*
+         * Child is a zombie and still belongs to this parent.
+         *
+         * Remove the ownership link while parent->lock is still
+         * held so two CPUs cannot successfully collect the same
+         * child.
+         */
+        if (current->previous != NULL)
+        {
+            current->previous->next =
+                current->next;
+        }
+        else
+        {
+            parent->children =
+                current->next;
+        }
+
+        if (current->next != NULL)
+        {
+            current->next->previous =
+                current->previous;
+        }
+
+        if (parent->child_count == 0u)
+        {
+            spin_unlock_irqrestore(
+                &parent->lock,
+                parent_flags);
+
+            kernel_panic(
+                "PROCESS: child-count underflow in waitpid");
+        }
+
+        --parent->child_count;
+
+        current->previous =
+            NULL;
+
+        current->next =
+            NULL;
+
+        removed =
+            current;
+
+        break;
+    }
+
+    spin_unlock_irqrestore(
+        &parent->lock,
+        parent_flags);
+
+    /*
+     * No matching child means either:
+     *
+     *     - PID was never our child
+     *     - another waiter already collected it
+     */
+    if (removed == NULL)
+        return false;
+
+    /*
+     * Do not touch the child after dropping the ownership
+     * reference unless we own another independent reference.
+     *
+     * Save everything needed before this point.
+     */
+    if (status != NULL)
+    {
+        *status =
+            child_status;
+    }
+
+    /*
+     * The child link owned exactly one process reference.
+     *
+     * Drop it outside all process-local spinlocks because this may
+     * become the final reference and trigger process/address-space
+     * destruction.
+     */
+    process_release(
+        removed->child);
+
+    removed->child =
+        NULL;
+
+    kfree(
+        removed);
+
+    return true;
+}

@@ -7,10 +7,8 @@
 
 #include <kernel/address_space.h>
 
-
 typedef uint32_t process_id_t;
 typedef uint32_t handle_t;
-
 
 #define PROCESS_ID_INVALID \
     ((process_id_t)0u)
@@ -20,7 +18,6 @@ typedef uint32_t handle_t;
 
 #define PROCESS_STANDARD_HANDLE_COUNT \
     3u
-
 
 /*
  * Process lifetime.
@@ -51,7 +48,6 @@ typedef enum process_state
     PROCESS_DEAD
 } process_state_t;
 
-
 /*
  * Why a process stopped.
  *
@@ -67,7 +63,6 @@ typedef enum process_termination_reason
     PROCESS_TERMINATION_FAULT
 } process_termination_reason_t;
 
-
 /*
  * Accounting is kept separate from core identity/lifetime fields.
  *
@@ -82,7 +77,6 @@ typedef struct process_accounting
     size_t current_handles;
     size_t peak_handles;
 } process_accounting_t;
-
 
 /*
  * Safe diagnostic representation.
@@ -108,9 +102,7 @@ typedef struct process_info
     uintptr_t page_directory;
 } process_info_t;
 
-
 typedef struct process process_t;
-
 
 /*
  * Initialize process registry and immortal kernel process.
@@ -118,7 +110,6 @@ typedef struct process process_t;
  * Must run after address_space_initialize().
  */
 void process_initialize(void);
-
 
 /*
  * Create and register a new process.
@@ -132,7 +123,6 @@ process_t *process_create(
     address_space_t *address_space,
     process_id_t parent_id);
 
-
 /*
  * Reference management.
  *
@@ -144,7 +134,6 @@ bool process_retain(
 void process_release(
     process_t *process);
 
-
 /*
  * Lookup by PID.
  *
@@ -153,7 +142,6 @@ void process_release(
  */
 process_t *process_acquire_by_id(
     process_id_t id);
-
 
 /*
  * Basic accessors.
@@ -167,7 +155,6 @@ process_id_t process_parent_id(
 process_state_t process_state(
     process_t *process);
 
-
 /*
  * BORROWED address-space pointer.
  *
@@ -175,7 +162,6 @@ process_state_t process_state(
  */
 address_space_t *process_address_space(
     process_t *process);
-
 
 /*
  * Execution accounting.
@@ -191,7 +177,6 @@ void process_thread_detach(
 size_t process_thread_count(
     process_t *process);
 
-
 /*
  * Scheduler accounting hook.
  *
@@ -200,7 +185,6 @@ size_t process_thread_count(
 void process_account_runtime(
     process_t *process,
     uint64_t ticks);
-
 
 /*
  * Safe diagnostic snapshot.
@@ -212,7 +196,6 @@ bool process_snapshot(
 bool process_snapshot_by_id(
     process_id_t id,
     process_info_t *info);
-
 
 /*
  * Temporary generic-handle infrastructure.
@@ -232,7 +215,6 @@ handle_t process_handle_open(
 bool process_handle_close(
     process_t *process,
     handle_t handle);
-
 
 /*
  * System-wide diagnostics.
@@ -281,5 +263,28 @@ size_t process_child_count(
 process_t *process_acquire_zombie_child(
     process_t *parent,
     process_id_t child_id);
+
+/*
+ * Non-blocking child collection.
+ *
+ * Returns false if:
+ *
+ *     - child_pid is not owned by parent
+ *     - the child exists but is not PROCESS_ZOMBIE
+ *
+ * Returns true only when a zombie child is collected.
+ *
+ * On success:
+ *
+ *     - exit status is copied to *status when status != NULL
+ *     - the child is removed from parent's child list
+ *     - the parent's ownership reference is released
+ *
+ * A successfully collected child cannot be collected again.
+ */
+bool process_waitpid(
+    process_t *parent,
+    process_id_t child_pid,
+    int *status);
 
 #endif
