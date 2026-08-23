@@ -613,6 +613,126 @@ bool paging_share_kernel_pde(
     return true;
 }
 
+bool paging_ensure_kernel_page_table(
+    uintptr_t virtual_address)
+{
+    /*
+     * This operation is specifically for constructing stable
+     * supervisor-only kernel PDEs.
+     *
+     * It must run while the canonical kernel page directory is active.
+     */
+    if (paging_current_directory() !=
+        kernel_directory_physical)
+    {
+        return false;
+    }
+
+    size_t directory_index =
+        page_directory_index(
+            virtual_address);
+
+    /*
+     * Never create a normal page table over the recursive paging
+     * region or over the temporary page-directory scratch region.
+     */
+    if (directory_index ==
+            RECURSIVE_DIRECTORY_INDEX ||
+        directory_index ==
+            PAGE_DIRECTORY_SCRATCH_INDEX)
+    {
+        return false;
+    }
+
+    uint32_t irq_flags =
+        spin_lock_irqsave(
+            &paging_lock);
+
+    uint32_t *directory =
+        recursive_page_directory();
+
+    uint32_t directory_entry =
+        directory[directory_index];
+
+    /*
+     * A page table already exists.
+     *
+     * For this API it must be supervisor-only. A PAGE_USER PDE in a
+     * region expected to belong to the kernel would violate the
+     * address-space sharing model.
+     */
+    if ((directory_entry &
+         PAGE_PRESENT) != 0)
+    {
+        bool supervisor_only =
+            (directory_entry &
+             PAGE_USER) == 0;
+
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
+
+        return supervisor_only;
+    }
+
+    /*
+     * Allocate only the page-table frame.
+     *
+     * No data page is allocated here.
+     *
+     * Lock ordering remains:
+     *
+     *     paging_lock
+     *         ->
+     *     pmm_lock
+     */
+    uintptr_t table_frame =
+        pmm_allocate_frame();
+
+    if (table_frame == 0)
+    {
+        spin_unlock_irqrestore(
+            &paging_lock,
+            irq_flags);
+
+        return false;
+    }
+
+    /*
+     * Install a supervisor-only writable PDE.
+     *
+     * Later paging_map_page() calls can populate PTEs beneath this PDE
+     * without replacing the page-table frame itself.
+     */
+    directory[directory_index] =
+        (uint32_t)(table_frame &
+                   PAGE_FRAME) |
+        PAGE_PRESENT |
+        PAGE_WRITABLE;
+
+    uint32_t *page_table =
+        recursive_page_table(
+            directory_index);
+
+    /*
+     * The recursive alias for this page table was previously
+     * non-present, so invalidate it before touching the table.
+     */
+    invalidate_page(
+        (uintptr_t)page_table);
+
+    memset(
+        page_table,
+        0,
+        PAGE_SIZE);
+
+    spin_unlock_irqrestore(
+        &paging_lock,
+        irq_flags);
+
+    return true;
+}
+
 bool paging_map_page(
     uintptr_t virtual_address,
     uintptr_t physical_address,

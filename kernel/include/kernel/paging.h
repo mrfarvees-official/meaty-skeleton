@@ -138,4 +138,17 @@ bool paging_identity_map_range(
     size_t length,
     uint32_t flags);
 
+/*
+ * Ensure that the canonical kernel address space has a supervisor-only
+ * page table for the 4 MiB region containing virtual_address.
+ *
+ * This creates only the page table/PDE. It does not map any data page.
+ *
+ * Pre-creating kernel page tables allows user address spaces to inherit
+ * stable shared supervisor PDEs even when kernel mappings are added to
+ * those page tables later.
+ */
+bool paging_ensure_kernel_page_table(
+    uintptr_t virtual_address);
+
 #endif
