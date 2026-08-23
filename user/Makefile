@@ -28,6 +28,7 @@ USER_LDFLAGS=\
 
 HELLO_OBJS=\
 	crt0.o \
+	runtime.o \
 	hello.o
 
 SPAWN_CHILD_OBJS=\
@@ -47,11 +48,14 @@ spawn-child.nex: $(SPAWN_CHILD_OBJS) linker.ld
 crt0.o: crt0.S
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-hello.o: hello.c
-	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
+runtime.o: runtime.c runtime.h
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c runtime.c -o $@
+
+hello.o: hello.c runtime.h
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c hello.c -o $@
 
 spawn_child.o: spawn_child.c
-	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c spawn_child.c -o $@
 
 install: hello.nex spawn-child.nex
 	mkdir -p $(DESTDIR)$(BINDIR)
@@ -60,4 +64,4 @@ install: hello.nex spawn-child.nex
 
 clean:
 	rm -f hello.nex spawn-child.nex \
-		hello.o spawn_child.o crt0.o
+		hello.o spawn_child.o runtime.o crt0.o

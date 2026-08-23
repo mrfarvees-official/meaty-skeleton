@@ -1,14 +1,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "runtime.h"
+
 #define SYS_GETTID 2u
-#define SYS_DEBUG_WRITE 4u
-#define SYS_EXIT 5u
 #define SYS_THREAD_CREATE 6u
-#define SYS_YIELD 7u
-#define SYS_WAITPID 8u
-#define SYS_SPAWN 9u
-#define SYS_WRITE 11u
 
 /*
  * Shared ELF data.
@@ -25,8 +21,13 @@ static volatile int32_t worker_tid =
 
 /*
  * --------------------------------------------------------------------------
- * SYSCALL HELPERS
+ * REGRESSION-ONLY SYSCALL HELPERS
  * --------------------------------------------------------------------------
+ *
+ * The shell-critical syscall ABI lives in runtime.c.
+ *
+ * These two helpers remain local only because U12.4 still needs its
+ * historical gettid/thread-create regression.
  */
 
 static int32_t syscall0(
@@ -60,77 +61,12 @@ static int32_t syscall1(
     return (int32_t)result;
 }
 
-static int32_t syscall2(
-    uint32_t number,
-    uint32_t arg0,
-    uint32_t arg1)
-{
-    uint32_t result =
-        number;
-
-    __asm__ volatile(
-        "int $0x80"
-        : "+a"(result)
-        : "b"(arg0),
-          "c"(arg1)
-        : "memory", "cc");
-
-    return (int32_t)result;
-}
-
-static int32_t syscall3(
-    uint32_t number,
-    uint32_t arg0,
-    uint32_t arg1,
-    uint32_t arg2)
-{
-    uint32_t result =
-        number;
-
-    __asm__ volatile(
-        "int $0x80"
-        : "+a"(result)
-        : "b"(arg0),
-          "c"(arg1),
-          "d"(arg2)
-        : "memory", "cc");
-
-    return (int32_t)result;
-}
-
-static size_t string_length(
-    const char *string)
-{
-    size_t length =
-        0;
-
-    while (string[length] !=
-           '\0')
-    {
-        ++length;
-    }
-
-    return length;
-}
-
 static int write_string(
     const char *string)
 {
-    size_t length =
-        string_length(
-            string);
-
-    int32_t result =
-        syscall3(
-            SYS_WRITE,
-            1u,
-            (uint32_t)(uintptr_t)string,
-            (uint32_t)length);
-
-    return result ==
-                   (int32_t)length
-               ? 0
-               : -1;
+    return user_write_string(
+        USER_STDOUT,
+        string);
 }
 
 static int32_t gettid(void)
@@ -149,18 +85,16 @@ static int32_t thread_create(
 
 static void thread_yield(void)
 {
-    (void)syscall0(
-        SYS_YIELD);
+    user_yield();
 }
 
 static int32_t waitpid_nonblocking(
     uint32_t pid,
     int *status)
 {
-    return syscall2(
-        SYS_WAITPID,
+    return user_waitpid(
         pid,
-        (uint32_t)(uintptr_t)status);
+        status);
 }
 
 static int32_t spawn_process(
@@ -168,13 +102,10 @@ static int32_t spawn_process(
     uint32_t argc,
     const char *const argv[])
 {
-    return syscall3(
-        SYS_SPAWN,
-        (uint32_t)
-            (uintptr_t)path,
+    return user_spawn(
+        path,
         argc,
-        (uint32_t)
-            (uintptr_t)argv);
+        argv);
 }
 
 static void thread_exit(
@@ -184,18 +115,8 @@ static void thread_exit(
 static void thread_exit(
     int status)
 {
-    (void)syscall1(
-        SYS_EXIT,
-        (uint32_t)status);
-
-    /*
-     * SYS_EXIT must never return.
-     */
-    for (;;)
-    {
-        __asm__ volatile(
-            "ud2");
-    }
+    user_exit(
+        status);
 }
 
 /*
@@ -491,8 +412,7 @@ int main(
             child_path,
             child_arg1,
             child_arg2,
-            NULL
-        };
+            NULL};
 
     int32_t child_pid =
         spawn_process(
