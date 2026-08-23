@@ -14,47 +14,32 @@
 #define I386_SYSCALL_YIELD          7u
 #define I386_SYSCALL_WAITPID        8u
 #define I386_SYSCALL_SPAWN          9u
-
-/*
- * EBX = fd
- * ECX = userspace buffer
- * EDX = byte count
- *
- * fd 0:
- *     non-blocking keyboard input
- *
- * fd >= 3:
- *     VFS-backed file input
- */
 #define I386_SYSCALL_READ           10u
-
-/*
- * EBX = fd
- * ECX = userspace buffer
- * EDX = byte count
- *
- * fd 1/2:
- *     terminal output
- *
- * fd >= 3:
- *     VFS-backed file output
- */
 #define I386_SYSCALL_WRITE          11u
-
-/*
- * EBX = userspace path
- * ECX = open flags
- *
- * Returns fd >= 3 or negative error.
- */
 #define I386_SYSCALL_OPEN           12u
+#define I386_SYSCALL_CLOSE          13u
 
 /*
- * EBX = fd
+ * Non-blocking ordered keyboard input event.
  *
- * Returns 0 or negative error.
+ * Returns:
+ *
+ *     0x01..0xff   translated character
+ *     0x100+       special key
+ *     0            no event available
+ *     < 0          error
+ *
+ * Only key-press events are returned.
  */
-#define I386_SYSCALL_CLOSE          13u
+#define I386_SYSCALL_KEY_EVENT      14u
+
+#define I386_KEY_EVENT_LEFT         0x100
+#define I386_KEY_EVENT_RIGHT        0x101
+#define I386_KEY_EVENT_UP           0x102
+#define I386_KEY_EVENT_DOWN         0x103
+#define I386_KEY_EVENT_HOME         0x104
+#define I386_KEY_EVENT_END          0x105
+#define I386_KEY_EVENT_DELETE       0x106
 
 
 #define I386_SYSCALL_ERROR_NO_SUCH_SYSCALL (-1)

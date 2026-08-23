@@ -6,6 +6,15 @@
 #include <kernel/tty.h>
 
 #include "vga.h"
+#include "io.h"
+
+#define VGA_CRTC_COMMAND 0x3D4u
+#define VGA_CRTC_DATA    0x3D5u
+
+#define VGA_CURSOR_START 0x0Au
+#define VGA_CURSOR_END   0x0Bu
+#define VGA_CURSOR_HIGH  0x0Eu
+#define VGA_CURSOR_LOW   0x0Fu
 
 static const size_t VGA_WIDTH = 80;
 static const size_t VGA_HEIGHT = 25;
@@ -17,6 +26,66 @@ static size_t terminal_row;
 static size_t terminal_column;
 static uint8_t terminal_color;
 static uint16_t *terminal_buffer;
+
+static void terminal_cursor_enable(void)
+{
+    outb(
+        VGA_CRTC_COMMAND,
+        VGA_CURSOR_START);
+
+    uint8_t start =
+        inb(
+            VGA_CRTC_DATA);
+
+    outb(
+        VGA_CRTC_DATA,
+        (uint8_t)(
+            (start & 0xC0u) |
+            13u));
+
+    outb(
+        VGA_CRTC_COMMAND,
+        VGA_CURSOR_END);
+
+    uint8_t end =
+        inb(
+            VGA_CRTC_DATA);
+
+    outb(
+        VGA_CRTC_DATA,
+        (uint8_t)(
+            (end & 0xE0u) |
+            15u));
+}
+
+
+static void terminal_cursor_update(void)
+{
+    size_t position =
+        terminal_row *
+            VGA_WIDTH +
+        terminal_column;
+
+    outb(
+        VGA_CRTC_COMMAND,
+        VGA_CURSOR_LOW);
+
+    outb(
+        VGA_CRTC_DATA,
+        (uint8_t)(
+            position &
+            0xffu));
+
+    outb(
+        VGA_CRTC_COMMAND,
+        VGA_CURSOR_HIGH);
+
+    outb(
+        VGA_CRTC_DATA,
+        (uint8_t)(
+            (position >> 8) &
+            0xffu));
+}
 
 static void terminal_clear_row(size_t row)
 {
@@ -63,6 +132,9 @@ void terminal_initialize(void)
 
 	for (size_t row = 0; row < VGA_HEIGHT; row++)
 		terminal_clear_row(row);
+
+	terminal_cursor_enable();
+	terminal_cursor_update();
 }
 
 void terminal_setcolor(uint8_t color)

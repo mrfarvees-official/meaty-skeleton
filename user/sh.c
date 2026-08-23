@@ -4,9 +4,21 @@
 
 #include "runtime.h"
 
-#define SHELL_LINE_CAPACITY 128u
-#define SHELL_ARGV_CAPACITY 16u
-#define SHELL_PATH_CAPACITY 256u
+#define SHELL_LINE_CAPACITY    73u
+#define SHELL_ARGV_CAPACITY    16u
+#define SHELL_PATH_CAPACITY    256u
+
+#define SHELL_HISTORY_CAPACITY 16u
+
+#define SHELL_PROMPT "meaty> "
+
+
+static char shell_history[
+    SHELL_HISTORY_CAPACITY]
+    [SHELL_LINE_CAPACITY];
+
+static size_t shell_history_count =
+    0u;
 
 
 static int shell_write(
@@ -58,6 +70,127 @@ static size_t shell_string_length(
 }
 
 
+static void shell_copy_string(
+    char *destination,
+    size_t capacity,
+    const char *source)
+{
+    if (destination == NULL ||
+        capacity == 0u)
+    {
+        return;
+    }
+
+    size_t index =
+        0u;
+
+    if (source != NULL)
+    {
+        while (source[index] != '\0' &&
+               index + 1u < capacity)
+        {
+            destination[index] =
+                source[index];
+
+            ++index;
+        }
+    }
+
+    destination[index] =
+        '\0';
+}
+
+
+static bool shell_strings_equal(
+    const char *left,
+    const char *right)
+{
+    if (left == NULL ||
+        right == NULL)
+    {
+        return false;
+    }
+
+    size_t index =
+        0u;
+
+    for (;;)
+    {
+        if (left[index] !=
+            right[index])
+        {
+            return false;
+        }
+
+        if (left[index] ==
+            '\0')
+        {
+            return true;
+        }
+
+        ++index;
+    }
+}
+
+
+static void shell_history_add(
+    const char *line)
+{
+    if (line == NULL ||
+        line[0] == '\0')
+    {
+        return;
+    }
+
+    /*
+     * Do not store the same command twice consecutively.
+     */
+    if (shell_history_count != 0u &&
+        shell_strings_equal(
+            shell_history[
+                shell_history_count - 1u],
+            line))
+    {
+        return;
+    }
+
+    if (shell_history_count <
+        SHELL_HISTORY_CAPACITY)
+    {
+        shell_copy_string(
+            shell_history[
+                shell_history_count],
+            SHELL_LINE_CAPACITY,
+            line);
+
+        ++shell_history_count;
+
+        return;
+    }
+
+    /*
+     * Small fixed history: discard the oldest command.
+     */
+    for (size_t index = 1u;
+         index <
+             SHELL_HISTORY_CAPACITY;
+         ++index)
+    {
+        shell_copy_string(
+            shell_history[
+                index - 1u],
+            SHELL_LINE_CAPACITY,
+            shell_history[index]);
+    }
+
+    shell_copy_string(
+        shell_history[
+            SHELL_HISTORY_CAPACITY - 1u],
+        SHELL_LINE_CAPACITY,
+        line);
+}
+
+
 static bool shell_string_ends_with_nex(
     const char *string)
 {
@@ -85,9 +218,7 @@ static bool shell_command_has_path(
     while (*command != '\0')
     {
         if (*command == '/')
-        {
             return true;
-        }
 
         ++command;
     }
@@ -108,15 +239,6 @@ static bool shell_resolve_command(
         return false;
     }
 
-    /*
-     * Explicit pathname:
-     *
-     *     /bin/foo.nex
-     *     ./foo.nex
-     *     dir/foo.nex
-     *
-     * Use literally.
-     */
     if (shell_command_has_path(
             command))
     {
@@ -130,7 +252,7 @@ static bool shell_resolve_command(
             return false;
         }
 
-        for (size_t index = 0;
+        for (size_t index = 0u;
              index <= length;
              ++index)
         {
@@ -141,12 +263,6 @@ static bool shell_resolve_command(
         return true;
     }
 
-    /*
-     * Bare command:
-     *
-     *     echo      -> /bin/echo.nex
-     *     echo.nex  -> /bin/echo.nex
-     */
     static const char prefix[] =
         "/bin/";
 
@@ -156,7 +272,7 @@ static bool shell_resolve_command(
     size_t position =
         0u;
 
-    for (size_t index = 0;
+    for (size_t index = 0u;
          prefix[index] != '\0';
          ++index)
     {
@@ -170,7 +286,7 @@ static bool shell_resolve_command(
             prefix[index];
     }
 
-    for (size_t index = 0;
+    for (size_t index = 0u;
          command[index] != '\0';
          ++index)
     {
@@ -187,7 +303,7 @@ static bool shell_resolve_command(
     if (!shell_string_ends_with_nex(
             command))
     {
-        for (size_t index = 0;
+        for (size_t index = 0u;
              suffix[index] != '\0';
              ++index)
         {
@@ -276,6 +392,94 @@ static int shell_write_integer(
 }
 
 
+/*
+ * Redraw the complete editable line, then position the VGA cursor at
+ * the logical insertion position.
+ *
+ * terminal '\r' moves to column zero without destroying contents.
+ */
+static int shell_redraw_line(
+    const char *buffer,
+    size_t length,
+    size_t cursor,
+    size_t old_rendered_length)
+{
+    if (shell_write_character(
+            '\r') != 0)
+    {
+        return -1;
+    }
+
+    if (shell_write(
+            SHELL_PROMPT) != 0)
+    {
+        return -1;
+    }
+
+    if (length != 0u)
+    {
+        int32_t result =
+            user_write(
+                USER_STDOUT,
+                buffer,
+                length);
+
+        if (result !=
+            (int32_t)length)
+        {
+            return -1;
+        }
+    }
+
+    /*
+     * Erase characters left over from a previously longer line.
+     */
+    for (size_t index = length;
+         index < old_rendered_length;
+         ++index)
+    {
+        if (shell_write_character(
+                ' ') != 0)
+        {
+            return -1;
+        }
+    }
+
+    /*
+     * Return to the beginning and walk forward to the desired
+     * insertion point.
+     */
+    if (shell_write_character(
+            '\r') != 0)
+    {
+        return -1;
+    }
+
+    if (shell_write(
+            SHELL_PROMPT) != 0)
+    {
+        return -1;
+    }
+
+    if (cursor != 0u)
+    {
+        int32_t result =
+            user_write(
+                USER_STDOUT,
+                buffer,
+                cursor);
+
+        if (result !=
+            (int32_t)cursor)
+        {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+
 static int shell_read_line(
     char *buffer,
     size_t capacity)
@@ -289,31 +493,290 @@ static int shell_read_line(
     size_t length =
         0u;
 
+    size_t cursor =
+        0u;
+
+    size_t rendered_length =
+        0u;
+
+    /*
+     * -1 means we are editing a new command rather than browsing
+     * history.
+     */
+    int history_position =
+        -1;
+
+    char draft[
+        SHELL_LINE_CAPACITY];
+
+    draft[0] =
+        '\0';
+
     buffer[0] =
         '\0';
 
+    if (shell_write(
+            SHELL_PROMPT) != 0)
+    {
+        return -1;
+    }
+
     for (;;)
     {
-        char character =
-            '\0';
+        int32_t input =
+            user_key_event();
 
-        int32_t result =
-            user_read(
-                USER_STDIN,
-                &character,
-                1u);
-
-        if (result < 0)
+        if (input < 0)
         {
             return -1;
         }
 
-        if (result == 0)
+        if (input == 0)
         {
             user_yield();
             continue;
         }
 
+        /*
+         * ----------------------------------------------------------
+         * SPECIAL NAVIGATION KEYS
+         * ----------------------------------------------------------
+         */
+        if (input == USER_KEY_LEFT)
+        {
+            if (cursor != 0u)
+            {
+                --cursor;
+
+                if (shell_redraw_line(
+                        buffer,
+                        length,
+                        cursor,
+                        rendered_length) != 0)
+                {
+                    return -1;
+                }
+            }
+
+            continue;
+        }
+
+        if (input == USER_KEY_RIGHT)
+        {
+            if (cursor < length)
+            {
+                ++cursor;
+
+                if (shell_redraw_line(
+                        buffer,
+                        length,
+                        cursor,
+                        rendered_length) != 0)
+                {
+                    return -1;
+                }
+            }
+
+            continue;
+        }
+
+        if (input == USER_KEY_HOME)
+        {
+            cursor =
+                0u;
+
+            if (shell_redraw_line(
+                    buffer,
+                    length,
+                    cursor,
+                    rendered_length) != 0)
+            {
+                return -1;
+            }
+
+            continue;
+        }
+
+        if (input == USER_KEY_END)
+        {
+            cursor =
+                length;
+
+            if (shell_redraw_line(
+                    buffer,
+                    length,
+                    cursor,
+                    rendered_length) != 0)
+            {
+                return -1;
+            }
+
+            continue;
+        }
+
+        if (input == USER_KEY_DELETE)
+        {
+            if (cursor >= length)
+            {
+                continue;
+            }
+
+            for (size_t index = cursor;
+                 index < length;
+                 ++index)
+            {
+                buffer[index] =
+                    buffer[index + 1u];
+            }
+
+            --length;
+
+            if (shell_redraw_line(
+                    buffer,
+                    length,
+                    cursor,
+                    rendered_length) != 0)
+            {
+                return -1;
+            }
+
+            rendered_length =
+                length;
+
+            continue;
+        }
+
+        /*
+         * ----------------------------------------------------------
+         * COMMAND HISTORY
+         * ----------------------------------------------------------
+         */
+        if (input == USER_KEY_UP)
+        {
+            if (shell_history_count == 0u)
+            {
+                continue;
+            }
+
+            if (history_position < 0)
+            {
+                shell_copy_string(
+                    draft,
+                    sizeof(draft),
+                    buffer);
+
+                history_position =
+                    (int)
+                        shell_history_count -
+                    1;
+            }
+            else if (history_position > 0)
+            {
+                --history_position;
+            }
+
+            size_t old_length =
+                rendered_length;
+
+            shell_copy_string(
+                buffer,
+                capacity,
+                shell_history[
+                    history_position]);
+
+            length =
+                shell_string_length(
+                    buffer);
+
+            cursor =
+                length;
+
+            if (shell_redraw_line(
+                    buffer,
+                    length,
+                    cursor,
+                    old_length) != 0)
+            {
+                return -1;
+            }
+
+            rendered_length =
+                length;
+
+            continue;
+        }
+
+        if (input == USER_KEY_DOWN)
+        {
+            if (history_position < 0)
+            {
+                continue;
+            }
+
+            size_t old_length =
+                rendered_length;
+
+            if ((size_t)(
+                    history_position + 1) <
+                shell_history_count)
+            {
+                ++history_position;
+
+                shell_copy_string(
+                    buffer,
+                    capacity,
+                    shell_history[
+                        history_position]);
+            }
+            else
+            {
+                history_position =
+                    -1;
+
+                shell_copy_string(
+                    buffer,
+                    capacity,
+                    draft);
+            }
+
+            length =
+                shell_string_length(
+                    buffer);
+
+            cursor =
+                length;
+
+            if (shell_redraw_line(
+                    buffer,
+                    length,
+                    cursor,
+                    old_length) != 0)
+            {
+                return -1;
+            }
+
+            rendered_length =
+                length;
+
+            continue;
+        }
+
+        /*
+         * Everything below this point must be an ordinary character.
+         */
+        if (input > 0xff)
+        {
+            continue;
+        }
+
+        char character =
+            (char)input;
+
+        /*
+         * ----------------------------------------------------------
+         * ENTER
+         * ----------------------------------------------------------
+         */
         if (character == '\n' ||
             character == '\r')
         {
@@ -326,26 +789,53 @@ static int shell_read_line(
                 return -1;
             }
 
+            shell_history_add(
+                buffer);
+
             return 0;
         }
 
+        /*
+         * ----------------------------------------------------------
+         * BACKSPACE
+         * ----------------------------------------------------------
+         */
         if (character == '\b')
         {
-            if (length == 0u)
+            if (cursor == 0u)
             {
                 continue;
             }
 
+            size_t old_length =
+                rendered_length;
+
+            for (size_t index =
+                     cursor - 1u;
+                 index < length;
+                 ++index)
+            {
+                buffer[index] =
+                    buffer[index + 1u];
+            }
+
+            --cursor;
             --length;
 
-            buffer[length] =
-                '\0';
-
-            if (shell_write_character(
-                    '\b') != 0)
+            if (shell_redraw_line(
+                    buffer,
+                    length,
+                    cursor,
+                    old_length) != 0)
             {
                 return -1;
             }
+
+            rendered_length =
+                length;
+
+            history_position =
+                -1;
 
             continue;
         }
@@ -364,23 +854,52 @@ static int shell_read_line(
             continue;
         }
 
+        /*
+         * Always keep room for the final NUL.
+         */
         if (length >=
             capacity - 1u)
         {
             continue;
         }
 
-        buffer[length++] =
+        /*
+         * Insert at cursor rather than always appending.
+         */
+        for (size_t index = length;
+             index > cursor;
+             --index)
+        {
+            buffer[index] =
+                buffer[index - 1u];
+        }
+
+        buffer[cursor] =
             character;
+
+        ++cursor;
+        ++length;
 
         buffer[length] =
             '\0';
 
-        if (shell_write_character(
-                character) != 0)
+        if (shell_redraw_line(
+                buffer,
+                length,
+                cursor,
+                rendered_length) != 0)
         {
             return -1;
         }
+
+        rendered_length =
+            length;
+
+        /*
+         * Once a recalled command is modified, it becomes a new draft.
+         */
+        history_position =
+            -1;
     }
 }
 
@@ -496,17 +1015,6 @@ static int shell_run_command(
         return 0;
     }
 
-    /*
-     * argv[0] becomes the resolved executable path.
-     *
-     * This preserves the same argv[0] behavior whether the user types:
-     *
-     *     spawn-child
-     *
-     * or:
-     *
-     *     /bin/spawn-child.nex
-     */
     argv[0] =
         executable_path;
 
@@ -561,9 +1069,6 @@ static int shell_run_command(
         user_yield();
     }
 
-    /*
-     * Normal successful commands stay quiet.
-     */
     if (status == 0)
     {
         return 0;
@@ -609,18 +1114,12 @@ int main(
         char line[
             SHELL_LINE_CAPACITY];
 
-        if (shell_write(
-                "meaty> ") != 0)
-        {
-            return 2;
-        }
-
         if (shell_read_line(
                 line,
                 sizeof(line)) != 0)
         {
             shell_write_error(
-                "\nsh: stdin failed\n");
+                "\nsh: input failed\n");
 
             return 3;
         }

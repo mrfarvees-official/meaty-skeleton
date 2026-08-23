@@ -3,14 +3,15 @@
 
 #include "runtime.h"
 
-#define SYS_EXIT    5u
-#define SYS_YIELD   7u
-#define SYS_WAITPID 8u
-#define SYS_SPAWN   9u
-#define SYS_READ    10u
-#define SYS_WRITE   11u
-#define SYS_OPEN    12u
-#define SYS_CLOSE   13u
+#define SYS_EXIT        5u
+#define SYS_YIELD       7u
+#define SYS_WAITPID     8u
+#define SYS_SPAWN       9u
+#define SYS_READ        10u
+#define SYS_WRITE       11u
+#define SYS_OPEN        12u
+#define SYS_CLOSE       13u
+#define SYS_KEY_EVENT   14u
 
 #define USER_STDIO_CHUNK 128u
 
@@ -104,6 +105,13 @@ static size_t string_length(
     }
 
     return length;
+}
+
+
+int32_t user_key_event(void)
+{
+    return syscall0(
+        SYS_KEY_EVENT);
 }
 
 

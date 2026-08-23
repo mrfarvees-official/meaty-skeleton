@@ -342,6 +342,67 @@ static int32_t syscall_close_file(
     return 0;
 }
 
+static int32_t syscall_read_key_event(void)
+{
+    keyboard_event_t event;
+
+    /*
+     * The shell consumes the keyboard EVENT queue as its ordered
+     * interactive input stream.
+     *
+     * Do not touch the independent character queue here.
+     */
+    while (keyboard_read_event(
+               &event))
+    {
+        /*
+         * Shell input only cares about key presses.
+         */
+        if (!event.pressed)
+        {
+            continue;
+        }
+
+        /*
+         * Ordinary character.
+         */
+        if (event.character != '\0')
+        {
+            return (int32_t)
+                (uint8_t)event.character;
+        }
+
+        switch (event.key)
+        {
+        case KEY_ARROW_LEFT:
+            return I386_KEY_EVENT_LEFT;
+
+        case KEY_ARROW_RIGHT:
+            return I386_KEY_EVENT_RIGHT;
+
+        case KEY_ARROW_UP:
+            return I386_KEY_EVENT_UP;
+
+        case KEY_ARROW_DOWN:
+            return I386_KEY_EVENT_DOWN;
+
+        case KEY_HOME:
+            return I386_KEY_EVENT_HOME;
+
+        case KEY_END:
+            return I386_KEY_EVENT_END;
+
+        case KEY_DELETE:
+            return I386_KEY_EVENT_DELETE;
+
+        default:
+            break;
+        }
+    }
+
+    return 0;
+}
+
 static int32_t syscall_dispatch(
     uint32_t number,
     uint32_t arg0,
@@ -866,6 +927,11 @@ static int32_t syscall_dispatch(
     {
         return syscall_close_file(
             arg0);
+    }
+
+    case I386_SYSCALL_KEY_EVENT:
+    {
+        return syscall_read_key_event();
     }
 
     default:
