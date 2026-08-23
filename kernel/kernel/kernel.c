@@ -378,22 +378,26 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	log_info("keyboard initialized\n");
 
 	/*
-	 * Allow hardware IRQ delivery first.
+	 * The BSP is currently the only CPU allowed to schedule normal tasks.
 	 *
-	 * Timer accounting, sleep wakeups, keyboard IRQs, PIC EOIs,
-	 * etc. can all run here.
-	 *
-	 * Actual scheduler context switching is still gated on this CPU.
+	 * AP task migration is disabled until the scheduler gains per-CPU
+	 * run queues or explicit task affinity.
+	 */
+	scheduler_enable_preemption();
+
+	/*
+	 * Hardware interrupts may now safely request BSP scheduling.
 	 */
 	interrupt_enable();
 
 	/*
-	 * P1D.2 has completed and restored its process/task baseline.
-	 *
-	 * Start the first interactive userspace shell as a child of
-	 * immortal kernel PID 1.
+	 * Start the first interactive userspace shell.
 	 */
 	launch_userspace_shell();
 
+	/*
+	 * kernel_main's bootstrap context yields permanently after publishing
+	 * the shell.
+	 */
 	yield_forever();
 }

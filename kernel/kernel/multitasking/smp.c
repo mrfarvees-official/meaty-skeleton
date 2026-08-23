@@ -418,7 +418,7 @@ static void smp_ap_entry(void)
 {
     /*
      * The temporary trampoline GDT got us here.
-     * Switch to the kernel-owned tables.
+     * Switch to the kernel-owned descriptor tables.
      */
     gdt_load();
     idt_load();
@@ -435,42 +435,89 @@ static void smp_ap_entry(void)
     /*
      * Every CPU owns a distinct hardware TSS descriptor.
      */
-    if (!gdt_load_tss(cpu->index))
+    if (!gdt_load_tss(
+            cpu->index))
+    {
         goto halt;
-
-    lapic_enable_timer();
-
-    if (!task_initialize_cpu())
-        goto halt;
-
-    cpu->online = true;
-    cpus[cpu->index].online = true;
+    }
 
     /*
-     * This CPU now has valid scheduler/task state.
+     * Give the AP its CPU-local bootstrap/idle task structures.
      *
-     * Interrupt-driven scheduling is safe from this point.
+     * IMPORTANT:
+     *
+     * For the current scheduler milestone APs do NOT participate
+     * in normal task scheduling.
+     *
+     * The existing scheduler uses global run queues but carries
+     * context-switch handoff state inside cpu_local_t. Allowing a
+     * task to resume on a different CPU is therefore unsafe.
+     *
+     * Keep AP task structures initialized so SMP infrastructure
+     * remains valid, but do not enable scheduler preemption and do
+     * not call task_yield() from the AP bootstrap context.
      */
-    scheduler_enable_preemption();
-
-    __asm__ volatile("" ::: "memory");
-
-    ap_ready[cpu->index] = 1u;
+    if (!task_initialize_cpu())
+    {
+        goto halt;
+    }
 
     /*
-     * Interrupt enable is CPU-local.
+     * AP is alive and initialized.
      */
-    interrupt_enable();
+    cpu->online =
+        true;
+
+    cpus[cpu->index].online =
+        true;
 
     /*
-     * The AP bootstrap task remains a valid scheduler context.
+     * Tell the BSP startup code that this AP reached its stable
+     * parked state.
+     */
+    __asm__ volatile(
+        ""
+        :
+        :
+        : "memory");
+
+    ap_ready[cpu->index] =
+        1u;
+
+    /*
+     * ------------------------------------------------------------------
+     * TEMPORARY SMP POLICY
+     * ------------------------------------------------------------------
+     *
+     * Park APs until the scheduler has per-CPU run queues or explicit
+     * task affinity.
+     *
+     * Do NOT:
+     *
+     *     scheduler_enable_preemption();
+     *     task_yield();
+     *
+     * here.
+     *
+     * Those operations allow global scheduler tasks to migrate onto
+     * this CPU, while scheduler_finish_switch() relies on CPU-local
+     * handoff state.
+     *
+     * Interrupts remain disabled on this AP, so it stays completely
+     * outside scheduler execution.
      */
     for (;;)
-        task_yield();
+    {
+        __asm__ volatile(
+            "cli; hlt");
+    }
 
 halt:
     for (;;)
-        __asm__ volatile("cli; hlt");
+    {
+        __asm__ volatile(
+            "cli; hlt");
+    }
 }
 
 bool smp_start_aps(void)

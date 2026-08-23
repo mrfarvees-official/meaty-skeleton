@@ -720,17 +720,30 @@ static void destroy_unpublished_task(
         kfree(
             (void *)task->stack_base);
 
-        task->stack_base = 0;
-        task->stack_size = 0;
-        task->stack_pointer = 0;
+        task->stack_base =
+            0;
+
+        task->stack_size =
+            0;
+
+        task->stack_pointer =
+            0;
     }
 
     uint32_t flags =
         spin_lock_irqsave(
             &task_id_lock);
 
-    if (live_task_count > 0)
-        --live_task_count;
+    if (live_task_count == 0u)
+    {
+        spin_unlock_irqrestore(
+            &task_id_lock,
+            flags);
+
+        task_halt_forever();
+    }
+
+    --live_task_count;
 
     spin_unlock_irqrestore(
         &task_id_lock,
@@ -745,21 +758,9 @@ static void destroy_unpublished_task(
             process);
     }
 
-    if (address_space != NULL)
-    {
-        if (!address_space_release(
-                address_space))
-        {
-            task_halt_forever();
-        }
-    }
-
-    kfree(task);
-
     /*
-     * Drop only the task's reference.
-     *
-     * The creator still owns its original reference.
+     * Drop exactly the one address-space reference
+     * owned by this unpublished task.
      */
     if (address_space != NULL)
     {
@@ -769,6 +770,9 @@ static void destroy_unpublished_task(
             task_halt_forever();
         }
     }
+
+    kfree(
+        task);
 }
 
 static task_t *allocate_kernel_task(

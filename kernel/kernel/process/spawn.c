@@ -727,7 +727,7 @@ process_id_t process_spawn_user(
             process_user_task_entry,
             launch,
             user_space,
-            SCHED_POLICY_REALTIME);
+            SCHED_POLICY_NORMAL);
 
     if (task == NULL)
     {

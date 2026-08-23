@@ -439,18 +439,44 @@ void scheduler_schedule(void)
             &scheduler_lock);
 
     /*
-     * If the current normal task is still runnable,
-     * return it to the global run queue.
+     * Only normal managed tasks may ever be returned to a
+     * scheduler run queue.
      *
-     * Idle tasks are never placed into a normal
-     * scheduler queue.
+     * Bootstrap contexts are special CPU startup contexts:
+     *
+     *     stack_base == 0
+     *     stack_size == 0
+     *
+     * They may be the initial current_task for a CPU, but after
+     * switching away they must NEVER become scheduler-visible.
+     *
+     * Previously the bootstrap task satisfied:
+     *
+     *     current != idle
+     *     current->state == TASK_RUNNING
+     *
+     * and was therefore inserted into the NORMAL queue.
+     *
+     * That allowed the saved bootstrap context to be scheduled
+     * again later, eventually producing states such as:
+     *
+     *     current_task = bootstrap tid 0
+     *     CR3          = userspace CR3
+     *
+     * which is invalid.
      */
-    if (current != NULL &&
+    bool current_is_managed =
+        current != NULL &&
+        current->stack_base != 0 &&
+        current->stack_size != 0;
+
+    if (current_is_managed &&
         current != cpu->idle_task &&
         current->state == TASK_RUNNING)
     {
         scheduler_policy_slot_t *slot =
-            get_slot(current->policy);
+            get_slot(
+                current->policy);
 
         if (slot != NULL &&
             slot->algorithm != NULL)
@@ -458,8 +484,11 @@ void scheduler_schedule(void)
             current->state =
                 TASK_READY;
 
-            current->sched_previous = NULL;
-            current->sched_next = NULL;
+            current->sched_previous =
+                NULL;
+
+            current->sched_next =
+                NULL;
 
             slot->algorithm->enqueue(
                 slot->algorithm_state,
@@ -468,19 +497,21 @@ void scheduler_schedule(void)
     }
 
     /*
-     * scheduler_pick_next() must only manipulate
-     * scheduler queues while scheduler_lock is held.
+     * Select the highest-priority runnable task.
      */
     task_t *next =
         scheduler_pick_next();
 
     /*
-     * No normal runnable task.
+     * No runnable scheduled task.
      *
-     * Use this CPU's private idle task.
+     * Fall back to this CPU's private idle task.
      */
     if (next == NULL)
-        next = cpu->idle_task;
+    {
+        next =
+            cpu->idle_task;
+    }
 
     if (next == NULL)
     {
@@ -489,13 +520,15 @@ void scheduler_schedule(void)
             flags);
 
         for (;;)
-            __asm__ volatile("cli; hlt");
+        {
+            __asm__ volatile(
+                "cli; hlt");
+        }
     }
 
     /*
-     * This can occur if the current task was placed
-     * back into the run queue and immediately chosen
-     * again.
+     * Current managed task was returned to the queue and then
+     * immediately selected again.
      */
     if (next == current)
     {
@@ -505,10 +538,6 @@ void scheduler_schedule(void)
         scheduler_notify_switch_in(
             next);
 
-        /*
-         * Keep this CPU's TSS synchronized with the task the
-         * scheduler says is running.
-         */
         scheduler_update_kernel_entry_stack(
             next);
 
@@ -526,11 +555,9 @@ void scheduler_schedule(void)
     }
 
     /*
-     * next has been removed from its run queue.
-     *
-     * Marking it RUNNING while scheduler_lock remains
-     * held prevents another CPU from selecting the
-     * same task.
+     * scheduler_pick_next() removed this task from its run queue.
+     * Mark it running while scheduler_lock is still held so another
+     * CPU cannot select it simultaneously.
      */
     next->state =
         TASK_RUNNING;
@@ -538,10 +565,6 @@ void scheduler_schedule(void)
     scheduler_notify_switch_in(
         next);
 
-    /*
-     * Every active CPU should already have a bootstrap
-     * or normal current task before entering scheduling.
-     */
     if (current == NULL)
     {
         spin_unlock_irqrestore(
@@ -549,24 +572,24 @@ void scheduler_schedule(void)
             flags);
 
         for (;;)
-            __asm__ volatile("cli; hlt");
+        {
+            __asm__ volatile(
+                "cli; hlt");
+        }
     }
 
     /*
-     * Remember the context we're physically leaving.
+     * Remember the context whose physical stack we are leaving.
      *
-     * task_internal_finish_switch() runs only after
-     * execution is safely on the new stack.
+     * scheduler_finish_switch() will process it once execution is
+     * safely running on next's stack.
      */
     cpu->previous_task =
         current;
 
     /*
-     * If scheduler_switch_flags was supplied by the interrupt
-     * dispatcher, preserve the interrupted context's EFLAGS.
-     *
-     * Otherwise this is normal task-context scheduling and the
-     * flags captured while taking scheduler_lock are correct.
+     * Preserve the flags appropriate to the context which caused
+     * this scheduling operation.
      */
     if (!cpu->scheduler_switch_lock_held &&
         cpu->scheduler_switch_flags != 0)
@@ -594,6 +617,13 @@ void scheduler_schedule(void)
         }
     }
 
+    /*
+     * scheduler_lock intentionally remains held across the physical
+     * context switch.
+     *
+     * The incoming task releases it through
+     * scheduler_finish_switch().
+     */
     cpu->scheduler_switch_lock_held =
         true;
 
@@ -601,8 +631,8 @@ void scheduler_schedule(void)
         next);
 
     /*
-     * Install architectural state belonging to the incoming task before
-     * physically switching to its saved kernel stack.
+     * Install all architecture-visible state belonging to the
+     * incoming task before changing stacks.
      */
     scheduler_update_kernel_entry_stack(
         next);
@@ -618,8 +648,7 @@ void scheduler_schedule(void)
         next->stack_pointer);
 
     /*
-     * Existing tasks resume here after some future
-     * context switch selects them again.
+     * An existing task resumes here when selected again later.
      */
     scheduler_finish_switch();
 }

@@ -672,23 +672,85 @@ static int32_t syscall_dispatch(
         task_t *task =
             task_current();
 
-        if (task == NULL ||
-            task->process == NULL)
+        if (task == NULL)
         {
+            printf(
+                "[EXIT ERROR] task_current() == NULL\n");
+
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
+
+        if (task->process == NULL)
+        {
+            printf(
+                "[EXIT ERROR] tid=%u has NULL process "
+                "CR3=0x%lx\n",
+                (unsigned)task->id,
+                (unsigned long)
+                    paging_current_directory());
+
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        process_t *process =
+            task->process;
+
+        process_id_t pid =
+            process_id(
+                process);
+
+        process_state_t state =
+            process_state(
+                process);
 
         int status =
             (int)(int32_t)arg0;
 
+        printf(
+            "[EXIT] tid=%u pid=%u state=%u "
+            "status=%d CR3=0x%lx\n",
+            (unsigned)task->id,
+            (unsigned)pid,
+            (unsigned)state,
+            status,
+            (unsigned long)
+                paging_current_directory());
+
         if (!process_set_exit_status(
-                task->process,
+                process,
                 status))
         {
+            printf(
+                "[EXIT ERROR] process_set_exit_status "
+                "failed tid=%u pid=%u state=%u\n",
+                (unsigned)task->id,
+                (unsigned)pid,
+                (unsigned)state);
+
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
 
+        printf(
+            "[EXIT] tid=%u pid=%u calling task_exit()\n",
+            (unsigned)task->id,
+            (unsigned)pid);
+
         task_exit();
+
+        /*
+         * task_exit() must never return.
+         */
+        printf(
+            "[EXIT FATAL] task_exit returned "
+            "tid=%u pid=%u\n",
+            (unsigned)task->id,
+            (unsigned)pid);
+
+        for (;;)
+        {
+            __asm__ volatile(
+                "cli; hlt");
+        }
     }
 
     case I386_SYSCALL_THREAD_CREATE:
