@@ -926,14 +926,33 @@ task_t *task_create_user_unpublished(
         1u;
 
     /*
-     * The user page directory must be able to access:
+     * The user page directory must be able to access every
+     * supervisor-only kernel object required while this task
+     * executes its initial kernel trampoline:
      *
      *     - task_t
-     *     - task kernel stack
+     *     - kernel task stack
      *     - shared address_space_t metadata
+     *     - task entry argument, when non-NULL
      *
-     * All are supervisor-only kernel objects.
+     * The entry argument is important because a newly scheduled
+     * userspace task switches to its userspace page directory
+     * before task_bootstrap() calls:
+     *
+     *     task->entry(task->argument);
+     *
+     * For process spawning, task->argument points at the kernel
+     * process_user_launch_context_t containing the userspace entry
+     * address and initial ESP.
+     *
+     * Large kernel allocations can place that object in a different
+     * kernel PDE, so relying on another shared allocation to
+     * accidentally make it reachable is incorrect.
+     *
+     * paging_share_kernel_pde() keeps these mappings
+     * supervisor-only.
      */
+
     if (!paging_share_kernel_pde(
             page_directory,
             (uintptr_t)task) ||
@@ -946,6 +965,25 @@ task_t *task_create_user_unpublished(
         !paging_share_kernel_pde(
             page_directory,
             (uintptr_t)address_space))
+    {
+        destroy_unpublished_task(
+            task);
+
+        return NULL;
+    }
+
+    /*
+     * A task argument is part of the kernel-side execution
+     * context until the task entry function has consumed it.
+     *
+     * It may reside in a different kernel PDE from task_t,
+     * the task stack, or address_space_t, so explicitly share
+     * the PDE containing it.
+     */
+    if (argument != NULL &&
+        !paging_share_kernel_pde(
+            page_directory,
+            (uintptr_t)argument))
     {
         destroy_unpublished_task(
             task);

@@ -57,7 +57,20 @@ static void halt_forever(void)
 static void yield_forever(void)
 {
 	for (;;)
+	{
 		task_yield();
+	}
+}
+
+static void mouse_cursor_thread(void *argument)
+{
+	(void)argument;
+
+	for (;;)
+	{
+		mouse_cursor_poll();
+		task_yield();
+	}
 }
 
 void validate_multiboot_magic(uint32_t magic)
@@ -100,17 +113,6 @@ static void debugcon_hex32(uint32_t value)
 		debugcon_putc(
 			digits[(value >> shift) &
 				   0xFu]);
-	}
-}
-
-static void mouse_cursor_thread(void *argument)
-{
-	(void)argument;
-
-	for (;;)
-	{
-		mouse_cursor_poll();
-		task_yield();
 	}
 }
 
@@ -532,29 +534,6 @@ void kernel_main(
 
 	log_info(
 		"heap initialized\n");
-
-	/*
-	 * ------------------------------------------------------------
-	 * GUI compositor foundation
-	 * ------------------------------------------------------------
-	 *
-	 * Allocate the screen-sized off-screen composition buffer.
-	 *
-	 * Do not present it yet. The existing framebuffer terminal still
-	 * owns the visible screen during this G0 foundation step.
-	 */
-	if (!gui_compositor_initialize())
-	{
-		log_error(
-			"GUI compositor initialization failed\n");
-
-		halt_forever();
-	}
-
-	log_info(
-		"GUI compositor backbuffer initialized: %ux%u\n",
-		(unsigned)framebuffer_get_width(),
-		(unsigned)framebuffer_get_height());
 
 	/*
 	 * ------------------------------------------------------------
@@ -1009,6 +988,29 @@ void kernel_main(
 	 */
 
 	launch_userspace_shell();
+
+	/*
+	 * ------------------------------------------------------------
+	 * GUI compositor foundation
+	 * ------------------------------------------------------------
+	 *
+	 * Allocate the screen-sized off-screen composition buffer.
+	 *
+	 * Do not present it yet. The existing framebuffer terminal still
+	 * owns the visible screen during this G0 foundation step.
+	 */
+	if (!gui_compositor_initialize())
+	{
+		log_error(
+			"GUI compositor initialization failed\n");
+
+		halt_forever();
+	}
+
+	log_info(
+		"GUI compositor backbuffer initialized: %ux%u\n",
+		(unsigned)framebuffer_get_width(),
+		(unsigned)framebuffer_get_height());
 
 	/*
 	 * ------------------------------------------------------------
