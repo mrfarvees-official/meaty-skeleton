@@ -17,7 +17,19 @@
 
 #include "../arch/i386/interrupts.h"
 
-#define KERNEL_TASK_STACK_SIZE (16u * 1024u)
+/*
+ * Kernel task stack.
+ *
+ * Filesystem syscalls currently traverse ext2 code which still uses
+ * several 4 KiB automatic I/O buffers in nested call chains.
+ *
+ * 16 KiB is therefore insufficient and can allow the kernel stack to
+ * run below its allocation, corrupting the adjacent task_t/heap data.
+ *
+ * Keep this comfortably larger until ext2 scratch buffers are moved
+ * off task stacks.
+ */
+#define KERNEL_TASK_STACK_SIZE (64u * 1024u)
 
 #define INITIAL_EFLAGS 0x002u
 
