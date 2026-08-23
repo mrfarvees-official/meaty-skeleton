@@ -111,11 +111,11 @@ static void process_waitpid_test(void)
 	 * STEP 2
 	 * Spawn the real U12.4 userspace process.
 	 *
-	 * This remains the first dynamically-created process, so:
+	 * This remains the first dynamically-created process:
 	 *
 	 *     PID 2 = userspace process
 	 *
-	 * process_spawn_user() still returns TID.
+	 * process_spawn_user() now returns PID.
 	 * ----------------------------------------------------------
 	 */
 	const char *argv[] =
@@ -124,13 +124,14 @@ static void process_waitpid_test(void)
 			"one",
 			"two"};
 
-	task_id_t main_tid =
+	process_id_t child_pid =
 		process_spawn_user(
 			"/bin/hello.nex",
 			3u,
 			argv);
 
-	if (main_tid == 0u)
+	if (child_pid ==
+		PROCESS_ID_INVALID)
 	{
 		log_error(
 			"P1D.2: process_spawn_user failed\n");
@@ -138,8 +139,15 @@ static void process_waitpid_test(void)
 		halt_forever();
 	}
 
-	process_id_t child_pid =
-		2u;
+	if (child_pid !=
+		2u)
+	{
+		log_error(
+			"P1D.2: expected first userspace PID=2 actual=%u\n",
+			(unsigned)child_pid);
+
+		halt_forever();
+	}
 
 	process_t *child =
 		process_acquire_by_id(
@@ -180,10 +188,9 @@ static void process_waitpid_test(void)
 	}
 
 	log_success(
-		"P1D.2: parent=%u owns child=%u main_tid=%u\n",
+		"P1D.2: parent=%u owns child=%u\n",
 		(unsigned)process_id(parent),
-		(unsigned)child_pid,
-		(unsigned)main_tid);
+		(unsigned)child_pid);
 
 	/*
 	 * ----------------------------------------------------------
@@ -361,10 +368,10 @@ static void process_waitpid_test(void)
 	 * would be SMP-racy as a test: another CPU could legitimately
 	 * run and reap it before this CPU calls waitpid().
 	 *
-	 * Instead create PID 3 after U12.4 is finished and manually
-	 * attach one process execution member.
+	 * Instead create another process after U12.4 is finished and
+	 * manually attach one execution member.
 	 *
-	 * No task is created, so U12.4 PID/TID numbering is unchanged.
+	 * No task is created.
 	 * ----------------------------------------------------------
 	 */
 	address_space_t *kernel_space =
@@ -455,8 +462,9 @@ static void process_waitpid_test(void)
 	/*
 	 * ----------------------------------------------------------
 	 * STEP 6
-	 * Turn synthetic PID 3 into a zombie and collect it.
-	 * Use a non-zero status so status propagation is explicit.
+	 * Turn synthetic child into a zombie and collect it.
+	 *
+	 * Use a non-zero status so propagation is explicit.
 	 * ----------------------------------------------------------
 	 */
 	if (!process_set_exit_status(

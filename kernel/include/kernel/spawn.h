@@ -3,21 +3,21 @@
 
 #include <stddef.h>
 
-#include <kernel/task.h>
+#include <kernel/process.h>
 
 /*
  * Load an ELF executable from VFS and start it as
- * a userspace task.
+ * a new userspace process.
  *
  * Returns:
  *
- *     non-zero task ID    success
- *     0                   failure
+ *     non-zero process ID    success
+ *     PROCESS_ID_INVALID     failure
  *
- * We return a task ID instead of task_t * because after
- * publication another CPU may run, exit, and reap the task.
+ * The returned PID is the userspace-visible process identity
+ * used by waitpid().
  */
-task_id_t process_spawn_user(
+process_id_t process_spawn_user(
     const char *path,
     size_t argc,
     const char *const argv[]);

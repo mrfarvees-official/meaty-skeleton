@@ -237,7 +237,7 @@ static void process_user_task_entry(
  * PROCESS SPAWN
  * -----------------------------------------------------------------------------
  */
-task_id_t process_spawn_user(
+process_id_t process_spawn_user(
     const char *path,
     size_t argc,
     const char *const argv[])
@@ -847,9 +847,8 @@ task_id_t process_spawn_user(
             user_entry,
         (unsigned long)
             user_esp,
-        (unsigned long)
-            (PROCESS_USER_STACK_SIZE /
-             1024u));
+        (unsigned long)(PROCESS_USER_STACK_SIZE /
+                        1024u));
 
     /*
      * ----------------------------------------------------------
@@ -902,9 +901,10 @@ task_id_t process_spawn_user(
         (unsigned)tid);
 
     /*
-     * Keep returning TID until the process-spawn ABI
-     * is intentionally changed later.
+     * Userspace process creation returns PID.
+     *
+     * TID remains an internal scheduler/thread identity.
+     * Process-control APIs such as waitpid() operate on PID.
      */
-    return tid;
+    return pid;
 }
-
