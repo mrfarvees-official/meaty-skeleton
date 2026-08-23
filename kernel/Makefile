@@ -51,6 +51,9 @@ kernel/task/wait_queue.o 		\
 kernel/task/sleep_queue.o 		\
 kernel/scheduler/scheduler.o 	\
 kernel/scheduler/round_robin.o 	\
+kernel/device/framebuffer.o 	\
+kernel/device/display.o 		\
+kernel/device/mouse.o 			\
 kernel/device/keyboard.o 		\
 kernel/device/pci.o 			\
 kernel/device/ahci.o 			\

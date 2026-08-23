@@ -1,16 +1,45 @@
-# Declare constants for the multiboot header.
+# Declare constants for the Multiboot header.
 .set ALIGN,    1<<0             # align loaded modules on page boundaries
-.set MEMINFO,  1<<1             # provide memory map
-.set FLAGS,    ALIGN | MEMINFO  # this is the Multiboot 'flag' field
-.set MAGIC,    0x1BADB002       # 'magic number' lets bootloader find the header
-.set CHECKSUM, -(MAGIC + FLAGS) # checksum of above, to prove we are multiboot
+.set MEMINFO,  1<<1             # provide memory information
+.set VIDEO,    1<<2             # request graphics framebuffer information
+.set FLAGS,    ALIGN | MEMINFO | VIDEO
+.set MAGIC,    0x1BADB002
+.set CHECKSUM, -(MAGIC + FLAGS)
 
-# Declare a header as in the Multiboot Standard.
+# Declare a Multiboot v1 header.
 .section .multiboot
 .align 4
+
 .long MAGIC
 .long FLAGS
 .long CHECKSUM
+
+#
+# Address fields occupy offsets 12..28 in the Multiboot header.
+#
+# We are not using MULTIBOOT_AOUT_KLUDGE (flag bit 16), so these
+# remain zero. They must still occupy their normal positions before
+# the graphics fields.
+#
+.long 0                        # header_addr
+.long 0                        # load_addr
+.long 0                        # load_end_addr
+.long 0                        # bss_end_addr
+.long 0                        # entry_addr
+
+#
+# Graphics request.
+#
+# mode_type = 0:
+#     linear graphics mode
+#
+# GRUB treats width/height/depth as preferences, so the kernel must
+# always inspect the actual mode returned in the Multiboot info.
+#
+.long 0                        # mode_type = linear graphics
+.long 1024                     # preferred width
+.long 768                      # preferred height
+.long 32                       # preferred bits per pixel
 
 # Storage for GRUB-provided Multiboot values.
 .section .bss
@@ -22,14 +51,14 @@ multiboot_magic:
 multiboot_info:
 .skip 4
 
-# Initial kernel stack.
+# Initial bootstrap kernel stack.
 .align 16
 
 stack_bottom:
-.skip 16384 # 16 KiB
+.skip 16384                    # 16 KiB bootstrap stack
 stack_top:
 
-# The kernel entry point.
+# Kernel entry point.
 .section .text
 .code32
 
@@ -45,15 +74,15 @@ _start:
 	/*
 	 * GRUB enters here:
 	 *
-	 * EAX = 0x2BADBOOT
+	 * EAX = 0x2BADB002
 	 * EBX = physical address of the Multiboot information structure
 	 */
 	movl %eax, multiboot_magic
 	movl %ebx, multiboot_info
-	
+
 	/*
 	 * GRUB already placed the CPU in 32-bit protected mode.
-	 * We only need to establish our stack and our own GDT.
+	 * Establish our stack and GDT.
 	 */
 	movl $stack_top, %esp
 
@@ -68,28 +97,22 @@ _start:
 	call gdt_initialize
 
 	/*
-	 * Invoke global constructors, as in the original
-	 * Meaty Skeleton boot.S.
+	 * Invoke global constructors.
 	 */
 	call _init
 
 	/*
-	 * Call:
-	 *
 	 * kernel_main(magic, multiboot_info_address)
-	 * 
-	 * The i386 cdecl convention pushes arguments from right to left
+	 *
+	 * i386 cdecl pushes arguments from right to left.
 	 */
 	pushl multiboot_info
 	pushl multiboot_magic
 
-	/*
-	 * Call the C kernel entry point.
-	 */
 	call kernel_main
 
 	/*
-	 * Remove the two 32-bit arguments
+	 * Remove the two 32-bit arguments.
 	 */
 	addl $8, %esp
 
@@ -98,7 +121,6 @@ _start:
 	 */
 	call _fini
 
-	# Hang if kernel_main unexpectedly returns.
 	cli
 
 1:

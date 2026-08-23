@@ -17,7 +17,7 @@ DISK=disk.img
 # false:
 #   leave disk.img untouched and just boot QEMU
 #
-RECREATE_BENCH_DISK=true
+RECREATE_BENCH_DISK=false
 
 #
 # Disk and benchmark sizes.
@@ -176,6 +176,8 @@ qemu-system-$(./target-triplet-to-arch.sh "$HOST") \
     -m 128M \
     -smp 2 \
     -boot order=d \
+    -vga std \
+    -debugcon stdio \
     -device ich9-ahci,id=ahci \
     -drive id=sata_disk,file="$DISK",format=raw,if=none \
     -device ide-hd,drive=sata_disk,bus=ahci.0 \

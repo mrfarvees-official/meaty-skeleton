@@ -3,20 +3,26 @@
 
 #include <stdint.h>
 
-static inline void outb(uint16_t port, uint8_t value)
+
+static inline void outb(
+    uint16_t port,
+    uint8_t value)
 {
     __asm__ volatile(
         "outb %0, %1"
         :
-        : "a"(value), "Nd"(port)
+        : "a"(value),
+          "Nd"(port)
         : "memory");
 }
 
-static inline uint8_t inb(uint16_t port)
+
+static inline uint8_t inb(
+    uint16_t port)
 {
     uint8_t value;
-    
-    __asm__ volatile (
+
+    __asm__ volatile(
         "inb %1, %0"
         : "=a"(value)
         : "Nd"(port)
@@ -25,20 +31,54 @@ static inline uint8_t inb(uint16_t port)
     return value;
 }
 
-static inline void outl(uint16_t port, uint32_t value)
+
+static inline void outw(
+    uint16_t port,
+    uint16_t value)
 {
-    __asm__ volatile (
-        "outl %0, %1"
+    __asm__ volatile(
+        "outw %0, %1"
         :
-        : "a"(value), "Nd"(port)
+        : "a"(value),
+          "Nd"(port)
         : "memory");
 }
 
-static inline uint32_t inl(uint16_t port)
-{
-    uint32_t value; 
 
-    __asm__ volatile (
+static inline uint16_t inw(
+    uint16_t port)
+{
+    uint16_t value;
+
+    __asm__ volatile(
+        "inw %1, %0"
+        : "=a"(value)
+        : "Nd"(port)
+        : "memory");
+
+    return value;
+}
+
+
+static inline void outl(
+    uint16_t port,
+    uint32_t value)
+{
+    __asm__ volatile(
+        "outl %0, %1"
+        :
+        : "a"(value),
+          "Nd"(port)
+        : "memory");
+}
+
+
+static inline uint32_t inl(
+    uint16_t port)
+{
+    uint32_t value;
+
+    __asm__ volatile(
         "inl %1, %0"
         : "=a"(value)
         : "Nd"(port)
@@ -47,7 +87,16 @@ static inline uint32_t inl(uint16_t port)
     return value;
 }
 
-static inline uint8_t ata_inb(uint16_t port)
+
+/*
+ * ATA-specific helpers retained for existing ATA code.
+ *
+ * They intentionally remain separate so we do not alter existing
+ * disk-driver behavior while adding generic 16-bit port I/O.
+ */
+
+static inline uint8_t ata_inb(
+    uint16_t port)
 {
     uint8_t value;
 
@@ -59,25 +108,32 @@ static inline uint8_t ata_inb(uint16_t port)
     return value;
 }
 
-static inline void ata_outb(uint16_t port, uint8_t value)
+
+static inline void ata_outb(
+    uint16_t port,
+    uint8_t value)
 {
     __asm__ volatile(
         "outb %0, %1"
         :
-        : "a"(value), "Nd"(port));
+        : "a"(value),
+          "Nd"(port));
 }
 
-static inline uint16_t ata_inw(uint16_t port)
+
+static inline uint16_t ata_inw(
+    uint16_t port)
 {
     uint16_t value;
 
     __asm__ volatile(
-        "inw  %1, %0"
+        "inw %1, %0"
         : "=a"(value)
         : "Nd"(port));
 
     return value;
 }
+
 
 static inline void io_wait(void)
 {
@@ -85,7 +141,10 @@ static inline void io_wait(void)
      * Port 0x80 has historically been used for POST/debug.
      * A write here is commonly used as a tiny I/O delay.
      */
-    outb(0x80, 0);
+    outb(
+        0x80u,
+        0u);
 }
+
 
 #endif
