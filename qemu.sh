@@ -17,7 +17,7 @@ DISK=disk.img
 # false:
 #   leave disk.img untouched and just boot QEMU
 #
-RECREATE_BENCH_DISK=false
+RECREATE_BENCH_DISK=true
 
 #
 # Disk and benchmark sizes.
@@ -92,7 +92,7 @@ create_benchmark_disk()
         "$BENCH_FILE" \
         /mnt/meaty-bench/double.txt
 
-        echo "Creating /grow.txt..."
+    echo "Creating /grow.txt..."
 
     sudo dd \
         if=/dev/zero \
@@ -101,10 +101,15 @@ create_benchmark_disk()
         count=1 \
         conv=fsync
 
-    echo "Installing native userspace executable /bin/hello.nex..."
+    echo "Installing userspace executables..."
 
     if [ ! -f "$SYSROOT/bin/hello.nex" ]; then
         echo "Error: $SYSROOT/bin/hello.nex does not exist."
+        exit 1
+    fi
+
+    if [ ! -f "$SYSROOT/bin/spawn-child.nex" ]; then
+        echo "Error: $SYSROOT/bin/spawn-child.nex does not exist."
         exit 1
     fi
 
@@ -115,15 +120,20 @@ create_benchmark_disk()
         "$SYSROOT/bin/hello.nex" \
         /mnt/meaty-bench/bin/hello.nex
 
+    sudo cp \
+        "$SYSROOT/bin/spawn-child.nex" \
+        /mnt/meaty-bench/bin/spawn-child.nex
+
     sync
 
-    echo "Installed userspace executable:"
+    echo "Installed userspace executables:"
+
     sudo ls -lh \
-        /mnt/meaty-bench/bin/hello.nex
-
-    sync
+        /mnt/meaty-bench/bin/hello.nex \
+        /mnt/meaty-bench/bin/spawn-child.nex
 
     echo "Benchmark file:"
+
     ls -lh "$BENCH_FILE"
 
     sudo ls -lh \
@@ -132,6 +142,7 @@ create_benchmark_disk()
     echo "Unmounting filesystem..."
 
     sudo umount /mnt/meaty-bench
+
     sudo losetup -d "$LOOP"
 
     LOOP=""

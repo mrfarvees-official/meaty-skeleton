@@ -6,11 +6,63 @@
 #include <kernel/usercopy.h>
 #include <kernel/user_thread.h>
 #include <kernel/process.h>
+#include <kernel/spawn.h>
+#include <kernel/paging.h>
 
 #include "interrupts.h"
 #include "syscall.h"
 
 #define SYSCALL_DEBUG_WRITE_MAX 128u
+
+#define SYSCALL_SPAWN_PATH_MAX 256u
+#define SYSCALL_SPAWN_ARGC_MAX 16u
+#define SYSCALL_SPAWN_ARG_MAX 128u
+
+static bool syscall_copy_user_string(
+    char *kernel_buffer,
+    size_t capacity,
+    const char *user_string)
+{
+    if (kernel_buffer == NULL ||
+        capacity == 0u ||
+        user_string == NULL)
+    {
+        return false;
+    }
+
+    for (size_t index = 0;
+         index < capacity;
+         ++index)
+    {
+        char character =
+            '\0';
+
+        if (!copy_from_user(
+                &character,
+                user_string + index,
+                sizeof(character)))
+        {
+            return false;
+        }
+
+        kernel_buffer[index] =
+            character;
+
+        if (character ==
+            '\0')
+        {
+            return true;
+        }
+    }
+
+    /*
+     * String did not terminate inside the allowed buffer.
+     */
+    kernel_buffer[capacity - 1u] =
+        '\0';
+
+    return false;
+}
 
 static int32_t syscall_dispatch(
     uint32_t number,
@@ -69,9 +121,6 @@ static int32_t syscall_dispatch(
             input[2] != 'T' ||
             input[3] != 'E')
         {
-            printf(
-                "U2d: user input contents FAILED\n");
-
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
 
@@ -83,15 +132,8 @@ static int32_t syscall_dispatch(
                 reply,
                 sizeof(reply)))
         {
-            printf(
-                "U2d: copy_to_user rejected 0x%lx\n",
-                (unsigned long)arg1);
-
             return I386_SYSCALL_ERROR_BAD_ADDRESS;
         }
-
-        printf(
-            "U2d: copied 4 bytes from/to user memory\n");
 
         return 4;
     }
@@ -104,7 +146,7 @@ static int32_t syscall_dispatch(
         size_t length =
             (size_t)arg1;
 
-        if (length == 0)
+        if (length == 0u)
             return 0;
 
         if (length >
@@ -120,10 +162,6 @@ static int32_t syscall_dispatch(
                 user_buffer,
                 length))
         {
-            printf(
-                "U2e: debug_write rejected user buffer 0x%lx\n",
-                (unsigned long)arg0);
-
             return I386_SYSCALL_ERROR_BAD_ADDRESS;
         }
 
@@ -139,24 +177,14 @@ static int32_t syscall_dispatch(
         task_t *task =
             task_current();
 
-        if (task == NULL)
+        if (task == NULL ||
+            task->process == NULL)
         {
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
 
         int status =
             (int)(int32_t)arg0;
-
-        if (task->process == NULL)
-        {
-            return I386_SYSCALL_ERROR_INVALID_STATE;
-        }
-
-        process_id_t pid =
-            process_id(
-                task->process);
-
-        (void)pid;
 
         if (!process_set_exit_status(
                 task->process,
@@ -177,7 +205,7 @@ static int32_t syscall_dispatch(
             user_thread_create_current(
                 entry);
 
-        if (tid == 0)
+        if (tid == 0u)
         {
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
@@ -206,7 +234,8 @@ static int32_t syscall_dispatch(
             task_current();
 
         if (task == NULL ||
-            task->process == NULL)
+            task->process == NULL ||
+            task->address_space == NULL)
         {
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
@@ -224,16 +253,16 @@ static int32_t syscall_dispatch(
             (int *)(uintptr_t)arg1;
 
         /*
-         * Validate a non-NULL userspace status destination BEFORE
-         * collecting anything.
+         * ----------------------------------------------------------
+         * STEP 1
+         * Validate userspace destination while the caller's userspace
+         * CR3 is still active.
+         * ----------------------------------------------------------
          *
-         * process_waitpid() consumes the parent's ownership
-         * reference when it succeeds. We must therefore never
-         * discover an invalid userspace destination afterward.
+         * A successful process_waitpid() may release the final reference
+         * to the child process and therefore permanently consume it.
          *
-         * copy_from_user + copy_to_user of the same value verifies
-         * both readability and writability without changing the
-         * caller-visible value.
+         * Validate the destination before doing that.
          */
         if (user_status != NULL)
         {
@@ -257,20 +286,96 @@ static int32_t syscall_dispatch(
             }
         }
 
+        /*
+         * ----------------------------------------------------------
+         * STEP 2
+         * Capture caller/kernel CR3.
+         * ----------------------------------------------------------
+         */
+        uintptr_t caller_directory =
+            address_space_page_directory(
+                task->address_space);
+
+        uintptr_t kernel_directory =
+            paging_kernel_directory();
+
+        if (caller_directory == 0u ||
+            kernel_directory == 0u ||
+            paging_current_directory() !=
+                caller_directory)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        /*
+         * ----------------------------------------------------------
+         * STEP 3
+         * Perform process collection from canonical kernel CR3.
+         * ----------------------------------------------------------
+         *
+         * process_waitpid() can drop the parent's ownership reference.
+         *
+         * If that is the child's final process reference,
+         * process_release() releases the child's address_space_t.
+         *
+         * Final address-space destruction intentionally requires the
+         * canonical kernel page directory to be active.
+         */
+        if (!paging_switch_directory(
+                kernel_directory))
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
         int status =
             0;
 
-        if (!process_waitpid(
+        bool collected =
+            process_waitpid(
                 task->process,
                 child_pid,
-                &status))
+                &status);
+
+        /*
+         * ----------------------------------------------------------
+         * STEP 4
+         * Restore the caller before touching userspace or returning.
+         * ----------------------------------------------------------
+         */
+        if (!paging_switch_directory(
+                caller_directory))
+        {
+            /*
+             * Returning to ring 3 with the wrong CR3 would be fatal.
+             */
+            for (;;)
+            {
+                __asm__ volatile(
+                    "cli; hlt");
+            }
+        }
+
+        /*
+         * Child is either:
+         *
+         *     - still running
+         *     - not our child
+         *     - already collected
+         *
+         * Failed waitpid must leave status unchanged.
+         */
+        if (!collected)
         {
             return 0;
         }
 
         /*
-         * Destination was already validated above while the child
-         * was still owned by the parent.
+         * ----------------------------------------------------------
+         * STEP 5
+         * Copy status after restoring caller userspace CR3.
+         * ----------------------------------------------------------
+         *
+         * Destination was already validated before collection.
          */
         if (user_status != NULL)
         {
@@ -280,19 +385,180 @@ static int32_t syscall_dispatch(
                     sizeof(status)))
             {
                 /*
-                 * This should not normally become possible without
-                 * concurrent address-space mutation, which the
-                 * current userspace model does not support.
+                 * This should only become possible if the caller's
+                 * userspace mappings change concurrently.
                  *
-                 * The child has already been collected, so report
-                 * the address failure rather than pretending the
-                 * wait did not happen.
+                 * The child has already been collected, so report the
+                 * address failure rather than pretending collection did
+                 * not occur.
                  */
                 return I386_SYSCALL_ERROR_BAD_ADDRESS;
             }
         }
 
         return 1;
+    }
+
+    case I386_SYSCALL_SPAWN:
+    {
+        task_t *task =
+            task_current();
+
+        if (task == NULL ||
+            task->process == NULL ||
+            task->address_space == NULL)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        const char *user_path =
+            (const char *)(uintptr_t)arg0;
+
+        size_t argc =
+            (size_t)arg1;
+
+        const char *const *user_argv =
+            (const char *const *)(uintptr_t)arg2;
+
+        if (user_path == NULL ||
+            user_argv == NULL)
+        {
+            return I386_SYSCALL_ERROR_BAD_ADDRESS;
+        }
+
+        if (argc == 0u ||
+            argc >
+                SYSCALL_SPAWN_ARGC_MAX)
+        {
+            return I386_SYSCALL_ERROR_INVALID_LENGTH;
+        }
+
+        /*
+         * Everything supplied by userspace must be copied before
+         * switching away from the caller's page directory.
+         */
+        char kernel_path[SYSCALL_SPAWN_PATH_MAX];
+
+        if (!syscall_copy_user_string(
+                kernel_path,
+                sizeof(kernel_path),
+                user_path))
+        {
+            return I386_SYSCALL_ERROR_BAD_ADDRESS;
+        }
+
+        char kernel_argument_storage
+            [SYSCALL_SPAWN_ARGC_MAX]
+            [SYSCALL_SPAWN_ARG_MAX];
+
+        const char *kernel_argv[SYSCALL_SPAWN_ARGC_MAX];
+
+        for (size_t index = 0;
+             index < argc;
+             ++index)
+        {
+            const char *user_argument =
+                NULL;
+
+            if (!copy_from_user(
+                    &user_argument,
+                    user_argv + index,
+                    sizeof(user_argument)))
+            {
+                return I386_SYSCALL_ERROR_BAD_ADDRESS;
+            }
+
+            if (user_argument == NULL)
+            {
+                return I386_SYSCALL_ERROR_BAD_ADDRESS;
+            }
+
+            if (!syscall_copy_user_string(
+                    kernel_argument_storage[index],
+                    sizeof(
+                        kernel_argument_storage[index]),
+                    user_argument))
+            {
+                return I386_SYSCALL_ERROR_BAD_ADDRESS;
+            }
+
+            kernel_argv[index] =
+                kernel_argument_storage[index];
+        }
+
+        /*
+         * Verify argv[argc] is actually NULL.
+         */
+        const char *user_terminator =
+            (const char *)(uintptr_t)1u;
+
+        if (!copy_from_user(
+                &user_terminator,
+                user_argv + argc,
+                sizeof(user_terminator)))
+        {
+            return I386_SYSCALL_ERROR_BAD_ADDRESS;
+        }
+
+        if (user_terminator != NULL)
+        {
+            return I386_SYSCALL_ERROR_INVALID_LENGTH;
+        }
+
+        uintptr_t caller_directory =
+            address_space_page_directory(
+                task->address_space);
+
+        uintptr_t kernel_directory =
+            paging_kernel_directory();
+
+        if (caller_directory == 0u ||
+            kernel_directory == 0u ||
+            paging_current_directory() !=
+                caller_directory)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        /*
+         * process_spawn_user() currently performs ELF loading from
+         * canonical kernel CR3.
+         *
+         * All userspace pointers have already been copied above.
+         */
+        if (!paging_switch_directory(
+                kernel_directory))
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        process_id_t child_pid =
+            process_spawn_user(
+                kernel_path,
+                argc,
+                kernel_argv);
+
+        /*
+         * We MUST restore the caller's CR3 before returning through
+         * IRET to ring 3.
+         */
+        if (!paging_switch_directory(
+                caller_directory))
+        {
+            for (;;)
+            {
+                __asm__ volatile(
+                    "cli; hlt");
+            }
+        }
+
+        if (child_pid ==
+            PROCESS_ID_INVALID)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        return (int32_t)child_pid;
     }
 
     default:

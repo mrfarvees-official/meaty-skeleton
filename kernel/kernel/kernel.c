@@ -199,7 +199,7 @@ static void process_waitpid_test(void)
 	 * ----------------------------------------------------------
 	 */
 	while (task_cleanup_total_reaped() <
-		   reaped_before + 2u)
+		   reaped_before + 3u)
 	{
 		task_yield();
 	}
@@ -582,7 +582,7 @@ static void process_waitpid_test(void)
 	}
 
 	if (task_cleanup_total_reaped() !=
-		reaped_before + 2u)
+		reaped_before + 3u)
 	{
 		log_error(
 			"P1D.2: unexpected reaper count "

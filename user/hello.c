@@ -1,13 +1,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SYS_GETTID        2u
-#define SYS_DEBUG_WRITE   4u
-#define SYS_EXIT          5u
+#define SYS_GETTID 2u
+#define SYS_DEBUG_WRITE 4u
+#define SYS_EXIT 5u
 #define SYS_THREAD_CREATE 6u
-#define SYS_YIELD         7u
-#define SYS_WAITPID       8u
-
+#define SYS_YIELD 7u
+#define SYS_WAITPID 8u
+#define SYS_SPAWN 9u
 
 /*
  * Shared ELF data.
@@ -21,7 +21,6 @@ static volatile uint32_t shared_value =
 
 static volatile int32_t worker_tid =
     0;
-
 
 /*
  * --------------------------------------------------------------------------
@@ -44,7 +43,6 @@ static int32_t syscall0(
     return (int32_t)result;
 }
 
-
 static int32_t syscall1(
     uint32_t number,
     uint32_t arg0)
@@ -60,7 +58,6 @@ static int32_t syscall1(
 
     return (int32_t)result;
 }
-
 
 static int32_t syscall2(
     uint32_t number,
@@ -80,6 +77,25 @@ static int32_t syscall2(
     return (int32_t)result;
 }
 
+static int32_t syscall3(
+    uint32_t number,
+    uint32_t arg0,
+    uint32_t arg1,
+    uint32_t arg2)
+{
+    uint32_t result =
+        number;
+
+    __asm__ volatile(
+        "int $0x80"
+        : "+a"(result)
+        : "b"(arg0),
+          "c"(arg1),
+          "d"(arg2)
+        : "memory", "cc");
+
+    return (int32_t)result;
+}
 
 static size_t string_length(
     const char *string)
@@ -96,7 +112,6 @@ static size_t string_length(
     return length;
 }
 
-
 static int write_string(
     const char *string)
 {
@@ -107,16 +122,14 @@ static int write_string(
     int32_t result =
         syscall2(
             SYS_DEBUG_WRITE,
-            (uint32_t)
-                (uintptr_t)string,
+            (uint32_t)(uintptr_t)string,
             (uint32_t)length);
 
     return result ==
-            (int32_t)length
-        ? 0
-        : -1;
+                   (int32_t)length
+               ? 0
+               : -1;
 }
-
 
 static int32_t gettid(void)
 {
@@ -124,16 +137,13 @@ static int32_t gettid(void)
         SYS_GETTID);
 }
 
-
 static int32_t thread_create(
     void (*entry)(void))
 {
     return syscall1(
         SYS_THREAD_CREATE,
-        (uint32_t)
-            (uintptr_t)entry);
+        (uint32_t)(uintptr_t)entry);
 }
-
 
 static void thread_yield(void)
 {
@@ -148,10 +158,22 @@ static int32_t waitpid_nonblocking(
     return syscall2(
         SYS_WAITPID,
         pid,
-        (uint32_t)
-            (uintptr_t)status);
+        (uint32_t)(uintptr_t)status);
 }
 
+static int32_t spawn_process(
+    const char *path,
+    uint32_t argc,
+    const char *const argv[])
+{
+    return syscall3(
+        SYS_SPAWN,
+        (uint32_t)
+            (uintptr_t)path,
+        argc,
+        (uint32_t)
+            (uintptr_t)argv);
+}
 
 static void thread_exit(
     int status)
@@ -173,7 +195,6 @@ static void thread_exit(
             "ud2");
     }
 }
-
 
 /*
  * --------------------------------------------------------------------------
@@ -256,7 +277,6 @@ static void worker_thread(void)
         0);
 }
 
-
 /*
  * --------------------------------------------------------------------------
  * MAIN ELF THREAD
@@ -297,6 +317,21 @@ int main(
     static const char waitpid_passed[] =
         "user: WAITPID SYSCALL PLUMBING PASSED\n";
 
+    static const char spawn_starting[] =
+        "P1F user: spawning child process\n";
+
+    static const char spawn_created[] =
+        "P1F user: child process created\n";
+
+    static const char spawn_collected[] =
+        "P1F user: child collected status=73\n";
+
+    static const char spawn_second_wait[] =
+        "P1F user: second waitpid returned false\n";
+
+    static const char spawn_passed[] =
+        "P1F user: USERSPACE SPAWN/WAIT PASSED\n";
+
     static const char starting[] =
         "user: creating worker thread\n";
 
@@ -310,9 +345,7 @@ int main(
         "user: MULTITHREADING PASSED\n";
 
     /*
-     * ----------------------------------------------------------
-     * Existing ELF argc/argv regression test.
-     * ----------------------------------------------------------
+     * Existing argc/argv test.
      */
     if (write_string(
             greeting) != 0)
@@ -368,13 +401,7 @@ int main(
 
     /*
      * ----------------------------------------------------------
-     * P1E
-     *
-     * Basic userspace waitpid syscall plumbing.
-     *
-     * This process is PID 2 and currently owns no children.
-     * PID 1 is its parent, not its child, so attempting to wait
-     * on PID 1 must return 0 without modifying status.
+     * P1E regression
      * ----------------------------------------------------------
      */
     if (write_string(
@@ -391,10 +418,8 @@ int main(
             1u,
             &wait_status);
 
-    if (wait_result !=
-            0 ||
-        wait_status !=
-            12345)
+    if (wait_result != 0 ||
+        wait_status != 12345)
     {
         return 41;
     }
@@ -405,19 +430,12 @@ int main(
         return 42;
     }
 
-    /*
-     * The syscall validates a non-NULL status destination before
-     * attempting collection.
-     *
-     * Address 1 is not valid userspace storage.
-     */
     wait_result =
         waitpid_nonblocking(
             1u,
             (int *)(uintptr_t)1u);
 
-    if (wait_result !=
-        -3)
+    if (wait_result != -3)
     {
         return 43;
     }
@@ -428,18 +446,12 @@ int main(
         return 44;
     }
 
-    /*
-     * NULL status is valid: caller may discard child status.
-     *
-     * PID 1 is still not our child, so result remains 0.
-     */
     wait_result =
         waitpid_nonblocking(
             1u,
             NULL);
 
-    if (wait_result !=
-        0)
+    if (wait_result != 0)
     {
         return 45;
     }
@@ -452,7 +464,118 @@ int main(
 
     /*
      * ----------------------------------------------------------
-     * U12.4
+     * P1F
+     *
+     * PID 2 creates a genuine child userspace process.
+     * ----------------------------------------------------------
+     */
+    if (write_string(
+            spawn_starting) != 0)
+    {
+        return 50;
+    }
+
+    static const char child_path[] =
+        "/bin/spawn-child.nex";
+
+    static const char child_arg1[] =
+        "alpha";
+
+    static const char child_arg2[] =
+        "beta";
+
+    const char *child_argv[] =
+        {
+            child_path,
+            child_arg1,
+            child_arg2,
+            NULL
+        };
+
+    int32_t child_pid =
+        spawn_process(
+            child_path,
+            3u,
+            child_argv);
+
+    if (child_pid <= 0)
+    {
+        return 51;
+    }
+
+    if (write_string(
+            spawn_created) != 0)
+    {
+        return 52;
+    }
+
+    wait_status =
+        -1;
+
+    for (;;)
+    {
+        wait_result =
+            waitpid_nonblocking(
+                (uint32_t)child_pid,
+                &wait_status);
+
+        if (wait_result < 0)
+        {
+            return 53;
+        }
+
+        if (wait_result == 1)
+        {
+            break;
+        }
+
+        thread_yield();
+    }
+
+    if (wait_status !=
+        73)
+    {
+        return 54;
+    }
+
+    if (write_string(
+            spawn_collected) != 0)
+    {
+        return 55;
+    }
+
+    /*
+     * Collection is one-shot.
+     */
+    wait_status =
+        12345;
+
+    wait_result =
+        waitpid_nonblocking(
+            (uint32_t)child_pid,
+            &wait_status);
+
+    if (wait_result != 0 ||
+        wait_status != 12345)
+    {
+        return 56;
+    }
+
+    if (write_string(
+            spawn_second_wait) != 0)
+    {
+        return 57;
+    }
+
+    if (write_string(
+            spawn_passed) != 0)
+    {
+        return 58;
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * U12.4 regression
      * ----------------------------------------------------------
      */
     int32_t main_tid =
@@ -525,4 +648,3 @@ int main(
 
     return 0;
 }
-

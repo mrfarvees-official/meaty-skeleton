@@ -26,16 +26,23 @@ USER_LDFLAGS=\
 	-Wl,-z,max-page-size=0x1000 \
 	-Wl,-T,linker.ld
 
-OBJS=\
+HELLO_OBJS=\
 	crt0.o \
 	hello.o
 
+SPAWN_CHILD_OBJS=\
+	crt0.o \
+	spawn_child.o
+
 .PHONY: all clean install
 
-all: hello.nex
+all: hello.nex spawn-child.nex
 
-hello.nex: $(OBJS) linker.ld
-	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) -o $@ $(OBJS)
+hello.nex: $(HELLO_OBJS) linker.ld
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) -o $@ $(HELLO_OBJS)
+
+spawn-child.nex: $(SPAWN_CHILD_OBJS) linker.ld
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) -o $@ $(SPAWN_CHILD_OBJS)
 
 crt0.o: crt0.S
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -43,9 +50,14 @@ crt0.o: crt0.S
 hello.o: hello.c
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-install: hello.nex
+spawn_child.o: spawn_child.c
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+install: hello.nex spawn-child.nex
 	mkdir -p $(DESTDIR)$(BINDIR)
 	cp hello.nex $(DESTDIR)$(BINDIR)/hello.nex
+	cp spawn-child.nex $(DESTDIR)$(BINDIR)/spawn-child.nex
 
 clean:
-	rm -f hello.nex $(OBJS)
+	rm -f hello.nex spawn-child.nex \
+		hello.o spawn_child.o crt0.o

@@ -48,6 +48,20 @@
  */
 #define I386_SYSCALL_WAITPID        8u
 
+/*
+ * Spawn a new userspace process.
+ *
+ * EBX = const char *path
+ * ECX = argc
+ * EDX = const char *const argv[]
+ *
+ * Returns:
+ *
+ *     PID > 0    child created
+ *     EAX < 0    error
+ */
+#define I386_SYSCALL_SPAWN          9u
+
 
 /*
  * Syscall result convention:
