@@ -1154,3 +1154,113 @@ size_t framebuffer_get_mapped_capacity(void)
     return framebuffer_state.mapped_capacity;
 }
 
+void framebuffer_blit_rgb32(
+    uint32_t destination_x,
+    uint32_t destination_y,
+    uint32_t width,
+    uint32_t height,
+    const uint32_t *source_pixels,
+    uint32_t source_pitch)
+{
+    if (!framebuffer_state.available ||
+        source_pixels == NULL)
+    {
+        return;
+    }
+
+    if (framebuffer_state.bpp != 32u)
+        return;
+
+    if (width == 0u ||
+        height == 0u)
+    {
+        return;
+    }
+
+    if (destination_x >=
+            framebuffer_state.width ||
+        destination_y >=
+            framebuffer_state.height)
+    {
+        return;
+    }
+
+    uint32_t maximum_width =
+        framebuffer_state.width -
+        destination_x;
+
+    uint32_t maximum_height =
+        framebuffer_state.height -
+        destination_y;
+
+    if (width > maximum_width)
+        width = maximum_width;
+
+    if (height > maximum_height)
+        height = maximum_height;
+
+    uint64_t minimum_source_pitch =
+        (uint64_t)width *
+        sizeof(uint32_t);
+
+    if ((uint64_t)source_pitch <
+        minimum_source_pitch)
+    {
+        return;
+    }
+
+    /*
+     * Fast path for the normal QEMU/Bochs 32-bpp layout:
+     *
+     *     R = bits 16..23
+     *     G = bits 8..15
+     *     B = bits 0..7
+     *
+     * GUI surfaces are already stored in that exact
+     * 0x00RRGGBB representation.
+     */
+    bool native_rgb =
+        framebuffer_state.red_position == 16u &&
+        framebuffer_state.green_position == 8u &&
+        framebuffer_state.blue_position == 0u;
+
+    for (uint32_t y = 0u;
+         y < height;
+         ++y)
+    {
+        const uint32_t *source_row =
+            (const uint32_t *)
+            ((const uint8_t *)source_pixels +
+             (size_t)y *
+                 source_pitch);
+
+        volatile uint32_t *destination_row =
+            (volatile uint32_t *)
+            (framebuffer_state.pixels +
+             (size_t)(destination_y + y) *
+                 framebuffer_state.pitch) +
+            destination_x;
+
+        if (native_rgb)
+        {
+            for (uint32_t x = 0u;
+                 x < width;
+                 ++x)
+            {
+                destination_row[x] =
+                    source_row[x];
+            }
+        }
+        else
+        {
+            for (uint32_t x = 0u;
+                 x < width;
+                 ++x)
+            {
+                destination_row[x] =
+                    framebuffer_pack_rgb(
+                        source_row[x]);
+            }
+        }
+    }
+}

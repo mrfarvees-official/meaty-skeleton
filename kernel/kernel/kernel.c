@@ -37,6 +37,8 @@
 #include <kernel/user_image.h>
 #include <kernel/spawn.h>
 
+#include <kernel/gui/compositor.h>
+
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
 #include "../arch/i386/interrupts.h"
@@ -530,6 +532,29 @@ void kernel_main(
 
 	log_info(
 		"heap initialized\n");
+
+	/*
+	 * ------------------------------------------------------------
+	 * GUI compositor foundation
+	 * ------------------------------------------------------------
+	 *
+	 * Allocate the screen-sized off-screen composition buffer.
+	 *
+	 * Do not present it yet. The existing framebuffer terminal still
+	 * owns the visible screen during this G0 foundation step.
+	 */
+	if (!gui_compositor_initialize())
+	{
+		log_error(
+			"GUI compositor initialization failed\n");
+
+		halt_forever();
+	}
+
+	log_info(
+		"GUI compositor backbuffer initialized: %ux%u\n",
+		(unsigned)framebuffer_get_width(),
+		(unsigned)framebuffer_get_height());
 
 	/*
 	 * ------------------------------------------------------------

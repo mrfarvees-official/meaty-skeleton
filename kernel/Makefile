@@ -57,6 +57,8 @@ kernel/device/mouse.o 			\
 kernel/device/keyboard.o 		\
 kernel/device/pci.o 			\
 kernel/device/ahci.o 			\
+kernel/gui/surface.o 			\
+kernel/gui/compositor.o 		\
 kernel/input/keyboard_line.o 	\
 kernel/input/mouse_cursor.o 	\
 kernel/multitasking/acpi.o 		\

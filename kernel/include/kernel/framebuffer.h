@@ -90,4 +90,12 @@ void framebuffer_draw_string(
     uint32_t rgb,
     uint32_t scale);
 
+void framebuffer_blit_rgb32(
+    uint32_t destination_x,
+    uint32_t destination_y,
+    uint32_t width,
+    uint32_t height,
+    const uint32_t *source_pixels,
+    uint32_t source_pitch);
+
 #endif
