@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include <kernel/tty.h>
+#include <kernel/keyboard.h>
 #include <kernel/task.h>
 #include <kernel/usercopy.h>
 #include <kernel/user_thread.h>
@@ -17,6 +18,8 @@
 #define SYSCALL_SPAWN_PATH_MAX 256u
 #define SYSCALL_SPAWN_ARGC_MAX 16u
 #define SYSCALL_SPAWN_ARG_MAX 128u
+
+#define SYSCALL_STDIO_MAX 128u
 
 static bool syscall_copy_user_string(
     char *kernel_buffer,
@@ -62,6 +65,203 @@ static bool syscall_copy_user_string(
         '\0';
 
     return false;
+}
+
+static int32_t syscall_read_stdio(
+    uint32_t fd,
+    uint32_t user_buffer_address,
+    uint32_t requested_length)
+{
+    /*
+     * Shell v0:
+     *
+     *     fd 0 = keyboard character stream
+     *
+     * Nothing else is readable yet.
+     */
+    if (fd != 0u)
+    {
+        return I386_SYSCALL_ERROR_BAD_FD;
+    }
+
+    size_t length =
+        (size_t)requested_length;
+
+    /*
+     * Standard read-style zero-length operation.
+     *
+     * Do not require a valid buffer when no bytes are requested.
+     */
+    if (length == 0u)
+    {
+        return 0;
+    }
+
+    if (length >
+        SYSCALL_STDIO_MAX)
+    {
+        return I386_SYSCALL_ERROR_INVALID_LENGTH;
+    }
+
+    void *user_buffer =
+        (void *)(uintptr_t)user_buffer_address;
+
+    if (user_buffer == NULL)
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    char buffer[SYSCALL_STDIO_MAX];
+
+    /*
+     * ----------------------------------------------------------
+     * Validate the complete userspace destination BEFORE blocking.
+     * ----------------------------------------------------------
+     *
+     * copy_from_user() proves the range is mapped/user-readable.
+     *
+     * copy_to_user() additionally proves the complete range is
+     * writable.
+     *
+     * Writing the original bytes straight back leaves the caller's
+     * buffer unchanged.
+     *
+     * This prevents us from blocking for keyboard input, consuming
+     * characters, and only afterwards discovering that the user's
+     * destination is invalid.
+     */
+    if (!copy_from_user(
+            buffer,
+            user_buffer,
+            length))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    if (!copy_to_user(
+            user_buffer,
+            buffer,
+            length))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * Block until at least one character exists.
+     * ----------------------------------------------------------
+     *
+     * keyboard_wait_character() already sleeps the current task
+     * through the semaphore/wait-queue infrastructure.
+     *
+     * Do not echo here.
+     *
+     * The future shell owns echo/backspace/line assembly.
+     */
+    if (!keyboard_wait_character(
+            &buffer[0]))
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    size_t received =
+        1u;
+
+    /*
+     * Once at least one byte has been obtained, drain anything that
+     * is already queued without blocking again.
+     *
+     * This gives read()-style "up to count" behavior while ensuring
+     * that a read requesting multiple bytes does not wait until all
+     * requested bytes have arrived.
+     */
+    while (received <
+           length)
+    {
+        char character =
+            '\0';
+
+        if (!keyboard_read_character(
+                &character))
+        {
+            break;
+        }
+
+        buffer[received] =
+            character;
+
+        ++received;
+    }
+
+    /*
+     * We validated the complete requested destination range before
+     * consuming input.
+     */
+    if (!copy_to_user(
+            user_buffer,
+            buffer,
+            received))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    return (int32_t)received;
+}
+
+static int32_t syscall_write_stdio(
+    uint32_t fd,
+    uint32_t user_buffer_address,
+    uint32_t requested_length)
+{
+    /*
+     * Shell v0:
+     *
+     *     fd 1 = terminal
+     *     fd 2 = terminal
+     */
+    if (fd != 1u &&
+        fd != 2u)
+    {
+        return I386_SYSCALL_ERROR_BAD_FD;
+    }
+
+    size_t length =
+        (size_t)requested_length;
+
+    if (length == 0u)
+    {
+        return 0;
+    }
+
+    if (length >
+        SYSCALL_STDIO_MAX)
+    {
+        return I386_SYSCALL_ERROR_INVALID_LENGTH;
+    }
+
+    const void *user_buffer =
+        (const void *)(uintptr_t)user_buffer_address;
+
+    if (user_buffer == NULL)
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    char buffer[SYSCALL_STDIO_MAX];
+
+    if (!copy_from_user(
+            buffer,
+            user_buffer,
+            length))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    terminal_write(
+        buffer,
+        length);
+
+    return (int32_t)length;
 }
 
 static int32_t syscall_dispatch(
@@ -559,6 +759,22 @@ static int32_t syscall_dispatch(
         }
 
         return (int32_t)child_pid;
+    }
+
+    case I386_SYSCALL_READ:
+    {
+        return syscall_read_stdio(
+            arg0,
+            arg1,
+            arg2);
+    }
+
+    case I386_SYSCALL_WRITE:
+    {
+        return syscall_write_stdio(
+            arg0,
+            arg1,
+            arg2);
     }
 
     default:

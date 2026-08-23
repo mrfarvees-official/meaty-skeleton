@@ -8,6 +8,7 @@
 #define SYS_YIELD 7u
 #define SYS_WAITPID 8u
 #define SYS_SPAWN 9u
+#define SYS_WRITE 11u
 
 /*
  * Shared ELF data.
@@ -120,8 +121,9 @@ static int write_string(
             string);
 
     int32_t result =
-        syscall2(
-            SYS_DEBUG_WRITE,
+        syscall3(
+            SYS_WRITE,
+            1u,
             (uint32_t)(uintptr_t)string,
             (uint32_t)length);
 

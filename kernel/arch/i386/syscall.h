@@ -15,8 +15,6 @@
 #define I386_SYSCALL_EXIT           5u
 
 /*
- * U12.4
- *
  * Create another userspace task sharing the caller's
  * address space.
  *
@@ -28,9 +26,6 @@
 
 /*
  * Voluntarily yield the current task.
- *
- * Used by the initial userspace threading test instead of
- * busy-spinning forever while waiting for another thread.
  */
 #define I386_SYSCALL_YIELD          7u
 
@@ -62,6 +57,43 @@
  */
 #define I386_SYSCALL_SPAWN          9u
 
+/*
+ * Minimal shell-v0 stdin.
+ *
+ * EBX = fd
+ * ECX = userspace destination buffer
+ * EDX = maximum byte count
+ *
+ * Only fd 0 is supported.
+ *
+ * Behavior:
+ *
+ *     - count == 0 returns 0 immediately
+ *     - otherwise blocks until at least one keyboard character exists
+ *     - then drains any additional characters already queued, up to count
+ *     - does not echo
+ *     - does not perform line editing
+ *
+ * Returns number of bytes copied, or a negative error.
+ */
+#define I386_SYSCALL_READ           10u
+
+/*
+ * Minimal shell-v0 stdout/stderr.
+ *
+ * EBX = fd
+ * ECX = userspace source buffer
+ * EDX = byte count
+ *
+ * Supported:
+ *
+ *     fd 1 = terminal output
+ *     fd 2 = terminal output
+ *
+ * Returns number of bytes written, or a negative error.
+ */
+#define I386_SYSCALL_WRITE          11u
+
 
 /*
  * Syscall result convention:
@@ -73,6 +105,7 @@
 #define I386_SYSCALL_ERROR_INVALID_STATE   (-2)
 #define I386_SYSCALL_ERROR_BAD_ADDRESS     (-3)
 #define I386_SYSCALL_ERROR_INVALID_LENGTH  (-4)
+#define I386_SYSCALL_ERROR_BAD_FD          (-5)
 
 bool syscall_initialize(void);
 
