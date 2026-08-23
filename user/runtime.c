@@ -9,13 +9,9 @@
 #define SYS_SPAWN   9u
 #define SYS_READ    10u
 #define SYS_WRITE   11u
+#define SYS_OPEN    12u
+#define SYS_CLOSE   13u
 
-/*
- * The kernel currently bounds each stdio syscall to 128 bytes.
- *
- * user_write_string() chunks longer strings so callers do not need
- * to care about that kernel implementation detail.
- */
 #define USER_STDIO_CHUNK 128u
 
 
@@ -192,6 +188,26 @@ int user_write_string(
 }
 
 
+int32_t user_open(
+    const char *path,
+    uint32_t flags)
+{
+    return syscall2(
+        SYS_OPEN,
+        (uint32_t)(uintptr_t)path,
+        flags);
+}
+
+
+int32_t user_close(
+    int fd)
+{
+    return syscall1(
+        SYS_CLOSE,
+        (uint32_t)fd);
+}
+
+
 int32_t user_spawn(
     const char *path,
     uint32_t argc,
@@ -230,9 +246,6 @@ void user_exit(
         SYS_EXIT,
         (uint32_t)status);
 
-    /*
-     * SYS_EXIT must never return.
-     */
     for (;;)
     {
         __asm__ volatile(

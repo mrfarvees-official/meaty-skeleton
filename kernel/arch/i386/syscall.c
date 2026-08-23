@@ -9,6 +9,7 @@
 #include <kernel/process.h>
 #include <kernel/spawn.h>
 #include <kernel/paging.h>
+#include <kernel/fd.h>
 
 #include "interrupts.h"
 #include "syscall.h"
@@ -20,6 +21,8 @@
 #define SYSCALL_SPAWN_ARG_MAX 128u
 
 #define SYSCALL_STDIO_MAX 128u
+
+#define SYSCALL_OPEN_PATH_MAX 256u
 
 static bool syscall_copy_user_string(
     char *kernel_buffer,
@@ -72,26 +75,6 @@ static int32_t syscall_read_stdio(
     uint32_t user_buffer_address,
     uint32_t requested_length)
 {
-    /*
-     * Shell v0:
-     *
-     *     fd 0 = keyboard character stream
-     *
-     * This syscall is intentionally NON-BLOCKING.
-     *
-     * Returns:
-     *
-     *     > 0   characters copied
-     *       0   no keyboard characters currently available
-     *     < 0   error
-     *
-     * Userspace may yield and retry.
-     */
-    if (fd != 0u)
-    {
-        return I386_SYSCALL_ERROR_BAD_FD;
-    }
-
     size_t length =
         (size_t)requested_length;
 
@@ -117,7 +100,8 @@ static int32_t syscall_read_stdio(
     char buffer[SYSCALL_STDIO_MAX];
 
     /*
-     * Validate the complete destination before consuming input.
+     * Validate the entire userspace destination before consuming
+     * either keyboard or file input.
      */
     if (!copy_from_user(
             buffer,
@@ -135,48 +119,93 @@ static int32_t syscall_read_stdio(
         return I386_SYSCALL_ERROR_BAD_ADDRESS;
     }
 
-    size_t received =
-        0u;
-
     /*
-     * Consume only characters that already exist.
-     *
-     * keyboard_read_character() consumes the matching semaphore
-     * permit as well as the ring-buffer entry, so its accounting
-     * remains synchronized.
+     * ----------------------------------------------------------
+     * fd 0: non-blocking keyboard input
+     * ----------------------------------------------------------
      */
-    while (received <
-           length)
+    if (fd == 0u)
     {
-        char character =
-            '\0';
+        size_t received =
+            0u;
 
-        if (!keyboard_read_character(
-                &character))
+        while (received <
+               length)
         {
-            break;
+            char character =
+                '\0';
+
+            if (!keyboard_read_character(
+                    &character))
+            {
+                break;
+            }
+
+            buffer[received] =
+                character;
+
+            ++received;
         }
 
-        buffer[received] =
-            character;
+        if (received == 0u)
+        {
+            return 0;
+        }
 
-        ++received;
+        if (!copy_to_user(
+                user_buffer,
+                buffer,
+                received))
+        {
+            return I386_SYSCALL_ERROR_BAD_ADDRESS;
+        }
+
+        return (int32_t)received;
     }
 
-    if (received == 0u)
+    /*
+     * ----------------------------------------------------------
+     * fd >= 3: VFS-backed file input
+     * ----------------------------------------------------------
+     */
+    if (fd >=
+        KERNEL_FD_FIRST)
     {
-        return 0;
+        size_t bytes_read =
+            0u;
+
+        if (kernel_fd_read(
+                (int)fd,
+                buffer,
+                length,
+                &bytes_read) != 0)
+        {
+            return I386_SYSCALL_ERROR_BAD_FD;
+        }
+
+        if (bytes_read == 0u)
+        {
+            return 0;
+        }
+
+        if (bytes_read >
+            length)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        if (!copy_to_user(
+                user_buffer,
+                buffer,
+                bytes_read))
+        {
+            return I386_SYSCALL_ERROR_BAD_ADDRESS;
+        }
+
+        return (int32_t)bytes_read;
     }
 
-    if (!copy_to_user(
-            user_buffer,
-            buffer,
-            received))
-    {
-        return I386_SYSCALL_ERROR_BAD_ADDRESS;
-    }
-
-    return (int32_t)received;
+    return I386_SYSCALL_ERROR_BAD_FD;
 }
 
 static int32_t syscall_write_stdio(
@@ -184,18 +213,6 @@ static int32_t syscall_write_stdio(
     uint32_t user_buffer_address,
     uint32_t requested_length)
 {
-    /*
-     * Shell v0:
-     *
-     *     fd 1 = terminal
-     *     fd 2 = terminal
-     */
-    if (fd != 1u &&
-        fd != 2u)
-    {
-        return I386_SYSCALL_ERROR_BAD_FD;
-    }
-
     size_t length =
         (size_t)requested_length;
 
@@ -228,11 +245,101 @@ static int32_t syscall_write_stdio(
         return I386_SYSCALL_ERROR_BAD_ADDRESS;
     }
 
-    terminal_write(
-        buffer,
-        length);
+    /*
+     * Terminal stdout/stderr.
+     */
+    if (fd == 1u ||
+        fd == 2u)
+    {
+        terminal_write(
+            buffer,
+            length);
 
-    return (int32_t)length;
+        return (int32_t)length;
+    }
+
+    /*
+     * VFS-backed file.
+     */
+    if (fd >=
+        KERNEL_FD_FIRST)
+    {
+        size_t bytes_written =
+            0u;
+
+        if (kernel_fd_write(
+                (int)fd,
+                buffer,
+                length,
+                &bytes_written) != 0)
+        {
+            return I386_SYSCALL_ERROR_BAD_FD;
+        }
+
+        if (bytes_written >
+            length)
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        return (int32_t)bytes_written;
+    }
+
+    return I386_SYSCALL_ERROR_BAD_FD;
+}
+
+static int32_t syscall_open_file(
+    uint32_t user_path_address,
+    uint32_t flags)
+{
+    const char *user_path =
+        (const char *)(uintptr_t)
+            user_path_address;
+
+    if (user_path == NULL)
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    char kernel_path[SYSCALL_OPEN_PATH_MAX];
+
+    if (!syscall_copy_user_string(
+            kernel_path,
+            sizeof(kernel_path),
+            user_path))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    int fd =
+        kernel_fd_open(
+            kernel_path,
+            flags);
+
+    if (fd < 0)
+    {
+        return I386_SYSCALL_ERROR_BAD_FD;
+    }
+
+    return (int32_t)fd;
+}
+
+static int32_t syscall_close_file(
+    uint32_t fd)
+{
+    if (fd <
+        KERNEL_FD_FIRST)
+    {
+        return I386_SYSCALL_ERROR_BAD_FD;
+    }
+
+    if (kernel_fd_close(
+            (int)fd) != 0)
+    {
+        return I386_SYSCALL_ERROR_BAD_FD;
+    }
+
+    return 0;
 }
 
 static int32_t syscall_dispatch(
@@ -746,6 +853,19 @@ static int32_t syscall_dispatch(
             arg0,
             arg1,
             arg2);
+    }
+
+    case I386_SYSCALL_OPEN:
+    {
+        return syscall_open_file(
+            arg0,
+            arg1);
+    }
+
+    case I386_SYSCALL_CLOSE:
+    {
+        return syscall_close_file(
+            arg0);
     }
 
     default:
