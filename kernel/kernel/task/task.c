@@ -12,6 +12,7 @@
 #include <kernel/spinlock.h>
 #include <kernel/paging.h>
 #include <kernel/address_space.h>
+#include <kernel/process.h>
 #include <kernel/logger.h>
 
 #include "../arch/i386/interrupts.h"
@@ -334,6 +335,24 @@ static void task_reaper_thread(void *argument)
          * The reaper itself executes in the canonical kernel
          * address space, which satisfies final-release requirements.
          */
+        /*
+         * Drop this task's membership/reference to its process.
+         */
+        process_t *process =
+            task->process;
+
+        task->process =
+            NULL;
+
+        if (process != NULL)
+        {
+            process_thread_detach(
+                process);
+        }
+
+        /*
+         * Drop this task/thread's reference to its address space.
+         */
         address_space_t *address_space =
             task->address_space;
 
@@ -347,6 +366,15 @@ static void task_reaper_thread(void *argument)
                 address_space))
         {
             task_halt_forever();
+        }
+
+        /*
+         * Drop this task's retained process reference.
+         */
+        if (process != NULL)
+        {
+            process_release(
+                process);
         }
 
         /*
@@ -675,11 +703,11 @@ static void destroy_unpublished_task(
     if (task == NULL)
         return;
 
-    /*
-     * This helper is used only before scheduler_make_ready().
-     *
-     * Therefore no scheduler queue can contain this task.
-     */
+    process_t *process =
+        task->process;
+
+    task->process =
+        NULL;
 
     address_space_t *address_space =
         task->address_space;
@@ -707,6 +735,24 @@ static void destroy_unpublished_task(
     spin_unlock_irqrestore(
         &task_id_lock,
         flags);
+
+    if (process != NULL)
+    {
+        process_thread_detach(
+            process);
+
+        process_release(
+            process);
+    }
+
+    if (address_space != NULL)
+    {
+        if (!address_space_release(
+                address_space))
+        {
+            task_halt_forever();
+        }
+    }
 
     kfree(task);
 
@@ -1319,4 +1365,50 @@ size_t task_live_count(void)
     spin_unlock_irqrestore(&task_id_lock, flags);
 
     return count;
+}
+
+bool task_bind_process(
+    task_t *task,
+    process_t *process)
+{
+    if (task == NULL ||
+        process == NULL)
+    {
+        return false;
+    }
+
+    /*
+     * Binding is allowed only before scheduler publication.
+     */
+    if (task->state != TASK_NEW ||
+        task->process != NULL)
+    {
+        return false;
+    }
+
+    address_space_t *process_space =
+        process_address_space(process);
+
+    if (process_space == NULL ||
+        task->address_space == NULL ||
+        process_space != task->address_space)
+    {
+        return false;
+    }
+
+    /*
+     * Task owns an independent process reference.
+     */
+    if (!process_retain(process))
+        return false;
+
+    if (!process_thread_attach(process))
+    {
+        process_release(process);
+        return false;
+    }
+
+    task->process = process;
+
+    return true;
 }

@@ -9,6 +9,9 @@
 
 typedef uint32_t task_id_t;
 
+struct process;
+typedef struct process process_t;
+
 typedef enum
 {
     TASK_NEW = 0,
@@ -71,6 +74,15 @@ typedef struct task
      * task_t itself no longer owns a page directory directly.
      */
     address_space_t *address_space;
+
+    /*
+     * Owning userspace process.
+     *
+     * Kernel/internal tasks may keep this NULL for now.
+     *
+     * If non-NULL, task owns one retained reference to process.
+     */
+    process_t *process;
 
     /*
      * Generic scheduler/accounting information.
@@ -248,5 +260,22 @@ size_t task_live_count(void);
  */
 void task_internal_finish_switch(
     task_t *previous);
+
+/*
+ * Bind an unpublished userspace task to a process.
+ *
+ * Requirements:
+ *     task->state == TASK_NEW
+ *     task->process == NULL
+ *     process address space == task address space
+ *
+ * On success:
+ *     process retained
+ *     process thread count incremented
+ *     task->process assigned
+ */
+bool task_bind_process(
+    task_t *task,
+    process_t *process);
 
 #endif

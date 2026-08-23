@@ -11,6 +11,7 @@
 #include <kernel/scheduler.h>
 #include <kernel/task.h>
 #include <kernel/user_image.h>
+#include <kernel/process.h>
 #include <kernel/vfs.h>
 #include <kernel/logger.h>
 
@@ -97,10 +98,12 @@ static void process_user_task_entry(
     void *arguments)
     __attribute__((noreturn));
 
-static void process_user_task_entry(void *argument)
+static void process_user_task_entry(
+    void *argument)
 {
     process_user_launch_context_t *launch =
-        (process_user_launch_context_t *)argument;
+        (process_user_launch_context_t *)
+            argument;
 
     if (launch == NULL)
     {
@@ -117,9 +120,11 @@ static void process_user_task_entry(void *argument)
         launch->stack_pointer;
 
     /*
-     * arch_enter_user() never returns.
+     * Launch structure is no longer needed once values
+     * have been copied locally.
      */
-    kfree(launch);
+    kfree(
+        launch);
 
     if (entry == 0 ||
         stack_pointer <
@@ -131,7 +136,8 @@ static void process_user_task_entry(void *argument)
             "spawn: invalid user entry/stack "
             "entry=0x%lx esp=0x%lx\n",
             (unsigned long)entry,
-            (unsigned long)stack_pointer);
+            (unsigned long)
+                stack_pointer);
 
         task_exit();
     }
@@ -140,23 +146,44 @@ static void process_user_task_entry(void *argument)
         task_current();
 
     if (task == NULL ||
-        task->address_space == NULL)
+        task->address_space == NULL ||
+        task->process == NULL)
     {
         log_error(
-            "spawn: no current task/address space\n");
+            "spawn: userspace task missing "
+            "process/address space\n");
 
         task_exit();
     }
 
     /*
-     * A userspace task must not execute in the immortal
+     * A task belonging to a process must execute
+     * using that process's address space.
+     */
+    if (process_address_space(
+            task->process) !=
+        task->address_space)
+    {
+        log_error(
+            "spawn: process/address-space mismatch "
+            "pid=%u tid=%u\n",
+            (unsigned)process_id(
+                task->process),
+            (unsigned)task->id);
+
+        task_exit();
+    }
+
+    /*
+     * Userspace must never run in the immortal
      * kernel address space.
      */
     if (address_space_is_kernel(
             task->address_space))
     {
         log_error(
-            "spawn: userspace task has kernel address space\n");
+            "spawn: userspace task has "
+            "kernel address space\n");
 
         task_exit();
     }
@@ -176,20 +203,29 @@ static void process_user_task_entry(void *argument)
     {
         log_error(
             "spawn: invalid user address space "
-            "tid=%u CR3=0x%lx expected=0x%lx\n",
+            "pid=%u tid=%u "
+            "CR3=0x%lx expected=0x%lx\n",
+            (unsigned)process_id(
+                task->process),
             (unsigned)task->id,
-            (unsigned long)current_directory,
-            (unsigned long)expected_directory);
+            (unsigned long)
+                current_directory,
+            (unsigned long)
+                expected_directory);
 
         task_exit();
     }
 
     log_success(
         "spawn: entering userspace "
-        "tid=%u entry=0x%lx esp=0x%lx\n",
+        "pid=%u tid=%u "
+        "entry=0x%lx esp=0x%lx\n",
+        (unsigned)process_id(
+            task->process),
         (unsigned)task->id,
         (unsigned long)entry,
-        (unsigned long)stack_pointer);
+        (unsigned long)
+            stack_pointer);
 
     arch_enter_user(
         entry,
@@ -206,156 +242,241 @@ task_id_t process_spawn_user(
     size_t argc,
     const char *const argv[])
 {
-    // Basic argument validation.
-    if (path == NULL || argc == 0 || argv == NULL)
+    if (path == NULL ||
+        argc == 0 ||
+        argv == NULL)
     {
-        log_error("spawn: invalid arguments\n");
+        log_error(
+            "spawn: invalid arguments\n");
+
         return 0;
     }
 
-    /**
-     * ELF loading currently requires the canonical kernel page
-     * directory to be active
+    /*
+     * ELF loading currently requires the canonical
+     * kernel page directory to be active.
      */
-    uintptr_t kernel_directory = paging_kernel_directory();
+    uintptr_t kernel_directory =
+        paging_kernel_directory();
 
-    if (kernel_directory == 0 || paging_current_directory() != kernel_directory)
+    if (kernel_directory == 0 ||
+        paging_current_directory() !=
+            kernel_directory)
     {
-        log_error("spawn: kernel CR3 is not active\n");
+        log_error(
+            "spawn: kernel CR3 is not active\n");
+
         return 0;
     }
 
-    /**
+    /*
+     * ----------------------------------------------------------
      * STEP 1
-     *
-     * Open executable throught VFS
+     * Open executable.
+     * ----------------------------------------------------------
      */
-    file_t *file = NULL;
+    file_t *file =
+        NULL;
 
-    if (vfs_open(path, VFS_OPEN_READ, &file) != 0 || file == NULL)
+    if (vfs_open(
+            path,
+            VFS_OPEN_READ,
+            &file) != 0 ||
+        file == NULL)
     {
-        log_error("spawn: failed opening %s\n", path);
+        log_error(
+            "spawn: failed opening %s\n",
+            path);
+
         return 0;
     }
 
-    // Only regular files can currently be executed
-    if (file->vnode == NULL || file->vnode->type != VNODE_REGULAR)
+    if (file->vnode == NULL ||
+        file->vnode->type !=
+            VNODE_REGULAR)
     {
-        log_error("spawn: %s is not a regular file\n", path);
-        vfs_close(file);
+        log_error(
+            "spawn: %s is not a regular file\n",
+            path);
+
+        vfs_close(
+            file);
+
         return 0;
     }
 
-    /**
+    /*
+     * ----------------------------------------------------------
      * STEP 2
-     *
      * Validate executable size.
+     * ----------------------------------------------------------
      */
-    uint64_t executable_size_64 = file->vnode->size;
+    uint64_t executable_size_64 =
+        file->vnode->size;
+
     if (executable_size_64 == 0)
     {
-        log_error("spawn: executable %s is empty\n", path);
-        vfs_close(file);
+        log_error(
+            "spawn: executable %s is empty\n",
+            path);
+
+        vfs_close(
+            file);
+
         return 0;
     }
 
-    if (executable_size_64 > (uint64_t)SIZE_MAX ||
-        executable_size_64 > (uint64_t)PROCESS_MAX_EXECUTABLE_SIZE)
+    if (executable_size_64 >
+            (uint64_t)SIZE_MAX ||
+        executable_size_64 >
+            (uint64_t)PROCESS_MAX_EXECUTABLE_SIZE)
     {
-        log_error("spawn: executable %s has invalid size %llu bytes\n", path, (unsigned long long)executable_size_64);
-        vfs_close(file);
+        log_error(
+            "spawn: executable %s has invalid "
+            "size %llu bytes\n",
+            path,
+            (unsigned long long)
+                executable_size_64);
+
+        vfs_close(
+            file);
+
         return 0;
     }
 
-    size_t executable_size = (size_t)executable_size_64;
+    size_t executable_size =
+        (size_t)executable_size_64;
 
-    /**
+    /*
+     * ----------------------------------------------------------
      * STEP 3
-     *
-     * Allocate temporary kernel buffer for the complete ELF file.
+     * Read ELF into temporary kernel buffer.
+     * ----------------------------------------------------------
      */
-    uint8_t *executable_data = kmalloc(executable_size);
+    uint8_t *executable_data =
+        kmalloc(
+            executable_size);
+
     if (executable_data == NULL)
     {
-        log_error("spawn: failed allocating %lu-byte ELF buffer\n", (unsigned long)executable_size);
-        vfs_close(file);
+        log_error(
+            "spawn: failed allocating %lu-byte "
+            "ELF buffer\n",
+            (unsigned long)
+                executable_size);
+
+        vfs_close(
+            file);
+
         return 0;
     }
 
-    /**
-     * STEP 4
-     *
-     * Read complete executable
-     */
-    size_t total_read = 0;
-    while (total_read < executable_size)
+    size_t total_read =
+        0;
+
+    while (total_read <
+           executable_size)
     {
-        size_t bytes_read = 0;
+        size_t bytes_read =
+            0;
+
         if (vfs_read(
                 file,
-                executable_data + total_read,
-                executable_size - total_read,
+                executable_data +
+                    total_read,
+                executable_size -
+                    total_read,
                 &bytes_read) != 0)
         {
-            log_error("spawn: VFS read failed for %s at offset %lu\n", path, (unsigned long)total_read);
-            kfree(executable_data);
-            vfs_close(file);
+            log_error(
+                "spawn: VFS read failed for %s "
+                "at offset %lu\n",
+                path,
+                (unsigned long)
+                    total_read);
+
+            kfree(
+                executable_data);
+
+            vfs_close(
+                file);
+
             return 0;
         }
 
-        /**
-         * A successful zero-byte read before reaching vnode->size
-         * means the file changed/truncated or filesystem returned
-         * inconsistent information.
-         */
         if (bytes_read == 0)
         {
-            log_error("spawn: unexpected EOF for %s at %lu/%lu\n", path, (unsigned long)total_read, (unsigned long)executable_size);
-            kfree(executable_data);
-            vfs_close(file);
+            log_error(
+                "spawn: unexpected EOF for %s "
+                "at %lu/%lu\n",
+                path,
+                (unsigned long)
+                    total_read,
+                (unsigned long)
+                    executable_size);
+
+            kfree(
+                executable_data);
+
+            vfs_close(
+                file);
+
             return 0;
         }
 
-        /**
-         * Defensive VFS check
-         */
-        if (bytes_read > executable_size - total_read)
+        if (bytes_read >
+            executable_size -
+                total_read)
         {
-            log_error("spawn: VFS returned invalid read length for %s\n", path);
-            kfree(executable_data);
-            vfs_close(file);
+            log_error(
+                "spawn: VFS returned invalid "
+                "read length for %s\n",
+                path);
+
+            kfree(
+                executable_data);
+
+            vfs_close(
+                file);
+
             return 0;
         }
 
-        total_read += bytes_read;
+        total_read +=
+            bytes_read;
     }
 
-    // File object is no longer needed.
-    vfs_close(file);
+    vfs_close(
+        file);
 
-    file = NULL;
+    file =
+        NULL;
 
-    if (total_read != executable_size)
+    if (total_read !=
+        executable_size)
     {
-        log_error("spawn: executable read length mismatch for %s\n", path);
-        kfree(executable_data);
+        log_error(
+            "spawn: executable read length "
+            "mismatch for %s\n",
+            path);
+
+        kfree(
+            executable_data);
+
         return 0;
     }
 
-    log_success("spawn: loaded %s (%lu bytes)\n", path, (unsigned long)executable_size);
+    log_success(
+        "spawn: loaded %s (%lu bytes)\n",
+        path,
+        (unsigned long)
+            executable_size);
 
-    /**
-     * STEP 5
-     *
-     * ELF loader creates
-     *
-     *      - private page directory
-     *      - ELF PT_LOAD mappings
-     *      - BSS pages
-     *      - 1 MiB userspace stack
-     *      - argc/argv
-     *
-     * image.stack_top will contain the prepared INITIAL ESP.
+    /*
+     * ----------------------------------------------------------
+     * STEP 4
+     * Load ELF into new private userspace image.
+     * ----------------------------------------------------------
      */
     user_image_t image;
 
@@ -368,67 +489,77 @@ task_id_t process_spawn_user(
             argc,
             argv))
     {
-        log_error("spawn: ELF loader rejected %s\n", path);
-        kfree(executable_data);
+        log_error(
+            "spawn: ELF loader rejected %s\n",
+            path);
+
+        kfree(
+            executable_data);
+
         return 0;
     }
 
-    /**
-     * ELF PT_LOAD contents and argv have now been copied into private
-     * userspace physical frames.
-     *
-     * The original kernel-side file buffer can be released.
-     */
-    kfree(executable_data);
-    executable_data = NULL;
+    kfree(
+        executable_data);
 
-    /**
-     * STEP 6
-     *
-     * Validate prepared ELF image.
-     */
+    executable_data =
+        NULL;
+
     if (image.page_directory == 0 ||
         image.entry == 0 ||
-        image.stack_top < PROCESS_USER_STACK_ADDRESS ||
-        image.stack_top >= PROCESS_USER_STACK_TOP)
+        image.stack_top <
+            PROCESS_USER_STACK_ADDRESS ||
+        image.stack_top >=
+            PROCESS_USER_STACK_TOP)
     {
-        log_error("spawn: ELF loader produced invalid image for %s\n", path);
-        log_error("spawn: entry=0x%lx CR3=0x%lx ESP=0x%lx\n", (unsigned long)image.entry, (unsigned long)image.page_directory, (unsigned long)image.stack_top);
-        user_image_destroy(&image);
+        log_error(
+            "spawn: ELF loader produced "
+            "invalid image for %s\n",
+            path);
+
+        user_image_destroy(
+            &image);
+
         return 0;
     }
 
-    /**
-     * STEP 7
-     *
-     * Allocate launch information that survives until the scheduler
-     * acutally starts this task.
+    /*
+     * ----------------------------------------------------------
+     * STEP 5
+     * Prepare task launch context.
+     * ----------------------------------------------------------
      */
-    process_user_launch_context_t *launch = kmalloc(sizeof(*launch));
+    process_user_launch_context_t *launch =
+        kmalloc(
+            sizeof(*launch));
 
     if (launch == NULL)
     {
-        log_error("spawn: failed allocating launch context\n");
-        user_image_destroy(&image);
+        log_error(
+            "spawn: failed allocating "
+            "launch context\n");
+
+        user_image_destroy(
+            &image);
+
         return 0;
     }
 
-    launch->entry = image.entry;
-    launch->stack_pointer = image.stack_top;
+    launch->entry =
+        image.entry;
+
+    launch->stack_pointer =
+        image.stack_top;
 
     uintptr_t user_directory =
         image.page_directory;
 
     /*
-     * ------------------------------------------------------------------
-     * STEP 8
-     *
-     * Detach the raw page directory from user_image_t.
-     *
-     * From this point the image no longer owns it.
-     * ------------------------------------------------------------------
+     * ----------------------------------------------------------
+     * STEP 6
+     * Detach raw page directory from user_image.
+     * ----------------------------------------------------------
      */
-
     uintptr_t detached_directory =
         user_image_detach_directory(
             &image);
@@ -438,7 +569,8 @@ task_id_t process_spawn_user(
             user_directory)
     {
         log_error(
-            "spawn: failed detaching user address space\n");
+            "spawn: failed detaching "
+            "user address space\n");
 
         kfree(
             launch);
@@ -450,12 +582,14 @@ task_id_t process_spawn_user(
     }
 
     /*
-     * Wrap the raw CR3 in the new shared/refcounted
-     * address-space object.
+     * ----------------------------------------------------------
+     * STEP 7
+     * Wrap CR3 in address_space_t.
      *
-     * Initial reference count:
+     * refs:
      *
-     *     spawn reference = 1
+     *     spawn = 1
+     * ----------------------------------------------------------
      */
     address_space_t *user_space =
         address_space_adopt_user(
@@ -464,12 +598,9 @@ task_id_t process_spawn_user(
     if (user_space == NULL)
     {
         log_error(
-            "spawn: failed adopting user address space\n");
+            "spawn: failed adopting "
+            "user address space\n");
 
-        /*
-         * The directory was detached from user_image_t,
-         * so we must destroy it directly on this failure path.
-         */
         paging_destroy_user_directory(
             detached_directory);
 
@@ -480,19 +611,10 @@ task_id_t process_spawn_user(
     }
 
     /*
-     * The ELF loader already mapped the process's initial 1 MiB
-     * userspace stack at stack slot 0:
-     *
-     *     [0xBFF00000, 0xC0000000)
-     *
-     * Register that existing stack with the address-space stack
-     * allocator before any future userspace worker thread can
-     * reserve a stack.
-     *
-     * No pages are allocated here. The ELF loader already created
-     * the mappings; this records virtual-range ownership only.
+     * Register the ELF main stack as stack slot 0.
      */
-    address_space_user_stack_slot_t main_stack_slot;
+    address_space_user_stack_slot_t
+        main_stack_slot;
 
     if (!address_space_user_stack_slot_reserve_index(
             user_space,
@@ -500,7 +622,8 @@ task_id_t process_spawn_user(
             &main_stack_slot))
     {
         log_error(
-            "spawn: failed reserving ELF main-thread stack slot\n");
+            "spawn: failed reserving "
+            "ELF main-thread stack slot\n");
 
         if (!address_space_release(
                 user_space))
@@ -522,12 +645,8 @@ task_id_t process_spawn_user(
             PROCESS_USER_STACK_TOP)
     {
         log_error(
-            "spawn: ELF stack does not match address-space slot 0 "
-            "stack=[0x%lx,0x%lx) expected=[0x%lx,0x%lx)\n",
-            (unsigned long)main_stack_slot.stack_bottom,
-            (unsigned long)main_stack_slot.stack_top,
-            (unsigned long)PROCESS_USER_STACK_ADDRESS,
-            (unsigned long)PROCESS_USER_STACK_TOP);
+            "spawn: ELF stack does not match "
+            "address-space slot 0\n");
 
         for (;;)
             __asm__ volatile(
@@ -535,19 +654,62 @@ task_id_t process_spawn_user(
     }
 
     /*
-     * ------------------------------------------------------------------
-     * STEP 9
+     * ----------------------------------------------------------
+     * STEP 8
+     * Create real process.
      *
-     * Create the task but DO NOT publish it.
+     * process_create() retains user_space.
      *
-     * allocate_task() retains another reference:
+     * address-space refs:
      *
-     *     spawn reference = 1
-     *     task reference  = 1
-     *     total           = 2
-     * ------------------------------------------------------------------
+     *     spawn   = 1
+     *     process = 1
+     * ----------------------------------------------------------
      */
+    process_t *process =
+        process_create(
+            user_space,
+            PROCESS_ID_INVALID);
 
+    if (process == NULL)
+    {
+        log_error(
+            "spawn: failed creating "
+            "process for %s\n",
+            path);
+
+        if (!address_space_release(
+                user_space))
+        {
+            for (;;)
+                __asm__ volatile(
+                    "cli; hlt");
+        }
+
+        kfree(
+            launch);
+
+        return 0;
+    }
+
+    process_id_t pid =
+        process_id(
+            process);
+
+    /*
+     * ----------------------------------------------------------
+     * STEP 9
+     * Create unpublished main userspace task.
+     *
+     * task creation retains user_space.
+     *
+     * address-space refs:
+     *
+     *     spawn   = 1
+     *     process = 1
+     *     task    = 1
+     * ----------------------------------------------------------
+     */
     task_t *task =
         task_create_user_unpublished(
             process_user_task_entry,
@@ -562,12 +724,12 @@ task_id_t process_spawn_user(
             "userspace task for %s\n",
             path);
 
-        /*
-         * No task reference survived the failed creation.
-         *
-         * Drop spawn's reference. Because it is the final
-         * reference, this also destroys the user page directory.
-         */
+        process_release(
+            process);
+
+        process =
+            NULL;
+
         if (!address_space_release(
                 user_space))
         {
@@ -583,7 +745,7 @@ task_id_t process_spawn_user(
     }
 
     /*
-     * Task is still TASK_NEW, so it cannot run yet.
+     * Verify raw task creation before process binding.
      */
     if (task->address_space !=
             user_space ||
@@ -592,8 +754,8 @@ task_id_t process_spawn_user(
             user_directory)
     {
         log_error(
-            "spawn: task did not retain "
-            "the expected address space\n");
+            "spawn: task address-space "
+            "ownership mismatch\n");
 
         for (;;)
             __asm__ volatile(
@@ -601,13 +763,70 @@ task_id_t process_spawn_user(
     }
 
     /*
-     * ------------------------------------------------------------------
+     * ----------------------------------------------------------
      * STEP 10
+     * Bind task into process.
      *
-     * Save everything needed before publication.
-     * ------------------------------------------------------------------
+     * After success:
+     *
+     *     task->process == process
+     *     process threads == 1
+     *     process state == RUNNING
+     *
+     * task_bind_process() also retains process.
+     * ----------------------------------------------------------
      */
+    if (!task_bind_process(
+            task,
+            process))
+    {
+        log_error(
+            "spawn: failed binding tid=%u "
+            "to pid=%u\n",
+            (unsigned)task->id,
+            (unsigned)pid);
 
+        /*
+         * Temporary fatal path.
+         *
+         * Later expose a proper unpublished-task
+         * destruction helper to spawn.c.
+         */
+        for (;;)
+            __asm__ volatile(
+                "cli; hlt");
+    }
+
+    /*
+     * Verify final ownership relationship.
+     */
+    if (task->process !=
+            process ||
+        process_address_space(
+            process) !=
+            task->address_space ||
+        process_thread_count(
+            process) !=
+            1u ||
+        process_state(
+            process) !=
+            PROCESS_RUNNING)
+    {
+        log_error(
+            "spawn: task/process ownership "
+            "mismatch\n");
+
+        for (;;)
+            __asm__ volatile(
+                "cli; hlt");
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * STEP 11
+     * Copy everything needed before publication.
+     * ----------------------------------------------------------
+     */
     task_id_t tid =
         task->id;
 
@@ -622,37 +841,54 @@ task_id_t process_spawn_user(
         launch->stack_pointer;
 
     log_success(
-        "spawn: prepared %s tid=%u CR3=0x%lx "
-        "entry=0x%lx ESP=0x%lx stack=%lu KiB\n",
+        "spawn: prepared %s "
+        "pid=%u tid=%u CR3=0x%lx "
+        "entry=0x%lx ESP=0x%lx "
+        "stack=%lu KiB\n",
         path,
+        (unsigned)pid,
         (unsigned)tid,
-        (unsigned long)task_directory,
-        (unsigned long)user_entry,
-        (unsigned long)user_esp,
-        (unsigned long)(PROCESS_USER_STACK_SIZE / 1024u));
+        (unsigned long)
+            task_directory,
+        (unsigned long)
+            user_entry,
+        (unsigned long)
+            user_esp,
+        (unsigned long)
+            (PROCESS_USER_STACK_SIZE /
+             1024u));
 
     /*
-     * spawn no longer needs its address-space reference.
+     * ----------------------------------------------------------
+     * STEP 12
+     * Drop creator-owned process reference.
      *
-     * Before:
+     * task still owns one process reference.
+     * ----------------------------------------------------------
+     */
+    process_release(
+        process);
+
+    process =
+        NULL;
+
+    /*
+     * ----------------------------------------------------------
+     * STEP 13
+     * Drop creator-owned address-space reference.
      *
-     *     refs = 2
+     * Remaining address-space refs:
      *
-     * After:
-     *
-     *     refs = 1
-     *            ^
-     *            owned by task
-     *
-     * The address space therefore remains alive when the task
-     * becomes scheduler-visible.
+     *     process = 1
+     *     task    = 1
+     * ----------------------------------------------------------
      */
     if (!address_space_release(
             user_space))
     {
         log_error(
-            "spawn: failed releasing creator "
-            "address-space reference\n");
+            "spawn: failed releasing "
+            "creator address-space reference\n");
 
         for (;;)
             __asm__ volatile(
@@ -663,30 +899,28 @@ task_id_t process_spawn_user(
         NULL;
 
     /*
-     * ------------------------------------------------------------------
-     * STEP 11
+     * ----------------------------------------------------------
+     * STEP 14
+     * Publish.
      *
-     * Publish the task.
-     *
-     * FROM THIS POINT:
-     *
-     *     DO NOT dereference task
-     *     DO NOT dereference launch
-     *
-     * CPU 1 may already be running/freeing them.
-     * ------------------------------------------------------------------
+     * DO NOT dereference task or launch after this.
+     * ----------------------------------------------------------
      */
-
     task_publish(
         task);
 
-    /*
-     * Only use local copied values such as tid here.
-     */
     log_success(
-        "spawn: published %s tid=%u\n",
+        "spawn: published %s "
+        "pid=%u tid=%u\n",
         path,
+        (unsigned)pid,
         (unsigned)tid);
 
+    /*
+     * Keep returning TID for current U12 compatibility.
+     *
+     * Later process spawning should return PID.
+     */
     return tid;
 }
+
