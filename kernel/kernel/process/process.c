@@ -974,6 +974,9 @@ bool process_snapshot(
 
     info->thread_count =
         process->live_threads;
+        
+    info->exit_status = 
+        process->exit_status;
 
     info->handle_count =
         process->accounting.current_handles;
@@ -1240,4 +1243,48 @@ size_t process_handle_live_count(void)
         flags);
 
     return count;
+}
+
+bool process_set_exit_status(
+    process_t *process,
+    int status)
+{
+    if (process == NULL)
+        return false;
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &process->lock);
+
+    /*
+     * DEAD processes cannot be modified.
+     */
+    if (process->state ==
+        PROCESS_DEAD)
+    {
+        spin_unlock_irqrestore(
+            &process->lock,
+            flags);
+
+        return false;
+    }
+
+    /*
+     * For now SYS_EXIT represents normal termination.
+     *
+     * We allow the status to be written while the process is
+     * still RUNNING because the task has not yet reached the
+     * reaper.
+     */
+    process->exit_status =
+        status;
+
+    process->termination_reason =
+        PROCESS_TERMINATION_NORMAL;
+
+    spin_unlock_irqrestore(
+        &process->lock,
+        flags);
+
+    return true;
 }

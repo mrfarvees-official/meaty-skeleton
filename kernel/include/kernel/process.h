@@ -98,17 +98,13 @@ typedef struct process_info
     process_state_t state;
     process_termination_reason_t termination_reason;
 
+    int exit_status;
+
     size_t thread_count;
     size_t handle_count;
 
     uint64_t runtime_ticks;
 
-    /*
-     * Useful for kernel diagnostics.
-     *
-     * Do not necessarily expose this raw value to unprivileged
-     * userspace later.
-     */
     uintptr_t page_directory;
 } process_info_t;
 
@@ -244,6 +240,13 @@ bool process_handle_close(
 size_t process_live_count(void);
 
 size_t process_handle_live_count(void);
+
+bool process_set_exit_status(
+    process_t *process,
+    int status);
+
+int process_exit_status(
+    process_t *process);
 
 
 #endif

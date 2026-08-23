@@ -5,6 +5,7 @@
 #include <kernel/task.h>
 #include <kernel/usercopy.h>
 #include <kernel/user_thread.h>
+#include <kernel/process.h>
 
 #include "interrupts.h"
 #include "syscall.h"
@@ -143,17 +144,53 @@ static int32_t syscall_dispatch(
             task_current();
 
         if (task == NULL)
+        {
             return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
 
-        printf(
-            "U7: exit tid=%lu status=%ld\n",
-            (unsigned long)task->id,
-            (long)(int32_t)arg0);
+        int status =
+            (int)(int32_t)arg0;
 
         /*
-         * Exit status storage belongs to a future process layer.
+         * Userspace tasks created through the real process path
+         * must have a process.
          *
-         * task_exit() never returns.
+         * Keep kernel/internal tasks outside this syscall path.
+         */
+        if (task->process == NULL)
+        {
+            printf(
+                "U7: exit tid=%lu "
+                "without process\n",
+                (unsigned long)task->id);
+
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        process_id_t pid =
+            process_id(
+                task->process);
+
+        /*
+         * Record exit status before task_exit().
+         *
+         * task_exit() eventually queues this task for the reaper.
+         */
+        if (!process_set_exit_status(
+                task->process,
+                status))
+        {
+            return I386_SYSCALL_ERROR_INVALID_STATE;
+        }
+
+        printf(
+            "U7: exit pid=%lu tid=%lu status=%ld\n",
+            (unsigned long)pid,
+            (unsigned long)task->id,
+            (long)status);
+
+        /*
+         * Does not return.
          */
         task_exit();
     }
@@ -189,7 +226,7 @@ static int32_t syscall_dispatch(
 
         return 0;
     }
-    
+
     default:
         return I386_SYSCALL_ERROR_NO_SUCH_SYSCALL;
     }

@@ -64,78 +64,379 @@ void validate_multiboot_magic(uint32_t magic)
 	}
 }
 
-static void process_spawn_binding_test(void)
+static void process_exit_status_test(void)
 {
 	printf(
-		"\n=== P1B REAL SPAWN/PROCESS TEST ===\n");
+		"\n=== P1C PROCESS EXIT STATUS TEST ===\n");
 
+	/*
+	 * Expected baseline:
+	 *
+	 *     PID 1 = immortal kernel process
+	 */
+	size_t processes_before =
+		process_live_count();
+
+	uint64_t reaped_before =
+		task_cleanup_total_reaped();
+
+	size_t tasks_before =
+		task_live_count();
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 1
+	 * Spawn the real userspace ELF.
+	 * ----------------------------------------------------------
+	 */
 	const char *argv[] =
 		{
 			"one",
 			"one",
 			"two"};
 
-	size_t processes_before =
-		process_live_count();
-
-	task_id_t tid =
+	task_id_t main_tid =
 		process_spawn_user(
 			"/bin/hello.nex",
 			3u,
 			argv);
 
-	if (tid == 0u)
+	if (main_tid == 0u)
 	{
 		log_error(
-			"P1B: process_spawn_user failed\n");
+			"P1C: process_spawn_user failed\n");
 
 		for (;;)
-			__asm__ volatile("cli; hlt");
+			__asm__ volatile(
+				"cli; hlt");
 	}
 
 	/*
-	 * process_spawn_user() now creates:
+	 * We currently know the first dynamically-created process
+	 * receives PID 2 during this isolated boot test.
 	 *
-	 *     process
-	 *         |
-	 *         +-- main userspace task
-	 *
-	 * So immediately after spawning there should be one more
-	 * live process than before.
+	 * Later process_spawn_user() should return PID directly,
+	 * which will remove this temporary assumption.
 	 */
-	if (process_live_count() !=
-		processes_before + 1u)
+	process_id_t pid =
+		2u;
+
+	process_t *process =
+		process_acquire_by_id(
+			pid);
+
+	if (process == NULL)
 	{
 		log_error(
-			"P1B: spawned ELF did not create a process\n");
+			"P1C: failed acquiring pid=%u\n",
+			(unsigned)pid);
 
 		for (;;)
-			__asm__ volatile("cli; hlt");
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	/*
+	 * Holding this retained reference is important.
+	 *
+	 * Without it, the final task reaper could release the final
+	 * process reference and destroy the process before this test
+	 * gets a chance to inspect its zombie state.
+	 */
+	if (process_state(
+			process) !=
+		PROCESS_RUNNING)
+	{
+		log_error(
+			"P1C: spawned process is not RUNNING\n");
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
 	}
 
 	log_success(
-		"P1B: spawned userspace tid=%u "
-		"live_processes=%lu\n",
-		(unsigned)tid,
-		(unsigned long)process_live_count());
+		"P1C: spawned pid=%u main_tid=%u\n",
+		(unsigned)pid,
+		(unsigned)main_tid);
 
 	/*
-	 * Let the spawned task actually execute.
+	 * ----------------------------------------------------------
+	 * STEP 2
+	 * Wait for both userspace tasks to exit and be reaped.
 	 *
-	 * Your spawn.c log should prove that the task has:
+	 * U12.4 creates:
 	 *
-	 *     pid != 0
-	 *     tid == returned tid
-	 *     task->process != NULL
-	 *     process address space == task address space
+	 *     main
+	 *     worker
+	 *
+	 * therefore exactly two additional tasks should eventually
+	 * pass through the reaper.
+	 * ----------------------------------------------------------
 	 */
-	for (size_t i = 0; i < 1000u; ++i)
+	while (task_cleanup_total_reaped() <
+		   reaped_before + 2u)
 	{
 		task_yield();
 	}
 
+	/*
+	 * Make sure cleanup accounting has actually settled.
+	 */
+	while (task_cleanup_pending_count() !=
+		   0u)
+	{
+		task_yield();
+	}
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 3
+	 * Inspect retained zombie process.
+	 * ----------------------------------------------------------
+	 */
+	process_info_t info;
+
+	if (!process_snapshot(
+			process,
+			&info))
+	{
+		log_error(
+			"P1C: process_snapshot failed\n");
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	if (info.id !=
+		pid)
+	{
+		log_error(
+			"P1C: snapshot PID mismatch "
+			"expected=%u actual=%u\n",
+			(unsigned)pid,
+			(unsigned)info.id);
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	if (info.state !=
+		PROCESS_ZOMBIE)
+	{
+		log_error(
+			"P1C: process did not become ZOMBIE "
+			"state=%u\n",
+			(unsigned)info.state);
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	if (info.thread_count !=
+		0u)
+	{
+		log_error(
+			"P1C: zombie still has threads=%lu\n",
+			(unsigned long)
+				info.thread_count);
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	if (info.termination_reason !=
+		PROCESS_TERMINATION_NORMAL)
+	{
+		log_error(
+			"P1C: wrong termination reason=%u\n",
+			(unsigned)
+				info.termination_reason);
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	if (info.exit_status !=
+		0)
+	{
+		log_error(
+			"P1C: wrong exit status=%d\n",
+			info.exit_status);
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
 	log_success(
-		"P1B: REAL SPAWN/PROCESS TEST reached userspace\n");
+		"P1C: pid=%u ZOMBIE "
+		"threads=0 status=%d\n",
+		(unsigned)info.id,
+		info.exit_status);
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 4
+	 * Verify the process is still discoverable while this test
+	 * owns its retained reference.
+	 * ----------------------------------------------------------
+	 */
+	process_t *lookup =
+		process_acquire_by_id(
+			pid);
+
+	if (lookup == NULL)
+	{
+		log_error(
+			"P1C: zombie disappeared from registry too early\n");
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	process_info_t lookup_info;
+
+	if (!process_snapshot(
+			lookup,
+			&lookup_info))
+	{
+		log_error(
+			"P1C: zombie lookup snapshot failed\n");
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	if (lookup_info.state !=
+			PROCESS_ZOMBIE ||
+		lookup_info.exit_status !=
+			0 ||
+		lookup_info.thread_count !=
+			0u)
+	{
+		log_error(
+			"P1C: registry zombie snapshot invalid\n");
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	process_release(
+		lookup);
+
+	lookup =
+		NULL;
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 5
+	 * Validate task cleanup.
+	 * ----------------------------------------------------------
+	 */
+	if (task_live_count() !=
+		tasks_before)
+	{
+		log_error(
+			"P1C: task count did not restore "
+			"before=%lu after=%lu\n",
+			(unsigned long)
+				tasks_before,
+			(unsigned long)
+				task_live_count());
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	if (task_cleanup_total_reaped() !=
+		reaped_before + 2u)
+	{
+		log_error(
+			"P1C: expected exactly two reaped tasks "
+			"before=%llu after=%llu\n",
+			(unsigned long long)
+				reaped_before,
+			(unsigned long long)
+				task_cleanup_total_reaped());
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	/*
+	 * ----------------------------------------------------------
+	 * STEP 6
+	 * Release the test's retained process reference.
+	 *
+	 * No task references remain now.
+	 *
+	 * Therefore this should destroy PID 2 and release its final
+	 * address-space reference.
+	 * ----------------------------------------------------------
+	 */
+	process_release(
+		process);
+
+	process =
+		NULL;
+
+	/*
+	 * PID must disappear from the registry.
+	 */
+	lookup =
+		process_acquire_by_id(
+			pid);
+
+	if (lookup != NULL)
+	{
+		log_error(
+			"P1C: pid=%u remained after final release\n",
+			(unsigned)pid);
+
+		process_release(
+			lookup);
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	/*
+	 * Process accounting must return to the value from before
+	 * spawning the ELF.
+	 */
+	if (process_live_count() !=
+		processes_before)
+	{
+		log_error(
+			"P1C: process count did not restore "
+			"before=%lu after=%lu\n",
+			(unsigned long)
+				processes_before,
+			(unsigned long)
+				process_live_count());
+
+		for (;;)
+			__asm__ volatile(
+				"cli; hlt");
+	}
+
+	log_success(
+		"P1C: zombie retained exit status correctly\n");
+
+	log_success(
+		"P1C: PROCESS EXIT STATUS TEST PASSED\n");
 }
 
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
@@ -434,7 +735,7 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	 */
 	interrupt_enable();
 
-	process_spawn_binding_test();
+	process_exit_status_test();
 
 	yield_forever();
 }
