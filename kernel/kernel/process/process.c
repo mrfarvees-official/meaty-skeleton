@@ -94,6 +94,13 @@ struct process
      */
     struct process *registry_previous;
     struct process *registry_next;
+
+    /*
+     * Canonical absolute current working directory.
+     *
+     * Protected by process->lock.
+     */
+    char cwd[PROCESS_PATH_MAX];
 };
 
 /*
@@ -208,6 +215,251 @@ static process_t *process_registry_find_locked(
     return NULL;
 }
 
+static bool process_path_apply(
+    char *buffer,
+    size_t capacity,
+    size_t *length,
+    const char *path)
+{
+    if (buffer == NULL ||
+        capacity < 2u ||
+        length == NULL ||
+        path == NULL)
+    {
+        return false;
+    }
+
+    const char *cursor =
+        path;
+
+    while (*cursor != '\0')
+    {
+        /*
+         * Collapse repeated '/'.
+         */
+        while (*cursor == '/')
+            ++cursor;
+
+        if (*cursor == '\0')
+            break;
+
+        const char *component =
+            cursor;
+
+        while (*cursor != '\0' &&
+               *cursor != '/')
+        {
+            ++cursor;
+        }
+
+        size_t component_length =
+            (size_t)(cursor - component);
+
+        /*
+         * Ignore ".".
+         */
+        if (component_length == 1u &&
+            component[0] == '.')
+        {
+            continue;
+        }
+
+        /*
+         * Resolve ".." without escaping above root.
+         */
+        if (component_length == 2u &&
+            component[0] == '.' &&
+            component[1] == '.')
+        {
+            while (*length > 1u &&
+                   buffer[*length - 1u] != '/')
+            {
+                --(*length);
+            }
+
+            if (*length > 1u)
+                --(*length);
+
+            buffer[*length] =
+                '\0';
+
+            continue;
+        }
+
+        size_t separator_length =
+            (*length > 1u)
+                ? 1u
+                : 0u;
+
+        if (*length +
+                separator_length +
+                component_length +
+                1u >
+            capacity)
+        {
+            return false;
+        }
+
+        if (*length > 1u)
+        {
+            buffer[*length] =
+                '/';
+
+            ++(*length);
+        }
+
+        memcpy(
+            buffer + *length,
+            component,
+            component_length);
+
+        *length +=
+            component_length;
+
+        buffer[*length] =
+            '\0';
+    }
+
+    return true;
+}
+
+bool process_get_cwd(
+    process_t *process,
+    char *buffer,
+    size_t capacity)
+{
+    if (process == NULL ||
+        buffer == NULL ||
+        capacity == 0u)
+    {
+        return false;
+    }
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &process->lock);
+
+    size_t length =
+        strlen(process->cwd);
+
+    if (length + 1u >
+        capacity)
+    {
+        spin_unlock_irqrestore(
+            &process->lock,
+            flags);
+
+        return false;
+    }
+
+    memcpy(
+        buffer,
+        process->cwd,
+        length + 1u);
+
+    spin_unlock_irqrestore(
+        &process->lock,
+        flags);
+
+    return true;
+}
+
+bool process_resolve_path(
+    process_t *process,
+    const char *path,
+    char *buffer,
+    size_t capacity)
+{
+    if (process == NULL ||
+        path == NULL ||
+        path[0] == '\0' ||
+        buffer == NULL ||
+        capacity < 2u)
+    {
+        return false;
+    }
+
+    size_t length;
+
+    if (path[0] == '/')
+    {
+        buffer[0] =
+            '/';
+
+        buffer[1] =
+            '\0';
+
+        length =
+            1u;
+    }
+    else
+    {
+        if (!process_get_cwd(
+                process,
+                buffer,
+                capacity))
+        {
+            return false;
+        }
+
+        length =
+            strlen(buffer);
+
+        if (length == 0u ||
+            buffer[0] != '/')
+        {
+            return false;
+        }
+    }
+
+    return process_path_apply(
+        buffer,
+        capacity,
+        &length,
+        path);
+}
+
+bool process_set_cwd(
+    process_t *process,
+    const char *path)
+{
+    if (process == NULL ||
+        path == NULL ||
+        path[0] != '/')
+    {
+        return false;
+    }
+
+    char canonical[PROCESS_PATH_MAX];
+
+    if (!process_resolve_path(
+            process,
+            path,
+            canonical,
+            sizeof(canonical)))
+    {
+        return false;
+    }
+
+    size_t length =
+        strlen(canonical);
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &process->lock);
+
+    memcpy(
+        process->cwd,
+        canonical,
+        length + 1u);
+
+    spin_unlock_irqrestore(
+        &process->lock,
+        flags);
+
+    return true;
+}
+
 /*
  * --------------------------------------------------------------------------
  * INITIALIZATION
@@ -237,6 +489,19 @@ void process_initialize(void)
     spinlock_initialize(
         &kernel_process.lock);
 
+    /*
+     * PID 1 is the root of the initial process hierarchy.
+     *
+     * Every process must always have a valid canonical absolute cwd.
+     * The first userspace process inherits from PID 1, so this must
+     * be initialized before PID 1 is published.
+     */
+    kernel_process.cwd[0] =
+        '/';
+
+    kernel_process.cwd[1] =
+        '\0';
+
     address_space_t *kernel_space =
         address_space_kernel();
 
@@ -253,8 +518,8 @@ void process_initialize(void)
     /*
      * PID 1 is reserved for the immortal kernel process.
      *
-     * Later you may decide PID 1 should instead become userspace
-     * init. That policy can change without redesigning process_t.
+     * Later this can become userspace init without changing
+     * the process ownership model.
      */
     kernel_process.id =
         1u;
@@ -280,10 +545,20 @@ void process_initialize(void)
     kernel_process.address_space =
         kernel_space;
 
+    kernel_process.children =
+        NULL;
+
+    kernel_process.child_count =
+        0u;
+
+    kernel_process.live_threads =
+        0u;
+
     /*
      * Preserve the existing standard-handle accounting.
      *
-     * These are placeholders for now, not real fd 0/1/2.
+     * These are still accounting placeholders rather than
+     * the VFS-backed fd table.
      */
     for (size_t i = 0;
          i < PROCESS_STANDARD_HANDLE_COUNT;
@@ -298,6 +573,18 @@ void process_initialize(void)
 
     kernel_process.accounting.peak_handles =
         PROCESS_STANDARD_HANDLE_COUNT;
+
+    kernel_process.accounting.runtime_ticks =
+        0u;
+
+    kernel_process.accounting.peak_threads =
+        0u;
+
+    kernel_process.registry_previous =
+        NULL;
+
+    kernel_process.registry_next =
+        NULL;
 
     process_registry_insert_locked(
         &kernel_process);
@@ -383,6 +670,12 @@ process_t *process_create(
     process->address_space =
         address_space;
 
+    process->cwd[0] =
+        '/';
+
+    process->cwd[1] =
+        '\0';
+
     process->children =
         NULL;
 
@@ -464,6 +757,25 @@ process_t *process_create(
              * Process was already registered, so clean it up
              * through normal reference destruction.
              */
+            process_release(
+                process);
+
+            return NULL;
+        }
+
+        char inherited_cwd[PROCESS_PATH_MAX];
+
+        if (!process_get_cwd(
+                parent,
+                inherited_cwd,
+                sizeof(inherited_cwd)) ||
+            !process_set_cwd(
+                process,
+                inherited_cwd))
+        {
+            process_release(
+                parent);
+
             process_release(
                 process);
 

@@ -12,6 +12,8 @@
 #define SYS_OPEN        12u
 #define SYS_CLOSE       13u
 #define SYS_KEY_EVENT   14u
+#define SYS_CHDIR       15u
+#define SYS_GETCWD      16u
 
 #define USER_STDIO_CHUNK 128u
 
@@ -260,3 +262,23 @@ void user_exit(
             "ud2");
     }
 }
+
+int32_t user_chdir(
+    const char *path)
+{
+    return syscall1(
+        SYS_CHDIR,
+        (uint32_t)(uintptr_t)path);
+}
+
+int32_t user_getcwd(
+    char *buffer,
+    size_t capacity)
+{
+    return syscall2(
+        SYS_GETCWD,
+        (uint32_t)(uintptr_t)buffer,
+        (uint32_t)capacity);
+}
+
+

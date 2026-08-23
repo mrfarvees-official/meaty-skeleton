@@ -1020,6 +1020,109 @@ static int shell_split_arguments(
     return (int)argc;
 }
 
+static int shell_run_builtin(
+    int argc,
+    char *argv[],
+    bool *handled)
+{
+    if (handled == NULL)
+        return -1;
+
+    *handled =
+        false;
+
+    if (argc <= 0 ||
+        argv == NULL)
+    {
+        return 0;
+    }
+
+    /*
+     * pwd
+     */
+    if (shell_strings_equal(
+            argv[0],
+            "pwd"))
+    {
+        *handled =
+            true;
+
+        if (argc != 1)
+        {
+            shell_write_error(
+                "pwd: too many arguments\n");
+
+            return 0;
+        }
+
+        char cwd[SHELL_PATH_CAPACITY];
+
+        if (user_getcwd(
+                cwd,
+                sizeof(cwd)) < 0)
+        {
+            shell_write_error(
+                "pwd: cannot get current directory\n");
+
+            return 0;
+        }
+
+        if (shell_write(
+                cwd) != 0 ||
+            shell_write_character(
+                '\n') != 0)
+        {
+            return -1;
+        }
+
+        return 0;
+    }
+
+    /*
+     * cd
+     *
+     * With no HOME/environment support yet, plain "cd"
+     * returns to root.
+     */
+    if (shell_strings_equal(
+            argv[0],
+            "cd"))
+    {
+        *handled =
+            true;
+
+        if (argc > 2)
+        {
+            shell_write_error(
+                "cd: too many arguments\n");
+
+            return 0;
+        }
+
+        const char *path =
+            argc == 1
+                ? "/"
+                : argv[1];
+
+        if (user_chdir(
+                path) != 0)
+        {
+            shell_write_error(
+                "cd: cannot change directory: ");
+
+            shell_write_error(
+                path);
+
+            shell_write_error(
+                "\n");
+        }
+
+        return 0;
+    }
+
+    return 0;
+}
+
 static int shell_run_command(
     char *line)
 {
@@ -1040,6 +1143,28 @@ static int shell_run_command(
     }
 
     if (parsed_argc == 0)
+    {
+        return 0;
+    }
+
+    /*
+     * Builtins run inside the shell process.
+     */
+    bool builtin_handled =
+        false;
+
+    int builtin_result =
+        shell_run_builtin(
+            parsed_argc,
+            argv,
+            &builtin_handled);
+
+    if (builtin_result != 0)
+    {
+        return builtin_result;
+    }
+
+    if (builtin_handled)
     {
         return 0;
     }

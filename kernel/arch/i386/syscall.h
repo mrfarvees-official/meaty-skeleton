@@ -32,6 +32,8 @@
  * Only key-press events are returned.
  */
 #define I386_SYSCALL_KEY_EVENT      14u
+#define I386_SYSCALL_CHDIR          15u
+#define I386_SYSCALL_GETCWD         16u
 
 #define I386_KEY_EVENT_LEFT         0x100
 #define I386_KEY_EVENT_RIGHT        0x101

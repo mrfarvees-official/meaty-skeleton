@@ -19,7 +19,7 @@
 
 #define KERNEL_TASK_STACK_SIZE (16u * 1024u)
 
-#define INITIAL_EFLAGS 0x202u
+#define INITIAL_EFLAGS 0x002u
 
 /*
  * --------------------------------------------------------------------------

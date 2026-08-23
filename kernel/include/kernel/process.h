@@ -19,6 +19,8 @@ typedef uint32_t handle_t;
 #define PROCESS_STANDARD_HANDLE_COUNT \
     3u
 
+#define PROCESS_PATH_MAX 256u
+
 /*
  * Process lifetime.
  *
@@ -286,5 +288,37 @@ bool process_waitpid(
     process_t *parent,
     process_id_t child_pid,
     int *status);
+
+/*
+ * Current working directory.
+ *
+ * Stored internally as a canonical absolute pathname.
+ *
+ * Every process begins at "/" unless it has a parent, in which
+ * case process_create() inherits the parent's cwd.
+ */
+bool process_get_cwd(
+    process_t *process,
+    char *buffer,
+    size_t capacity);
+
+bool process_set_cwd(
+    process_t *process,
+    const char *path);
+
+/*
+ * Resolve path against process cwd.
+ *
+ * Absolute paths are canonicalized but otherwise remain absolute.
+ * Relative paths are joined to cwd.
+ *
+ * "." and ".." are resolved here so the VFS continues receiving
+ * only canonical absolute paths.
+ */
+bool process_resolve_path(
+    process_t *process,
+    const char *path,
+    char *buffer,
+    size_t capacity);
 
 #endif

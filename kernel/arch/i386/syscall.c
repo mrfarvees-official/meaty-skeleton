@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
@@ -10,6 +11,7 @@
 #include <kernel/spawn.h>
 #include <kernel/paging.h>
 #include <kernel/fd.h>
+#include <kernel/vfs.h>
 
 #include "interrupts.h"
 #include "syscall.h"
@@ -292,6 +294,15 @@ static int32_t syscall_open_file(
     uint32_t user_path_address,
     uint32_t flags)
 {
+    task_t *task =
+        task_current();
+
+    if (task == NULL ||
+        task->process == NULL)
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
     const char *user_path =
         (const char *)(uintptr_t)
             user_path_address;
@@ -301,19 +312,30 @@ static int32_t syscall_open_file(
         return I386_SYSCALL_ERROR_BAD_ADDRESS;
     }
 
-    char kernel_path[SYSCALL_OPEN_PATH_MAX];
+    char supplied_path[SYSCALL_OPEN_PATH_MAX];
 
     if (!syscall_copy_user_string(
-            kernel_path,
-            sizeof(kernel_path),
+            supplied_path,
+            sizeof(supplied_path),
             user_path))
     {
         return I386_SYSCALL_ERROR_BAD_ADDRESS;
     }
 
+    char absolute_path[PROCESS_PATH_MAX];
+
+    if (!process_resolve_path(
+            task->process,
+            supplied_path,
+            absolute_path,
+            sizeof(absolute_path)))
+    {
+        return I386_SYSCALL_ERROR_INVALID_LENGTH;
+    }
+
     int fd =
         kernel_fd_open(
-            kernel_path,
+            absolute_path,
             flags);
 
     if (fd < 0)
@@ -322,6 +344,141 @@ static int32_t syscall_open_file(
     }
 
     return (int32_t)fd;
+}
+
+static int32_t syscall_chdir(
+    uint32_t user_path_address)
+{
+    task_t *task =
+        task_current();
+
+    if (task == NULL ||
+        task->process == NULL)
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    const char *user_path =
+        (const char *)(uintptr_t)
+            user_path_address;
+
+    if (user_path == NULL)
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    char supplied_path[PROCESS_PATH_MAX];
+
+    if (!syscall_copy_user_string(
+            supplied_path,
+            sizeof(supplied_path),
+            user_path))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    char absolute_path[PROCESS_PATH_MAX];
+
+    if (!process_resolve_path(
+            task->process,
+            supplied_path,
+            absolute_path,
+            sizeof(absolute_path)))
+    {
+        return I386_SYSCALL_ERROR_INVALID_LENGTH;
+    }
+
+    vnode_t *node =
+        NULL;
+
+    if (vfs_lookup(
+            absolute_path,
+            &node) != 0 ||
+        node == NULL)
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    bool is_directory =
+        node->type ==
+        VNODE_DIRECTORY;
+
+    vnode_unref(
+        node);
+
+    if (!is_directory)
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    if (!process_set_cwd(
+            task->process,
+            absolute_path))
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    return 0;
+}
+
+static int32_t syscall_getcwd(
+    uint32_t user_buffer_address,
+    uint32_t capacity_value)
+{
+    task_t *task =
+        task_current();
+
+    if (task == NULL ||
+        task->process == NULL)
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    char *user_buffer =
+        (char *)(uintptr_t)
+            user_buffer_address;
+
+    size_t capacity =
+        (size_t)capacity_value;
+
+    if (user_buffer == NULL)
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    if (capacity == 0u)
+    {
+        return I386_SYSCALL_ERROR_INVALID_LENGTH;
+    }
+
+    char cwd[PROCESS_PATH_MAX];
+
+    if (!process_get_cwd(
+            task->process,
+            cwd,
+            sizeof(cwd)))
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    size_t length =
+        strlen(cwd);
+
+    if (length + 1u >
+        capacity)
+    {
+        return I386_SYSCALL_ERROR_INVALID_LENGTH;
+    }
+
+    if (!copy_to_user(
+            user_buffer,
+            cwd,
+            length + 1u))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    return (int32_t)length;
 }
 
 static int32_t syscall_close_file(
@@ -353,7 +510,7 @@ static int32_t syscall_read_key_event(void)
      * Do not touch the independent character queue here.
      */
     while (keyboard_read_event(
-               &event))
+        &event))
     {
         /*
          * Shell input only cares about key presses.
@@ -368,8 +525,7 @@ static int32_t syscall_read_key_event(void)
          */
         if (event.character != '\0')
         {
-            return (int32_t)
-                (uint8_t)event.character;
+            return (int32_t)(uint8_t)event.character;
         }
 
         switch (event.key)
@@ -776,14 +932,25 @@ static int32_t syscall_dispatch(
          * Everything supplied by userspace must be copied before
          * switching away from the caller's page directory.
          */
-        char kernel_path[SYSCALL_SPAWN_PATH_MAX];
+        char supplied_path[SYSCALL_SPAWN_PATH_MAX];
 
         if (!syscall_copy_user_string(
-                kernel_path,
-                sizeof(kernel_path),
+                supplied_path,
+                sizeof(supplied_path),
                 user_path))
         {
             return I386_SYSCALL_ERROR_BAD_ADDRESS;
+        }
+
+        char kernel_path[PROCESS_PATH_MAX];
+
+        if (!process_resolve_path(
+                task->process,
+                supplied_path,
+                kernel_path,
+                sizeof(kernel_path)))
+        {
+            return I386_SYSCALL_ERROR_INVALID_LENGTH;
         }
 
         char kernel_argument_storage
@@ -932,6 +1099,19 @@ static int32_t syscall_dispatch(
     case I386_SYSCALL_KEY_EVENT:
     {
         return syscall_read_key_event();
+    }
+
+    case I386_SYSCALL_CHDIR:
+    {
+        return syscall_chdir(
+            arg0);
+    }
+
+    case I386_SYSCALL_GETCWD:
+    {
+        return syscall_getcwd(
+            arg0,
+            arg1);
     }
 
     default:

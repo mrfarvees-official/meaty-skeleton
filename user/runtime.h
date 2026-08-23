@@ -77,4 +77,11 @@ void user_exit(
     int status)
     __attribute__((noreturn));
 
+int32_t user_chdir(
+    const char *path);
+
+int32_t user_getcwd(
+    char *buffer,
+    size_t capacity);
+
 #endif
