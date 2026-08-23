@@ -4,22 +4,19 @@
 
 #include "runtime.h"
 
-#define SHELL_LINE_CAPACITY    73u
-#define SHELL_ARGV_CAPACITY    16u
-#define SHELL_PATH_CAPACITY    256u
+#define SHELL_LINE_CAPACITY 73u
+#define SHELL_ARGV_CAPACITY 16u
+#define SHELL_PATH_CAPACITY 256u
 
 #define SHELL_HISTORY_CAPACITY 16u
 
 #define SHELL_PROMPT "meaty> "
 
-
-static char shell_history[
-    SHELL_HISTORY_CAPACITY]
-    [SHELL_LINE_CAPACITY];
+static char shell_history[SHELL_HISTORY_CAPACITY]
+                         [SHELL_LINE_CAPACITY];
 
 static size_t shell_history_count =
     0u;
-
 
 static int shell_write(
     const char *string)
@@ -29,7 +26,6 @@ static int shell_write(
         string);
 }
 
-
 static int shell_write_error(
     const char *string)
 {
@@ -37,7 +33,6 @@ static int shell_write_error(
         USER_STDERR,
         string);
 }
-
 
 static int shell_write_character(
     char character)
@@ -49,7 +44,6 @@ static int shell_write_character(
                ? 0
                : -1;
 }
-
 
 static size_t shell_string_length(
     const char *string)
@@ -68,7 +62,6 @@ static size_t shell_string_length(
 
     return length;
 }
-
 
 static void shell_copy_string(
     char *destination,
@@ -99,7 +92,6 @@ static void shell_copy_string(
     destination[index] =
         '\0';
 }
-
 
 static bool shell_strings_equal(
     const char *left,
@@ -132,7 +124,6 @@ static bool shell_strings_equal(
     }
 }
 
-
 static void shell_history_add(
     const char *line)
 {
@@ -147,8 +138,7 @@ static void shell_history_add(
      */
     if (shell_history_count != 0u &&
         shell_strings_equal(
-            shell_history[
-                shell_history_count - 1u],
+            shell_history[shell_history_count - 1u],
             line))
     {
         return;
@@ -158,8 +148,7 @@ static void shell_history_add(
         SHELL_HISTORY_CAPACITY)
     {
         shell_copy_string(
-            shell_history[
-                shell_history_count],
+            shell_history[shell_history_count],
             SHELL_LINE_CAPACITY,
             line);
 
@@ -173,23 +162,20 @@ static void shell_history_add(
      */
     for (size_t index = 1u;
          index <
-             SHELL_HISTORY_CAPACITY;
+         SHELL_HISTORY_CAPACITY;
          ++index)
     {
         shell_copy_string(
-            shell_history[
-                index - 1u],
+            shell_history[index - 1u],
             SHELL_LINE_CAPACITY,
             shell_history[index]);
     }
 
     shell_copy_string(
-        shell_history[
-            SHELL_HISTORY_CAPACITY - 1u],
+        shell_history[SHELL_HISTORY_CAPACITY - 1u],
         SHELL_LINE_CAPACITY,
         line);
 }
-
 
 static bool shell_string_ends_with_nex(
     const char *string)
@@ -201,13 +187,11 @@ static bool shell_string_ends_with_nex(
     if (length < 4u)
         return false;
 
-    return
-        string[length - 4u] == '.' &&
-        string[length - 3u] == 'n' &&
-        string[length - 2u] == 'e' &&
-        string[length - 1u] == 'x';
+    return string[length - 4u] == '.' &&
+           string[length - 3u] == 'n' &&
+           string[length - 2u] == 'e' &&
+           string[length - 1u] == 'x';
 }
-
 
 static bool shell_command_has_path(
     const char *command)
@@ -225,7 +209,6 @@ static bool shell_command_has_path(
 
     return false;
 }
-
 
 static bool shell_resolve_command(
     const char *command,
@@ -324,7 +307,6 @@ static bool shell_resolve_command(
     return true;
 }
 
-
 static int shell_write_unsigned(
     uint32_t value)
 {
@@ -344,9 +326,8 @@ static int shell_write_unsigned(
         --position;
 
         buffer[position] =
-            (char)(
-                '0' +
-                (value % 10u));
+            (char)('0' +
+                   (value % 10u));
 
         value /=
             10u;
@@ -360,11 +341,10 @@ static int shell_write_unsigned(
                USER_STDOUT,
                &buffer[position],
                length) ==
-               (int32_t)length
+                   (int32_t)length
                ? 0
                : -1;
 }
-
 
 static int shell_write_integer(
     int value)
@@ -378,8 +358,7 @@ static int shell_write_integer(
         }
 
         uint32_t magnitude =
-            (uint32_t)(
-                -(value + 1));
+            (uint32_t)(-(value + 1));
 
         ++magnitude;
 
@@ -390,7 +369,6 @@ static int shell_write_integer(
     return shell_write_unsigned(
         (uint32_t)value);
 }
-
 
 /*
  * Redraw the complete editable line, then position the VGA cursor at
@@ -479,6 +457,33 @@ static int shell_redraw_line(
     return 0;
 }
 
+static int shell_read_byte(
+    char *character)
+{
+    if (character == NULL)
+        return -1;
+
+    for (;;)
+    {
+        int32_t result =
+            user_read(
+                USER_STDIN,
+                character,
+                1u);
+
+        if (result < 0)
+        {
+            return -1;
+        }
+
+        if (result == 1)
+        {
+            return 0;
+        }
+
+        user_yield();
+    }
+}
 
 static int shell_read_line(
     char *buffer,
@@ -499,15 +504,10 @@ static int shell_read_line(
     size_t rendered_length =
         0u;
 
-    /*
-     * -1 means we are editing a new command rather than browsing
-     * history.
-     */
     int history_position =
         -1;
 
-    char draft[
-        SHELL_LINE_CAPACITY];
+    char draft[SHELL_LINE_CAPACITY];
 
     draft[0] =
         '\0';
@@ -523,30 +523,97 @@ static int shell_read_line(
 
     for (;;)
     {
-        int32_t input =
-            user_key_event();
+        char character =
+            '\0';
 
-        if (input < 0)
+        if (shell_read_byte(
+                &character) != 0)
         {
             return -1;
         }
 
-        if (input == 0)
-        {
-            user_yield();
-            continue;
-        }
-
         /*
          * ----------------------------------------------------------
-         * SPECIAL NAVIGATION KEYS
+         * TERMINAL ESCAPE SEQUENCES
          * ----------------------------------------------------------
          */
-        if (input == USER_KEY_LEFT)
+        if ((unsigned char)character ==
+            0x1bu)
         {
-            if (cursor != 0u)
+            char second =
+                '\0';
+
+            if (shell_read_byte(
+                    &second) != 0)
             {
-                --cursor;
+                return -1;
+            }
+
+            if (second != '[')
+            {
+                continue;
+            }
+
+            char third =
+                '\0';
+
+            if (shell_read_byte(
+                    &third) != 0)
+            {
+                return -1;
+            }
+
+            /*
+             * Left.
+             */
+            if (third == 'D')
+            {
+                if (cursor != 0u)
+                {
+                    --cursor;
+
+                    if (shell_redraw_line(
+                            buffer,
+                            length,
+                            cursor,
+                            rendered_length) != 0)
+                    {
+                        return -1;
+                    }
+                }
+
+                continue;
+            }
+
+            /*
+             * Right.
+             */
+            if (third == 'C')
+            {
+                if (cursor < length)
+                {
+                    ++cursor;
+
+                    if (shell_redraw_line(
+                            buffer,
+                            length,
+                            cursor,
+                            rendered_length) != 0)
+                    {
+                        return -1;
+                    }
+                }
+
+                continue;
+            }
+
+            /*
+             * Home.
+             */
+            if (third == 'H')
+            {
+                cursor =
+                    0u;
 
                 if (shell_redraw_line(
                         buffer,
@@ -556,16 +623,17 @@ static int shell_read_line(
                 {
                     return -1;
                 }
+
+                continue;
             }
 
-            continue;
-        }
-
-        if (input == USER_KEY_RIGHT)
-        {
-            if (cursor < length)
+            /*
+             * End.
+             */
+            if (third == 'F')
             {
-                ++cursor;
+                cursor =
+                    length;
 
                 if (shell_redraw_line(
                         buffer,
@@ -575,202 +643,183 @@ static int shell_read_line(
                 {
                     return -1;
                 }
-            }
 
-            continue;
-        }
-
-        if (input == USER_KEY_HOME)
-        {
-            cursor =
-                0u;
-
-            if (shell_redraw_line(
-                    buffer,
-                    length,
-                    cursor,
-                    rendered_length) != 0)
-            {
-                return -1;
-            }
-
-            continue;
-        }
-
-        if (input == USER_KEY_END)
-        {
-            cursor =
-                length;
-
-            if (shell_redraw_line(
-                    buffer,
-                    length,
-                    cursor,
-                    rendered_length) != 0)
-            {
-                return -1;
-            }
-
-            continue;
-        }
-
-        if (input == USER_KEY_DELETE)
-        {
-            if (cursor >= length)
-            {
                 continue;
             }
 
-            for (size_t index = cursor;
-                 index < length;
-                 ++index)
+            /*
+             * Previous command.
+             */
+            if (third == 'A')
             {
-                buffer[index] =
-                    buffer[index + 1u];
-            }
+                if (shell_history_count ==
+                    0u)
+                {
+                    continue;
+                }
 
-            --length;
+                if (history_position < 0)
+                {
+                    shell_copy_string(
+                        draft,
+                        sizeof(draft),
+                        buffer);
 
-            if (shell_redraw_line(
-                    buffer,
-                    length,
-                    cursor,
-                    rendered_length) != 0)
-            {
-                return -1;
-            }
+                    history_position =
+                        (int)shell_history_count -
+                        1;
+                }
+                else if (history_position >
+                         0)
+                {
+                    --history_position;
+                }
 
-            rendered_length =
-                length;
-
-            continue;
-        }
-
-        /*
-         * ----------------------------------------------------------
-         * COMMAND HISTORY
-         * ----------------------------------------------------------
-         */
-        if (input == USER_KEY_UP)
-        {
-            if (shell_history_count == 0u)
-            {
-                continue;
-            }
-
-            if (history_position < 0)
-            {
-                shell_copy_string(
-                    draft,
-                    sizeof(draft),
-                    buffer);
-
-                history_position =
-                    (int)
-                        shell_history_count -
-                    1;
-            }
-            else if (history_position > 0)
-            {
-                --history_position;
-            }
-
-            size_t old_length =
-                rendered_length;
-
-            shell_copy_string(
-                buffer,
-                capacity,
-                shell_history[
-                    history_position]);
-
-            length =
-                shell_string_length(
-                    buffer);
-
-            cursor =
-                length;
-
-            if (shell_redraw_line(
-                    buffer,
-                    length,
-                    cursor,
-                    old_length) != 0)
-            {
-                return -1;
-            }
-
-            rendered_length =
-                length;
-
-            continue;
-        }
-
-        if (input == USER_KEY_DOWN)
-        {
-            if (history_position < 0)
-            {
-                continue;
-            }
-
-            size_t old_length =
-                rendered_length;
-
-            if ((size_t)(
-                    history_position + 1) <
-                shell_history_count)
-            {
-                ++history_position;
+                size_t old_length =
+                    rendered_length;
 
                 shell_copy_string(
                     buffer,
                     capacity,
-                    shell_history[
-                        history_position]);
+                    shell_history[history_position]);
+
+                length =
+                    shell_string_length(
+                        buffer);
+
+                cursor =
+                    length;
+
+                if (shell_redraw_line(
+                        buffer,
+                        length,
+                        cursor,
+                        old_length) != 0)
+                {
+                    return -1;
+                }
+
+                rendered_length =
+                    length;
+
+                continue;
             }
-            else
+
+            /*
+             * Next command.
+             */
+            if (third == 'B')
             {
+                if (history_position < 0)
+                {
+                    continue;
+                }
+
+                size_t old_length =
+                    rendered_length;
+
+                if ((size_t)(history_position + 1) <
+                    shell_history_count)
+                {
+                    ++history_position;
+
+                    shell_copy_string(
+                        buffer,
+                        capacity,
+                        shell_history[history_position]);
+                }
+                else
+                {
+                    history_position =
+                        -1;
+
+                    shell_copy_string(
+                        buffer,
+                        capacity,
+                        draft);
+                }
+
+                length =
+                    shell_string_length(
+                        buffer);
+
+                cursor =
+                    length;
+
+                if (shell_redraw_line(
+                        buffer,
+                        length,
+                        cursor,
+                        old_length) != 0)
+                {
+                    return -1;
+                }
+
+                rendered_length =
+                    length;
+
+                continue;
+            }
+
+            /*
+             * Delete:
+             *
+             * ESC [ 3 ~
+             */
+            if (third == '3')
+            {
+                char fourth =
+                    '\0';
+
+                if (shell_read_byte(
+                        &fourth) != 0)
+                {
+                    return -1;
+                }
+
+                if (fourth != '~')
+                {
+                    continue;
+                }
+
+                if (cursor >= length)
+                {
+                    continue;
+                }
+
+                size_t old_length =
+                    rendered_length;
+
+                for (size_t index = cursor;
+                     index < length;
+                     ++index)
+                {
+                    buffer[index] =
+                        buffer[index + 1u];
+                }
+
+                --length;
+
+                if (shell_redraw_line(
+                        buffer,
+                        length,
+                        cursor,
+                        old_length) != 0)
+                {
+                    return -1;
+                }
+
+                rendered_length =
+                    length;
+
                 history_position =
                     -1;
 
-                shell_copy_string(
-                    buffer,
-                    capacity,
-                    draft);
+                continue;
             }
-
-            length =
-                shell_string_length(
-                    buffer);
-
-            cursor =
-                length;
-
-            if (shell_redraw_line(
-                    buffer,
-                    length,
-                    cursor,
-                    old_length) != 0)
-            {
-                return -1;
-            }
-
-            rendered_length =
-                length;
 
             continue;
         }
-
-        /*
-         * Everything below this point must be an ordinary character.
-         */
-        if (input > 0xff)
-        {
-            continue;
-        }
-
-        char character =
-            (char)input;
 
         /*
          * ----------------------------------------------------------
@@ -840,6 +889,11 @@ static int shell_read_line(
             continue;
         }
 
+        /*
+         * ----------------------------------------------------------
+         * PRINTABLE INPUT
+         * ----------------------------------------------------------
+         */
         unsigned char value =
             (unsigned char)
                 character;
@@ -854,9 +908,6 @@ static int shell_read_line(
             continue;
         }
 
-        /*
-         * Always keep room for the final NUL.
-         */
         if (length >=
             capacity - 1u)
         {
@@ -864,7 +915,7 @@ static int shell_read_line(
         }
 
         /*
-         * Insert at cursor rather than always appending.
+         * Insert at current cursor position.
          */
         for (size_t index = length;
              index > cursor;
@@ -895,23 +946,17 @@ static int shell_read_line(
         rendered_length =
             length;
 
-        /*
-         * Once a recalled command is modified, it becomes a new draft.
-         */
         history_position =
             -1;
     }
 }
 
-
 static bool shell_is_separator(
     char character)
 {
-    return
-        character == ' ' ||
-        character == '\t';
+    return character == ' ' ||
+           character == '\t';
 }
-
 
 static int shell_split_arguments(
     char *line,
@@ -934,7 +979,7 @@ static int shell_split_arguments(
     for (;;)
     {
         while (shell_is_separator(
-                   *position))
+            *position))
         {
             ++position;
         }
@@ -975,12 +1020,10 @@ static int shell_split_arguments(
     return (int)argc;
 }
 
-
 static int shell_run_command(
     char *line)
 {
-    char *argv[
-        SHELL_ARGV_CAPACITY + 1u];
+    char *argv[SHELL_ARGV_CAPACITY + 1u];
 
     int parsed_argc =
         shell_split_arguments(
@@ -1001,8 +1044,7 @@ static int shell_run_command(
         return 0;
     }
 
-    char executable_path[
-        SHELL_PATH_CAPACITY];
+    char executable_path[SHELL_PATH_CAPACITY];
 
     if (!shell_resolve_command(
             argv[0],
@@ -1095,7 +1137,6 @@ static int shell_run_command(
     return 0;
 }
 
-
 int main(
     int argc,
     char **argv)
@@ -1111,8 +1152,7 @@ int main(
 
     for (;;)
     {
-        char line[
-            SHELL_LINE_CAPACITY];
+        char line[SHELL_LINE_CAPACITY];
 
         if (shell_read_line(
                 line,
