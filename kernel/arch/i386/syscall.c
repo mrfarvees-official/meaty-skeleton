@@ -77,7 +77,15 @@ static int32_t syscall_read_stdio(
      *
      *     fd 0 = keyboard character stream
      *
-     * Nothing else is readable yet.
+     * This syscall is intentionally NON-BLOCKING.
+     *
+     * Returns:
+     *
+     *     > 0   characters copied
+     *       0   no keyboard characters currently available
+     *     < 0   error
+     *
+     * Userspace may yield and retry.
      */
     if (fd != 0u)
     {
@@ -87,11 +95,6 @@ static int32_t syscall_read_stdio(
     size_t length =
         (size_t)requested_length;
 
-    /*
-     * Standard read-style zero-length operation.
-     *
-     * Do not require a valid buffer when no bytes are requested.
-     */
     if (length == 0u)
     {
         return 0;
@@ -114,21 +117,7 @@ static int32_t syscall_read_stdio(
     char buffer[SYSCALL_STDIO_MAX];
 
     /*
-     * ----------------------------------------------------------
-     * Validate the complete userspace destination BEFORE blocking.
-     * ----------------------------------------------------------
-     *
-     * copy_from_user() proves the range is mapped/user-readable.
-     *
-     * copy_to_user() additionally proves the complete range is
-     * writable.
-     *
-     * Writing the original bytes straight back leaves the caller's
-     * buffer unchanged.
-     *
-     * This prevents us from blocking for keyboard input, consuming
-     * characters, and only afterwards discovering that the user's
-     * destination is invalid.
+     * Validate the complete destination before consuming input.
      */
     if (!copy_from_user(
             buffer,
@@ -146,34 +135,15 @@ static int32_t syscall_read_stdio(
         return I386_SYSCALL_ERROR_BAD_ADDRESS;
     }
 
-    /*
-     * ----------------------------------------------------------
-     * Block until at least one character exists.
-     * ----------------------------------------------------------
-     *
-     * keyboard_wait_character() already sleeps the current task
-     * through the semaphore/wait-queue infrastructure.
-     *
-     * Do not echo here.
-     *
-     * The future shell owns echo/backspace/line assembly.
-     */
-    if (!keyboard_wait_character(
-            &buffer[0]))
-    {
-        return I386_SYSCALL_ERROR_INVALID_STATE;
-    }
-
     size_t received =
-        1u;
+        0u;
 
     /*
-     * Once at least one byte has been obtained, drain anything that
-     * is already queued without blocking again.
+     * Consume only characters that already exist.
      *
-     * This gives read()-style "up to count" behavior while ensuring
-     * that a read requesting multiple bytes does not wait until all
-     * requested bytes have arrived.
+     * keyboard_read_character() consumes the matching semaphore
+     * permit as well as the ring-buffer entry, so its accounting
+     * remains synchronized.
      */
     while (received <
            length)
@@ -193,10 +163,11 @@ static int32_t syscall_read_stdio(
         ++received;
     }
 
-    /*
-     * We validated the complete requested destination range before
-     * consuming input.
-     */
+    if (received == 0u)
+    {
+        return 0;
+    }
+
     if (!copy_to_user(
             user_buffer,
             buffer,

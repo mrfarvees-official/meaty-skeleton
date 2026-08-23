@@ -626,6 +626,33 @@ static void process_waitpid_test(void)
 		"P1D.2: KERNEL WAITPID TEST PASSED\n");
 }
 
+static void launch_userspace_shell(void)
+{
+	const char *shell_argv[] =
+		{
+			"/bin/sh.nex",
+			NULL};
+
+	process_id_t shell_pid =
+		process_spawn_user(
+			"/bin/sh.nex",
+			1u,
+			shell_argv);
+
+	if (shell_pid ==
+		PROCESS_ID_INVALID)
+	{
+		log_error(
+			"shell: failed launching /bin/sh.nex\n");
+
+		halt_forever();
+	}
+
+	log_success(
+		"shell: launched /bin/sh.nex pid=%u\n",
+		(unsigned)shell_pid);
+}
+
 void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 {
 	terminal_initialize();
@@ -923,6 +950,14 @@ void kernel_main(uint32_t multiboot_magic, uint32_t multiboot_info_address)
 	interrupt_enable();
 
 	process_waitpid_test();
+
+	/*
+	 * P1D.2 has completed and restored its process/task baseline.
+	 *
+	 * Start the first interactive userspace shell as a child of
+	 * immortal kernel PID 1.
+	 */
+	launch_userspace_shell();
 
 	yield_forever();
 }

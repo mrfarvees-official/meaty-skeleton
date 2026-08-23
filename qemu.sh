@@ -12,12 +12,12 @@ DISK=disk.img
 #   recreate disk.img
 #   create ext2 filesystem
 #   create benchmark file
-#   copy it into the filesystem as /double.txt
+#   install all userspace .nex executables into /bin
 #
 # false:
 #   leave disk.img untouched and just boot QEMU
 #
-RECREATE_BENCH_DISK=true
+RECREATE_BENCH_DISK=false
 
 #
 # Disk and benchmark sizes.
@@ -103,34 +103,31 @@ create_benchmark_disk()
 
     echo "Installing userspace executables..."
 
-    if [ ! -f "$SYSROOT/bin/hello.nex" ]; then
-        echo "Error: $SYSROOT/bin/hello.nex does not exist."
-        exit 1
-    fi
-
-    if [ ! -f "$SYSROOT/bin/spawn-child.nex" ]; then
-        echo "Error: $SYSROOT/bin/spawn-child.nex does not exist."
-        exit 1
-    fi
-
     sudo mkdir -p \
         /mnt/meaty-bench/bin
 
-    sudo cp \
-        "$SYSROOT/bin/hello.nex" \
-        /mnt/meaty-bench/bin/hello.nex
+    set -- "$SYSROOT"/bin/*.nex
 
-    sudo cp \
-        "$SYSROOT/bin/spawn-child.nex" \
-        /mnt/meaty-bench/bin/spawn-child.nex
+    if [ ! -e "$1" ]; then
+        echo "Error: no userspace .nex executables found in $SYSROOT/bin."
+        exit 1
+    fi
+
+    for PROGRAM in "$@"
+    do
+        echo "Installing $(basename "$PROGRAM")..."
+
+        sudo cp \
+            "$PROGRAM" \
+            /mnt/meaty-bench/bin/
+    done
 
     sync
 
     echo "Installed userspace executables:"
 
     sudo ls -lh \
-        /mnt/meaty-bench/bin/hello.nex \
-        /mnt/meaty-bench/bin/spawn-child.nex
+        /mnt/meaty-bench/bin/*.nex
 
     echo "Benchmark file:"
 
