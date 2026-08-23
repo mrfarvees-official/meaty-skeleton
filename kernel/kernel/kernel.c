@@ -54,20 +54,8 @@ static void halt_forever(void)
 
 static void yield_forever(void)
 {
-	extern bool mouse_cursor_initialize(void);
-	extern void mouse_cursor_poll(void);
-
-	if (!mouse_cursor_initialize())
-	{
-		log_error(
-			"mouse cursor initialization failed\n");
-	}
-
 	for (;;)
-	{
-		mouse_cursor_poll();
 		task_yield();
-	}
 }
 
 void validate_multiboot_magic(uint32_t magic)
@@ -110,6 +98,17 @@ static void debugcon_hex32(uint32_t value)
 		debugcon_putc(
 			digits[(value >> shift) &
 				   0xFu]);
+	}
+}
+
+static void mouse_cursor_thread(void *argument)
+{
+	(void)argument;
+
+	for (;;)
+	{
+		mouse_cursor_poll();
+		task_yield();
 	}
 }
 
@@ -985,6 +984,40 @@ void kernel_main(
 	 */
 
 	launch_userspace_shell();
+
+	/*
+	 * ------------------------------------------------------------
+	 * Software mouse cursor
+	 * ------------------------------------------------------------
+	 *
+	 * The kernel bootstrap context is not a normal managed task.
+	 * Once it yields, the scheduler intentionally never queues it
+	 * again.
+	 *
+	 * Therefore mouse event polling must live in a real kernel task,
+	 * not in yield_forever().
+	 */
+
+	if (!mouse_cursor_initialize())
+	{
+		log_error(
+			"mouse cursor initialization failed\n");
+
+		halt_forever();
+	}
+
+	task_t *mouse_cursor_task =
+		task_create_kernel(
+			mouse_cursor_thread,
+			NULL);
+
+	if (mouse_cursor_task == NULL)
+	{
+		log_error(
+			"mouse cursor task creation failed\n");
+
+		halt_forever();
+	}
 
 	/*
 	 * kernel_main's bootstrap execution context is finished.
