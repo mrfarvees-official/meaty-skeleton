@@ -59,6 +59,7 @@ kernel/device/pci.o 			\
 kernel/device/ahci.o 			\
 kernel/gui/surface.o 			\
 kernel/gui/compositor.o 		\
+kernel/gui/desktop.o 			\
 kernel/input/keyboard_line.o 	\
 kernel/input/mouse_cursor.o 	\
 kernel/multitasking/acpi.o 		\
@@ -75,19 +76,19 @@ kernel/system/system_info.o 	\
 kernel/timer/timer.o
 
 OBJS=\
-	$(ARCHDIR)/crti.o \
-	$(ARCHDIR)/crtbegin.o \
-	$(KERNEL_OBJS) \
-	$(ARCHDIR)/crtend.o \
+	$(ARCHDIR)/crti.o 			\
+	$(ARCHDIR)/crtbegin.o 		\
+	$(KERNEL_OBJS) 				\
+	$(ARCHDIR)/crtend.o 		\
 	$(ARCHDIR)/crtn.o 
 
 LINK_LIST=\
-	$(LDFLAGS) \
-	$(ARCHDIR)/crti.o \
-	$(ARCHDIR)/crtbegin.o \
-	$(KERNEL_OBJS) \
-	$(LIBS) \
-	$(ARCHDIR)/crtend.o \
+	$(LDFLAGS) 					\
+	$(ARCHDIR)/crti.o 			\
+	$(ARCHDIR)/crtbegin.o 		\
+	$(KERNEL_OBJS) 				\
+	$(LIBS) 					\
+	$(ARCHDIR)/crtend.o 		\
 	$(ARCHDIR)/crtn.o 
 
 .PHONY: all clean install install-headers install-kernel

@@ -38,6 +38,7 @@
 #include <kernel/spawn.h>
 
 #include <kernel/gui/compositor.h>
+#include <kernel/gui/desktop.h>
 
 #include "../arch/i386/gdt.h"
 #include "../arch/i386/idt.h"
@@ -968,61 +969,27 @@ void kernel_main(
 
 	/*
 	 * ------------------------------------------------------------
-	 * Scheduling + interrupts
+	 * Software mouse cursor
 	 * ------------------------------------------------------------
 	 *
-	 * Keep normal task scheduling on the BSP.
+	 * Initialize the cursor and publish its managed polling task
+	 * before launching userspace or performing the large compositor
+	 * allocation.
+	 *
+	 * The cursor implementation itself is already correct and draws
+	 * synchronously during mouse_cursor_initialize().
 	 */
-
-	scheduler_enable_preemption();
-
-	interrupt_enable();
-
-	/*
-	 * ------------------------------------------------------------
-	 * Userspace shell
-	 * ------------------------------------------------------------
-	 *
-	 * stdout/stderr already flow through terminal_write(), so the
-	 * existing shell automatically renders through the framebuffer.
-	 */
-
-	launch_userspace_shell();
-
-	/*
-	 * ------------------------------------------------------------
-	 * GUI compositor foundation
-	 * ------------------------------------------------------------
-	 *
-	 * Allocate the screen-sized off-screen composition buffer.
-	 *
-	 * Do not present it yet. The existing framebuffer terminal still
-	 * owns the visible screen during this G0 foundation step.
-	 */
-	if (!gui_compositor_initialize())
-	{
-		log_error(
-			"GUI compositor initialization failed\n");
-
-		halt_forever();
-	}
-
-	log_info(
-		"GUI compositor backbuffer initialized: %ux%u\n",
-		(unsigned)framebuffer_get_width(),
-		(unsigned)framebuffer_get_height());
 
 	/*
 	 * ------------------------------------------------------------
 	 * Software mouse cursor
 	 * ------------------------------------------------------------
 	 *
-	 * The kernel bootstrap context is not a normal managed task.
-	 * Once it yields, the scheduler intentionally never queues it
-	 * again.
+	 * Initialize the cursor and publish its managed polling task
+	 * before performing the large compositor allocation.
 	 *
-	 * Therefore mouse event polling must live in a real kernel task,
-	 * not in yield_forever().
+	 * The task is published now but will not run until scheduling
+	 * and interrupts are enabled below.
 	 */
 
 	if (!mouse_cursor_initialize())
@@ -1045,6 +1012,77 @@ void kernel_main(
 
 		halt_forever();
 	}
+
+	/*
+	 * ------------------------------------------------------------
+	 * GUI compositor
+	 * ------------------------------------------------------------
+	 *
+	 * Complete bootstrap-owned GUI initialization before enabling
+	 * scheduling.
+	 *
+	 * kernel_main executes in the bootstrap context, which is not a
+	 * normal schedulable task. Once preemption is enabled and another
+	 * task runs, this context is not guaranteed to resume.
+	 */
+
+	if (!gui_compositor_initialize())
+	{
+		log_error(
+			"GUI compositor initialization failed\n");
+
+		halt_forever();
+	}
+
+	log_info(
+		"GUI compositor backbuffer initialized: %ux%u\n",
+		(unsigned)framebuffer_get_width(),
+		(unsigned)framebuffer_get_height());
+
+	/*
+	 * ------------------------------------------------------------
+	 * First desktop scene
+	 * ------------------------------------------------------------
+	 *
+	 * Rendering the desktop here transfers visible framebuffer
+	 * ownership from the framebuffer terminal to the compositor.
+	 */
+
+	if (!gui_desktop_initialize())
+	{
+		log_error(
+			"GUI desktop initialization failed\n");
+
+		halt_forever();
+	}
+
+	/*
+	 * Do not log to the framebuffer terminal after desktop
+	 * presentation. The compositor now owns the visible display.
+	 */
+
+	/*
+	 * ------------------------------------------------------------
+	 * Scheduling + interrupts
+	 * ------------------------------------------------------------
+	 *
+	 * All bootstrap-only initialization is complete.
+	 */
+
+	scheduler_enable_preemption();
+
+	interrupt_enable();
+
+	/*
+	 * ------------------------------------------------------------
+	 * Userspace shell
+	 * ------------------------------------------------------------
+	 *
+	 * Temporary until the shell is later replaced by a GUI terminal
+	 * application.
+	 */
+
+	// launch_userspace_shell();
 
 	/*
 	 * kernel_main's bootstrap execution context is finished.
