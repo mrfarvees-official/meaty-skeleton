@@ -641,3 +641,161 @@ void gui_image_draw(
         }
     }
 }
+
+void gui_image_draw_scaled(
+    gui_surface_t *destination,
+    const gui_image_t *image,
+    gui_rect_t destination_rect)
+{
+    if (destination == NULL ||
+        destination->pixels == NULL ||
+        image == NULL ||
+        image->surface.pixels == NULL ||
+        destination_rect.width == 0u ||
+        destination_rect.height == 0u)
+    {
+        return;
+    }
+
+    const gui_surface_t *source =
+        &image->surface;
+
+    if (source->width == 0u ||
+        source->height == 0u)
+    {
+        return;
+    }
+
+    /*
+     * Use 64-bit coordinates because a wallpaper FILL rectangle
+     * may intentionally extend beyond the screen and may start at
+     * a negative coordinate.
+     */
+    int64_t destination_left =
+        destination_rect.x;
+
+    int64_t destination_top =
+        destination_rect.y;
+
+    int64_t destination_right =
+        destination_left +
+        (int64_t)destination_rect.width;
+
+    int64_t destination_bottom =
+        destination_top +
+        (int64_t)destination_rect.height;
+
+    /*
+     * Clip against the destination surface.
+     */
+    int64_t clipped_left =
+        destination_left;
+
+    int64_t clipped_top =
+        destination_top;
+
+    int64_t clipped_right =
+        destination_right;
+
+    int64_t clipped_bottom =
+        destination_bottom;
+
+    if (clipped_left < 0)
+        clipped_left = 0;
+
+    if (clipped_top < 0)
+        clipped_top = 0;
+
+    if (clipped_right >
+        (int64_t)destination->width)
+    {
+        clipped_right =
+            destination->width;
+    }
+
+    if (clipped_bottom >
+        (int64_t)destination->height)
+    {
+        clipped_bottom =
+            destination->height;
+    }
+
+    if (clipped_left >= clipped_right ||
+        clipped_top >= clipped_bottom)
+    {
+        return;
+    }
+
+    for (int64_t destination_y = clipped_top;
+         destination_y < clipped_bottom;
+         ++destination_y)
+    {
+        uint64_t local_y =
+            (uint64_t)
+            (destination_y -
+             destination_top);
+
+        uint32_t source_y =
+            (uint32_t)
+            ((local_y *
+              (uint64_t)source->height) /
+             destination_rect.height);
+
+        if (source_y >= source->height)
+            source_y = source->height - 1u;
+
+        const uint8_t *source_row_bytes =
+            (const uint8_t *)source->pixels +
+            (size_t)source_y *
+                source->pitch;
+
+        const gui_color_t *source_row =
+            (const gui_color_t *)
+                source_row_bytes;
+
+        for (int64_t destination_x = clipped_left;
+             destination_x < clipped_right;
+             ++destination_x)
+        {
+            uint64_t local_x =
+                (uint64_t)
+                (destination_x -
+                 destination_left);
+
+            uint32_t source_x =
+                (uint32_t)
+                ((local_x *
+                  (uint64_t)source->width) /
+                 destination_rect.width);
+
+            if (source_x >= source->width)
+                source_x = source->width - 1u;
+
+            gui_color_t color =
+                source_row[source_x];
+
+            uint8_t alpha =
+                gui_color_alpha(color);
+
+            if (alpha == 0u)
+                continue;
+
+            if (alpha == 255u)
+            {
+                gui_surface_put_pixel(
+                    destination,
+                    (int32_t)destination_x,
+                    (int32_t)destination_y,
+                    color);
+            }
+            else
+            {
+                gui_surface_blend_pixel(
+                    destination,
+                    (int32_t)destination_x,
+                    (int32_t)destination_y,
+                    color);
+            }
+        }
+    }
+}

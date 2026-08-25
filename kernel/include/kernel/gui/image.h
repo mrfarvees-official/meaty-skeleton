@@ -17,16 +17,14 @@ typedef struct gui_image gui_image_t;
  *
  * gui_image_get() returns a shared cached image.
  *
- * The first successful load of a path:
+ * First successful request:
  *
  *     VFS file
  *       -> PNG decoder
  *       -> RGBA gui_surface_t
- *       -> image cache
+ *       -> cache
  *
- * Later calls for the same path do not touch the filesystem.
- *
- * Cached images currently live for the lifetime of the GUI.
+ * Later requests for the same path reuse the decoded image.
  */
 bool gui_image_get(
     const char *path,
@@ -48,10 +46,10 @@ uint32_t gui_image_height(
 
 /*
  * ------------------------------------------------------------
- * Rendering
+ * Native-size rendering
  * ------------------------------------------------------------
  *
- * Draw the complete image at its native size.
+ * Draw the complete image at its native dimensions.
  *
  * PNG alpha is source-over blended into destination.
  *
@@ -62,6 +60,32 @@ void gui_image_draw(
     const gui_image_t *image,
     int32_t x,
     int32_t y);
+
+
+/*
+ * ------------------------------------------------------------
+ * Scaled rendering
+ * ------------------------------------------------------------
+ *
+ * Draw the complete source image scaled into destination_rect.
+ *
+ * Nearest-neighbor sampling is intentionally used for this first
+ * scaling milestone:
+ *
+ *     - simple
+ *     - deterministic
+ *     - no temporary scaling buffer
+ *     - suitable for wallpaper validation and UI icons
+ *
+ * destination_rect may extend outside destination. Rendering is
+ * clipped safely.
+ *
+ * PNG alpha remains source-over composited.
+ */
+void gui_image_draw_scaled(
+    gui_surface_t *destination,
+    const gui_image_t *image,
+    gui_rect_t destination_rect);
 
 
 #endif

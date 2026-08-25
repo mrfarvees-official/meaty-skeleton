@@ -1,5 +1,7 @@
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 
 #include <kernel/gui/compositor.h>
 #include <kernel/gui/desktop.h>
@@ -18,11 +20,14 @@
  * ------------------------------------------------------------
  */
 
-#define GUI_DESKTOP_WALLPAPER_PATH \
-    "/wallpapers/default.png"
+#define GUI_DESKTOP_DEFAULT_WALLPAPER_PATH \
+    "/wallpapers/darksiders.png"
 
 #define GUI_DESKTOP_VALIDATION_ICON_PATH \
     "/icons/apps/terminal.png"
+
+#define GUI_DESKTOP_WALLPAPER_PATH_CAPACITY \
+    256u
 
 
 /*
@@ -57,16 +62,339 @@ static bool
 
 
 /*
- * Cached filesystem-backed assets.
- *
- * gui_image_t objects themselves are owned by the global image
- * cache.
+ * ------------------------------------------------------------
+ * Wallpaper state
+ * ------------------------------------------------------------
  */
+
 static const gui_image_t *
     desktop_wallpaper;
 
+static char
+    desktop_wallpaper_path[
+        GUI_DESKTOP_WALLPAPER_PATH_CAPACITY];
+
+static gui_wallpaper_mode_t
+    desktop_wallpaper_mode =
+        GUI_WALLPAPER_FILL;
+
+
+/*
+ * Temporary PNG-alpha validation asset.
+ */
 static const gui_image_t *
     desktop_validation_icon;
+
+
+/*
+ * ------------------------------------------------------------
+ * Wallpaper geometry helpers
+ * ------------------------------------------------------------
+ */
+
+static uint32_t gui_desktop_nonzero_dimension(
+    uint64_t value)
+{
+    if (value == 0u)
+        return 1u;
+
+    if (value > UINT32_MAX)
+        return UINT32_MAX;
+
+    return (uint32_t)value;
+}
+
+
+static gui_rect_t gui_desktop_wallpaper_rect(
+    const gui_surface_t *screen,
+    const gui_image_t *wallpaper,
+    gui_wallpaper_mode_t mode)
+{
+    gui_rect_t rect;
+
+    rect.x = 0;
+    rect.y = 0;
+
+    rect.width =
+        screen != NULL
+            ? screen->width
+            : 0u;
+
+    rect.height =
+        screen != NULL
+            ? screen->height
+            : 0u;
+
+    if (screen == NULL ||
+        wallpaper == NULL ||
+        screen->width == 0u ||
+        screen->height == 0u)
+    {
+        return rect;
+    }
+
+    uint32_t image_width =
+        gui_image_width(
+            wallpaper);
+
+    uint32_t image_height =
+        gui_image_height(
+            wallpaper);
+
+    if (image_width == 0u ||
+        image_height == 0u)
+    {
+        return rect;
+    }
+
+    switch (mode)
+    {
+    case GUI_WALLPAPER_STRETCH:
+        /*
+         * Already initialized to complete screen dimensions.
+         */
+        break;
+
+    case GUI_WALLPAPER_CENTER:
+        rect.width =
+            image_width;
+
+        rect.height =
+            image_height;
+
+        rect.x =
+            ((int32_t)screen->width -
+             (int32_t)rect.width) /
+            2;
+
+        rect.y =
+            ((int32_t)screen->height -
+             (int32_t)rect.height) /
+            2;
+
+        break;
+
+    case GUI_WALLPAPER_FIT:
+    {
+        /*
+         * Compare aspect ratios without floating point:
+         *
+         *     image_width / image_height
+         *     screen_width / screen_height
+         */
+        uint64_t image_cross =
+            (uint64_t)image_width *
+            screen->height;
+
+        uint64_t screen_cross =
+            (uint64_t)screen->width *
+            image_height;
+
+        if (image_cross > screen_cross)
+        {
+            /*
+             * Image is relatively wider.
+             * Width determines the scale.
+             */
+            rect.width =
+                screen->width;
+
+            rect.height =
+                gui_desktop_nonzero_dimension(
+                    ((uint64_t)image_height *
+                     screen->width) /
+                    image_width);
+        }
+        else
+        {
+            /*
+             * Image is relatively taller.
+             * Height determines the scale.
+             */
+            rect.height =
+                screen->height;
+
+            rect.width =
+                gui_desktop_nonzero_dimension(
+                    ((uint64_t)image_width *
+                     screen->height) /
+                    image_height);
+        }
+
+        rect.x =
+            ((int32_t)screen->width -
+             (int32_t)rect.width) /
+            2;
+
+        rect.y =
+            ((int32_t)screen->height -
+             (int32_t)rect.height) /
+            2;
+
+        break;
+    }
+
+    case GUI_WALLPAPER_FILL:
+    default:
+    {
+        uint64_t image_cross =
+            (uint64_t)image_width *
+            screen->height;
+
+        uint64_t screen_cross =
+            (uint64_t)screen->width *
+            image_height;
+
+        if (image_cross > screen_cross)
+        {
+            /*
+             * Image is relatively wider.
+             *
+             * Height must match the screen; width extends beyond
+             * it and will be center-cropped.
+             */
+            rect.height =
+                screen->height;
+
+            rect.width =
+                gui_desktop_nonzero_dimension(
+                    ((uint64_t)image_width *
+                     screen->height +
+                     image_height - 1u) /
+                    image_height);
+        }
+        else
+        {
+            /*
+             * Image is relatively taller.
+             *
+             * Width must match the screen; height extends beyond
+             * it and will be center-cropped.
+             */
+            rect.width =
+                screen->width;
+
+            rect.height =
+                gui_desktop_nonzero_dimension(
+                    ((uint64_t)image_height *
+                     screen->width +
+                     image_width - 1u) /
+                    image_width);
+        }
+
+        rect.x =
+            ((int32_t)screen->width -
+             (int32_t)rect.width) /
+            2;
+
+        rect.y =
+            ((int32_t)screen->height -
+             (int32_t)rect.height) /
+            2;
+
+        break;
+    }
+    }
+
+    return rect;
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * Wallpaper public API
+ * ------------------------------------------------------------
+ */
+
+bool gui_desktop_set_wallpaper(
+    const char *path,
+    gui_wallpaper_mode_t mode)
+{
+    if (path == NULL ||
+        path[0] == '\0')
+    {
+        return false;
+    }
+
+    if (mode != GUI_WALLPAPER_STRETCH &&
+        mode != GUI_WALLPAPER_FIT &&
+        mode != GUI_WALLPAPER_FILL &&
+        mode != GUI_WALLPAPER_CENTER)
+    {
+        return false;
+    }
+
+    size_t path_length =
+        strlen(path);
+
+    if (path_length >=
+        GUI_DESKTOP_WALLPAPER_PATH_CAPACITY)
+    {
+        return false;
+    }
+
+    const gui_image_t *image =
+        NULL;
+
+    /*
+     * Do not replace the current wallpaper unless the new image
+     * loads successfully.
+     */
+    if (!gui_image_get(
+            path,
+            &image))
+    {
+        return false;
+    }
+
+    if (image == NULL ||
+        gui_image_width(image) == 0u ||
+        gui_image_height(image) == 0u)
+    {
+        return false;
+    }
+
+    memcpy(
+        desktop_wallpaper_path,
+        path,
+        path_length + 1u);
+
+    desktop_wallpaper =
+        image;
+
+    desktop_wallpaper_mode =
+        mode;
+
+    /*
+     * Before bootstrap this only updates configuration.
+     *
+     * After bootstrap the change becomes visible immediately.
+     */
+    if (desktop_initialized)
+        gui_desktop_render();
+
+    return true;
+}
+
+
+const char *gui_desktop_wallpaper_path(void)
+{
+    if (desktop_wallpaper == NULL ||
+        desktop_wallpaper_path[0] == '\0')
+    {
+        return NULL;
+    }
+
+    return
+        desktop_wallpaper_path;
+}
+
+
+gui_wallpaper_mode_t gui_desktop_wallpaper_mode(void)
+{
+    return
+        desktop_wallpaper_mode;
+}
 
 
 /*
@@ -213,13 +541,6 @@ static bool gui_desktop_create_test_window(void)
         return false;
     }
 
-    /*
-     * Alpha-validation image.
-     *
-     * The terminal icon should have transparent pixels around the
-     * artwork. Those pixels must reveal the translucent window
-     * underneath rather than a black/white square.
-     */
     if (desktop_validation_icon != NULL)
     {
         gui_image_draw(
@@ -238,28 +559,14 @@ static bool gui_desktop_create_test_window(void)
 
 /*
  * ------------------------------------------------------------
- * Desktop assets
+ * Optional validation assets
  * ------------------------------------------------------------
  */
 
-static void gui_desktop_load_images(void)
+static void gui_desktop_load_validation_icon(void)
 {
-    /*
-     * Images are optional presentation assets.
-     *
-     * Failure must never prevent GUI bootstrap:
-     *
-     *     wallpaper failure -> gradient fallback
-     *     icon failure      -> simply omit validation icon
-     */
-
-    desktop_wallpaper = NULL;
-
-    desktop_validation_icon = NULL;
-
-    (void)gui_image_get(
-        GUI_DESKTOP_WALLPAPER_PATH,
-        &desktop_wallpaper);
+    desktop_validation_icon =
+        NULL;
 
     (void)gui_image_get(
         GUI_DESKTOP_VALIDATION_ICON_PATH,
@@ -292,17 +599,23 @@ bool gui_desktop_initialize(void)
         return false;
     }
 
-    /*
-     * EXT2/VFS is already mounted before desktop bootstrap.
-     */
     if (!gui_font_system_initialize())
         return false;
 
     /*
-     * Wallpaper and icon files are loaded exactly once and retained
-     * through the image cache.
+     * The default wallpaper is an optional presentation asset.
+     *
+     * Failure does not prevent desktop bootstrap. The gradient
+     * remains the permanent fallback.
      */
-    gui_desktop_load_images();
+    if (desktop_wallpaper == NULL)
+    {
+        (void)gui_desktop_set_wallpaper(
+            GUI_DESKTOP_DEFAULT_WALLPAPER_PATH,
+            GUI_WALLPAPER_FILL);
+    }
+
+    gui_desktop_load_validation_icon();
 
     if (!gui_desktop_create_test_window())
         return false;
@@ -361,10 +674,10 @@ void gui_desktop_render(void)
      * GUI_Z_DESKTOP
      * --------------------------------------------------------
      *
-     * Always establish an opaque fallback first.
+     * Always establish a completely opaque background first.
      *
-     * This means even a PNG wallpaper containing alpha can never
-     * leave stale pixels in the compositor backbuffer.
+     * FIT/CENTER modes can intentionally leave uncovered areas,
+     * and transparent PNG pixels also need a defined background.
      */
     gui_surface_fill_vertical_gradient(
         surface,
@@ -372,31 +685,18 @@ void gui_desktop_render(void)
         theme->desktop_gradient_top,
         theme->desktop_gradient_bottom);
 
-    /*
-     * Initial wallpaper milestone intentionally requires native
-     * display dimensions.
-     *
-     * At the current VBE mode:
-     *
-     *     1360 x 768 wallpaper
-     *     1360 x 768 screen
-     *
-     * Scaling/cropping belongs to a later image-rendering
-     * enhancement.
-     */
-    if (desktop_wallpaper != NULL &&
-        gui_image_width(
-            desktop_wallpaper) ==
-            surface->width &&
-        gui_image_height(
-            desktop_wallpaper) ==
-            surface->height)
+    if (desktop_wallpaper != NULL)
     {
-        gui_image_draw(
+        gui_rect_t wallpaper_rect =
+            gui_desktop_wallpaper_rect(
+                surface,
+                desktop_wallpaper,
+                desktop_wallpaper_mode);
+
+        gui_image_draw_scaled(
             surface,
             desktop_wallpaper,
-            0,
-            0);
+            wallpaper_rect);
     }
 
     /*
@@ -415,8 +715,8 @@ void gui_desktop_render(void)
     gui_taskbar_composite();
 
     /*
-     * Software cursor remains above the presented scene through
-     * the existing framebuffer/cursor coordination.
+     * Cursor remains above compositor presentation through the
+     * existing cursor/framebuffer coordination.
      */
 
     gui_compositor_damage_all();

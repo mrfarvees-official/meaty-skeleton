@@ -16,13 +16,6 @@ INSTALL_FONT_ASSET=${INSTALL_FONT_ASSET:-true}
 #
 # Optional, non-destructive GUI image asset installation.
 #
-# This updates only:
-#
-#     /wallpapers
-#     /icons
-#
-# on the existing ext2 filesystem.
-#
 INSTALL_GUI_ASSETS=${INSTALL_GUI_ASSETS:-true}
 
 
@@ -32,9 +25,9 @@ INSTALL_GUI_ASSETS=${INSTALL_GUI_ASSETS:-true}
 # ------------------------------------------------------------
 #
 
-CONSOLAS_TTF=${MEATY_CONSOLAS_TTF:-assets/local/Consolas.ttf}
+FONT_ROOT=${MEATY_FONT_ROOT:-assets/local}
 
-GUI_WALLPAPER=${MEATY_WALLPAPER:-assets/wallpapers/default.png}
+GUI_WALLPAPER_ROOT=${MEATY_WALLPAPER_ROOT:-assets/wallpapers}
 
 GUI_ICON_ROOT=${MEATY_ICON_ROOT:-assets/icons}
 
@@ -50,33 +43,50 @@ BENCH_FILE=double.txt
 # ------------------------------------------------------------
 #
 
-copy_font_to_mounted_root()
+validate_font_assets()
 {
-    ROOT="$1"
-
-    if [ ! -f "$CONSOLAS_TTF" ]; then
-        echo "Error: Consolas TTF not found:"
-        echo "  $CONSOLAS_TTF"
-        echo
-        echo "Set MEATY_CONSOLAS_TTF=/path/to/Consolas.ttf"
+    if [ ! -d "$FONT_ROOT" ]; then
+        echo "Error: font directory not found:"
+        echo "  $FONT_ROOT"
         exit 1
     fi
 
-    echo "Installing system font as /fonts/Consolas.ttf..."
+    set -- "$FONT_ROOT"/*.ttf
+
+    if [ ! -e "$1" ]; then
+        echo "Error: no TTF font files found:"
+        echo "  $FONT_ROOT"
+        exit 1
+    fi
+}
+
+
+copy_fonts_to_mounted_root()
+{
+    ROOT="$1"
+
+    validate_font_assets
+
+    echo "Installing system fonts..."
 
     sudo mkdir -p \
         "$ROOT/fonts"
 
-    sudo cp \
-        "$CONSOLAS_TTF" \
-        "$ROOT/fonts/Consolas.ttf"
+    for FONT in "$FONT_ROOT"/*.ttf
+    do
+        echo "Installing font: $(basename "$FONT")"
+
+        sudo cp \
+            "$FONT" \
+            "$ROOT/fonts/"
+    done
 
     sync
 
-    echo "Installed font:"
+    echo "Installed fonts:"
 
     sudo ls -lh \
-        "$ROOT/fonts/Consolas.ttf"
+        "$ROOT/fonts/"*.ttf
 }
 
 
@@ -88,9 +98,9 @@ copy_font_to_mounted_root()
 
 validate_gui_assets()
 {
-    if [ ! -f "$GUI_WALLPAPER" ]; then
-        echo "Error: GUI wallpaper not found:"
-        echo "  $GUI_WALLPAPER"
+    if [ ! -d "$GUI_WALLPAPER_ROOT" ]; then
+        echo "Error: wallpaper directory not found:"
+        echo "  $GUI_WALLPAPER_ROOT"
         exit 1
     fi
 
@@ -106,18 +116,26 @@ validate_gui_assets()
         exit 1
     fi
 
-    set -- "$GUI_ICON_ROOT"/apps/*.png
+    set -- "$GUI_WALLPAPER_ROOT"/*
 
     if [ ! -e "$1" ]; then
-        echo "Error: no app PNG icons found:"
+        echo "Error: no wallpaper files found:"
+        echo "  $GUI_WALLPAPER_ROOT"
+        exit 1
+    fi
+
+    set -- "$GUI_ICON_ROOT"/apps/*
+
+    if [ ! -e "$1" ]; then
+        echo "Error: no app icon files found:"
         echo "  $GUI_ICON_ROOT/apps"
         exit 1
     fi
 
-    set -- "$GUI_ICON_ROOT"/system/*.png
+    set -- "$GUI_ICON_ROOT"/system/*
 
     if [ ! -e "$1" ]; then
-        echo "Error: no system PNG icons found:"
+        echo "Error: no system icon files found:"
         echo "  $GUI_ICON_ROOT/system"
         exit 1
     fi
@@ -137,44 +155,64 @@ copy_gui_assets_to_mounted_root()
         "$ROOT/icons/apps" \
         "$ROOT/icons/system"
 
-    sudo cp \
-        "$GUI_WALLPAPER" \
-        "$ROOT/wallpapers/default.png"
-
-    for ICON in "$GUI_ICON_ROOT"/apps/*.png
+    #
+    # Copy all wallpaper files.
+    #
+    for WALLPAPER in "$GUI_WALLPAPER_ROOT"/*
     do
-        echo "Installing app icon: $(basename "$ICON")"
+        if [ -f "$WALLPAPER" ]; then
+            echo "Installing wallpaper: $(basename "$WALLPAPER")"
 
-        sudo cp \
-            "$ICON" \
-            "$ROOT/icons/apps/"
+            sudo cp \
+                "$WALLPAPER" \
+                "$ROOT/wallpapers/"
+        fi
     done
 
-    for ICON in "$GUI_ICON_ROOT"/system/*.png
+    #
+    # Copy all application icon files.
+    #
+    for ICON in "$GUI_ICON_ROOT"/apps/*
     do
-        echo "Installing system icon: $(basename "$ICON")"
+        if [ -f "$ICON" ]; then
+            echo "Installing app icon: $(basename "$ICON")"
 
-        sudo cp \
-            "$ICON" \
-            "$ROOT/icons/system/"
+            sudo cp \
+                "$ICON" \
+                "$ROOT/icons/apps/"
+        fi
+    done
+
+    #
+    # Copy all system icon files.
+    #
+    for ICON in "$GUI_ICON_ROOT"/system/*
+    do
+        if [ -f "$ICON" ]; then
+            echo "Installing system icon: $(basename "$ICON")"
+
+            sudo cp \
+                "$ICON" \
+                "$ROOT/icons/system/"
+        fi
     done
 
     sync
 
-    echo "Installed wallpaper:"
+    echo "Installed wallpapers:"
 
     sudo ls -lh \
-        "$ROOT/wallpapers/default.png"
+        "$ROOT/wallpapers/"
 
     echo "Installed app icons:"
 
     sudo ls -lh \
-        "$ROOT/icons/apps/"*.png
+        "$ROOT/icons/apps/"
 
     echo "Installed system icons:"
 
     sudo ls -lh \
-        "$ROOT/icons/system/"*.png
+        "$ROOT/icons/system/"
 }
 
 
@@ -281,11 +319,14 @@ create_benchmark_disk()
     done
 
     #
-    # A newly created filesystem receives all required GUI assets.
+    # Newly created filesystem receives all fonts.
     #
-    copy_font_to_mounted_root \
+    copy_fonts_to_mounted_root \
         /mnt/meaty-bench
 
+    #
+    # Newly created filesystem receives all GUI assets.
+    #
     copy_gui_assets_to_mounted_root \
         /mnt/meaty-bench
 
@@ -323,16 +364,18 @@ create_benchmark_disk()
 
 #
 # ------------------------------------------------------------
-# Existing disk: font-only installation
+# Existing disk: font installation
 # ------------------------------------------------------------
 #
 
-install_font_into_existing_disk()
+install_fonts_into_existing_disk()
 {
     if [ ! -f "$DISK" ]; then
         echo "Error: $DISK does not exist."
         exit 1
     fi
+
+    validate_font_assets
 
     LOOP=""
 
@@ -365,7 +408,7 @@ install_font_into_existing_disk()
         "${LOOP}p1" \
         /mnt/meaty-font-install
 
-    copy_font_to_mounted_root \
+    copy_fonts_to_mounted_root \
         /mnt/meaty-font-install
 
     echo "Unmounting existing filesystem..."
@@ -492,7 +535,7 @@ esac
 case "$INSTALL_FONT_ASSET" in
     true)
         if [ "$RECREATE_BENCH_DISK" = false ]; then
-            install_font_into_existing_disk
+            install_fonts_into_existing_disk
         fi
         ;;
 
