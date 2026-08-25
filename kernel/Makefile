@@ -59,6 +59,7 @@ kernel/device/pci.o 			\
 kernel/device/ahci.o 			\
 kernel/gui/surface.o 			\
 kernel/gui/font.o 				\
+kernel/gui/image.o 				\
 kernel/gui/theme.o 				\
 kernel/gui/painter.o 			\
 kernel/gui/compositor.o 		\
