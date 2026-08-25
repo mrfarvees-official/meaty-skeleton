@@ -1,121 +1,156 @@
 #include <stdbool.h>
+#include <stddef.h>
 
 #include <kernel/gui/compositor.h>
 #include <kernel/gui/desktop.h>
 #include <kernel/gui/surface.h>
-#include <kernel/logger.h>
+#include <kernel/gui/window.h>
+
 
 /*
  * ------------------------------------------------------------
  * First desktop scene
  * ------------------------------------------------------------
- *
- * This is deliberately only the desktop background.
- *
- * No:
- *
- *     - windows
- *     - widgets
- *     - taskbar
- *     - icons
- *     - Explorer
- *     - input handling
- *
- * The desktop draws exclusively into the compositor's backbuffer.
- * Physical framebuffer ownership remains with the compositor.
  */
 
-/*
- * Initial desktop background.
- *
- * Keep this here rather than in the compositor because the
- * compositor is presentation infrastructure and should not know
- * what a desktop looks like.
- */
 #define GUI_DESKTOP_BACKGROUND_COLOR \
     GUI_RGB(32u, 96u, 160u)
 
+
+/*
+ * ------------------------------------------------------------
+ * Temporary G1a validation window
+ * ------------------------------------------------------------
+ *
+ * This is intentionally not a real application window yet.
+ *
+ * Its only purpose is to validate:
+ *
+ *     window-owned surfaces
+ *     screen position
+ *     composition
+ *     clipping
+ *     compositor damage
+ *
+ * It will disappear once the real window manager owns windows.
+ */
+#define GUI_TEST_WINDOW_WIDTH  420u
+#define GUI_TEST_WINDOW_HEIGHT 260u
+
+#define GUI_TEST_WINDOW_COLOR \
+    GUI_RGB(230u, 230u, 230u)
+
+
 static bool desktop_initialized;
 
-bool gui_desktop_initialize(void)
+static gui_window_t
+    desktop_test_window;
+
+static bool
+    desktop_test_window_initialized;
+
+
+static bool gui_desktop_create_test_window(void)
 {
-    log_info(
-        "desktop: initialize entered\n");
-
-    if (desktop_initialized)
-    {
-        log_info(
-            "desktop: already initialized\n");
-
+    if (desktop_test_window_initialized)
         return true;
-    }
 
-    if (!gui_compositor_is_initialized())
-    {
-        log_error(
-            "desktop: compositor not initialized\n");
-
-        return false;
-    }
-
-    log_info(
-        "desktop: compositor initialized\n");
-
-    gui_surface_t *surface =
+    gui_surface_t *screen =
         gui_compositor_surface();
 
-    if (surface == NULL)
+    if (screen == NULL ||
+        screen->pixels == NULL)
     {
-        log_error(
-            "desktop: compositor surface is NULL\n");
+        return false;
+    }
+
+    /*
+     * Deliberately place part of the test window near the center.
+     *
+     * Position calculations remain signed so future windows can
+     * legally exist partly outside the screen and rely on clipping.
+     */
+    int32_t x =
+        (int32_t)
+        (screen->width / 2u) -
+        (int32_t)
+        (GUI_TEST_WINDOW_WIDTH / 2u);
+
+    int32_t y =
+        (int32_t)
+        (screen->height / 2u) -
+        (int32_t)
+        (GUI_TEST_WINDOW_HEIGHT / 2u);
+
+    if (!gui_window_create(
+            &desktop_test_window,
+            x,
+            y,
+            GUI_TEST_WINDOW_WIDTH,
+            GUI_TEST_WINDOW_HEIGHT,
+            GUI_Z_NORMAL))
+    {
+        return false;
+    }
+
+    gui_surface_t *window_surface =
+        gui_window_surface(
+            &desktop_test_window);
+
+    if (window_surface == NULL)
+    {
+        gui_window_destroy(
+            &desktop_test_window);
 
         return false;
     }
 
-    log_info(
-        "desktop: surface=%p pixels=%p width=%u height=%u pitch=%u\n",
-        (void *)surface,
-        (void *)surface->pixels,
-        (unsigned)surface->width,
-        (unsigned)surface->height,
-        (unsigned)surface->pitch);
+    gui_surface_clear(
+        window_surface,
+        GUI_TEST_WINDOW_COLOR);
 
-    if (surface->pixels == NULL ||
-        surface->width == 0u ||
-        surface->height == 0u)
-    {
-        log_error(
-            "desktop: invalid compositor surface\n");
-
-        return false;
-    }
-
-    desktop_initialized =
+    desktop_test_window_initialized =
         true;
-
-    log_info(
-        "desktop: calling render\n");
-
-    gui_desktop_render();
-
-    // log_info(
-    //     "desktop: render returned\n");
 
     return true;
 }
 
+
+bool gui_desktop_initialize(void)
+{
+    if (desktop_initialized)
+        return true;
+
+    if (!gui_compositor_is_initialized())
+        return false;
+
+    gui_surface_t *surface =
+        gui_compositor_surface();
+
+    if (surface == NULL ||
+        surface->pixels == NULL ||
+        surface->width == 0u ||
+        surface->height == 0u)
+    {
+        return false;
+    }
+
+    if (!gui_desktop_create_test_window())
+        return false;
+
+    desktop_initialized =
+        true;
+
+    gui_desktop_render();
+
+    return true;
+}
+
+
 void gui_desktop_render(void)
 {
-    log_info(
-        "desktop: render entered\n");
-
     if (!desktop_initialized)
-    {
-        log_error(
-            "desktop: render before initialization\n");
-
         return;
-    }
 
     gui_surface_t *surface =
         gui_compositor_surface();
@@ -123,30 +158,32 @@ void gui_desktop_render(void)
     if (surface == NULL ||
         surface->pixels == NULL)
     {
-        log_error(
-            "desktop: render has invalid surface\n");
-
         return;
     }
 
-    log_info(
-        "desktop: clearing surface\n");
-
+    /*
+     * Rebuild the complete scene from back to front.
+     *
+     * G1a contains only:
+     *
+     *     desktop
+     *     one GUI_Z_NORMAL test window
+     */
     gui_surface_clear(
         surface,
         GUI_DESKTOP_BACKGROUND_COLOR);
 
-    log_info(
-        "desktop: surface cleared\n");
+    gui_window_composite(
+        &desktop_test_window);
 
+    /*
+     * Because the desktop background itself was completely rebuilt,
+     * this first scene render is full-screen damage.
+     *
+     * The window's own damage call remains correct and becomes useful
+     * once we stop rebuilding the complete desktop every frame.
+     */
     gui_compositor_damage_all();
 
-    log_info(
-        "desktop: full damage marked\n");
-
     gui_compositor_present();
-
-    // log_info(
-    //     "desktop: present returned\n");
 }
-
