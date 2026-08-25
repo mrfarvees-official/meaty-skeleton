@@ -63,6 +63,7 @@ kernel/gui/theme.o 				\
 kernel/gui/painter.o 			\
 kernel/gui/compositor.o 		\
 kernel/gui/window.o 			\
+kernel/gui/taskbar.o 			\
 kernel/gui/desktop.o 			\
 kernel/input/keyboard_line.o 	\
 kernel/input/mouse_cursor.o 	\

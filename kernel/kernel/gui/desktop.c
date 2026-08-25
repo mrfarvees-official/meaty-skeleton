@@ -6,13 +6,14 @@
 #include <kernel/gui/font.h>
 #include <kernel/gui/painter.h>
 #include <kernel/gui/surface.h>
+#include <kernel/gui/taskbar.h>
 #include <kernel/gui/theme.h>
 #include <kernel/gui/window.h>
 
 
 /*
  * ------------------------------------------------------------
- * Temporary theme/painter validation window
+ * Temporary normal-window validation surface
  * ------------------------------------------------------------
  */
 
@@ -22,11 +23,6 @@
 #define GUI_TEST_WINDOW_HEIGHT \
     340u
 
-/*
- * Window surface includes transparent padding around the visual
- * panel so the shadow remains part of the window's composited
- * surface.
- */
 #define GUI_TEST_WINDOW_MARGIN \
     28u
 
@@ -45,6 +41,12 @@ static gui_window_t
 static bool
     desktop_test_window_initialized;
 
+
+/*
+ * ------------------------------------------------------------
+ * Temporary normal window
+ * ------------------------------------------------------------
+ */
 
 static bool gui_desktop_create_test_window(void)
 {
@@ -84,6 +86,14 @@ static bool gui_desktop_create_test_window(void)
         (int32_t)
         (GUI_TEST_WINDOW_HEIGHT / 2u);
 
+    /*
+     * Move the temporary window slightly upward now that the
+     * desktop shell owns screen space near the bottom.
+     *
+     * This is only validation-scene positioning.
+     */
+    y -= 30;
+
     if (!gui_window_create(
             &desktop_test_window,
             x,
@@ -108,10 +118,6 @@ static bool gui_desktop_create_test_window(void)
         return false;
     }
 
-    /*
-     * Everything outside the visual panel, including its rounded
-     * corners, remains transparent.
-     */
     gui_surface_clear(
         surface,
         GUI_TRANSPARENT);
@@ -132,9 +138,6 @@ static bool gui_desktop_create_test_window(void)
         GUI_TEST_WINDOW_HEIGHT -
         GUI_TEST_WINDOW_MARGIN * 2u;
 
-    /*
-     * Shadow.
-     */
     gui_painter_draw_rounded_shadow(
         surface,
         panel_rect,
@@ -145,12 +148,6 @@ static bool gui_desktop_create_test_window(void)
         theme->window_shadow_blur,
         theme->window_shadow);
 
-    /*
-     * Window material.
-     *
-     * The alpha in the gradient is retained in the window surface
-     * and later composited against the desktop by window.c.
-     */
     gui_painter_fill_rounded_vertical_gradient(
         surface,
         panel_rect,
@@ -158,12 +155,6 @@ static bool gui_desktop_create_test_window(void)
         theme->window_gradient_top,
         theme->window_gradient_bottom);
 
-    /*
-     * Real border stroke.
-     *
-     * Unlike the previous validation implementation this does not
-     * tint the entire interior of the panel.
-     */
     gui_painter_stroke_rounded_rect(
         surface,
         panel_rect,
@@ -171,9 +162,6 @@ static bool gui_desktop_create_test_window(void)
         theme->window_border_thickness,
         theme->window_border);
 
-    /*
-     * Existing TrueType renderer remains the text owner.
-     */
     if (!gui_font_draw_text(
             surface,
             font,
@@ -189,10 +177,6 @@ static bool gui_desktop_create_test_window(void)
         return false;
     }
 
-    /*
-     * A second font size also gives us a useful visual check that
-     * the font cache remains correct across multiple pixel sizes.
-     */
     if (!gui_font_draw_text(
             surface,
             font,
@@ -215,6 +199,12 @@ static bool gui_desktop_create_test_window(void)
 }
 
 
+/*
+ * ------------------------------------------------------------
+ * Desktop bootstrap
+ * ------------------------------------------------------------
+ */
+
 bool gui_desktop_initialize(void)
 {
     if (desktop_initialized)
@@ -234,10 +224,21 @@ bool gui_desktop_initialize(void)
         return false;
     }
 
+    /*
+     * Filesystem-backed system font must exist before either
+     * normal desktop content or shell chrome renders text.
+     */
     if (!gui_font_system_initialize())
         return false;
 
     if (!gui_desktop_create_test_window())
+        return false;
+
+    /*
+     * Taskbar is desktop-shell state, not part of the temporary
+     * normal application window.
+     */
+    if (!gui_taskbar_initialize())
         return false;
 
     desktop_initialized =
@@ -248,6 +249,12 @@ bool gui_desktop_initialize(void)
     return true;
 }
 
+
+/*
+ * ------------------------------------------------------------
+ * Scene reconstruction
+ * ------------------------------------------------------------
+ */
 
 void gui_desktop_render(void)
 {
@@ -281,16 +288,44 @@ void gui_desktop_render(void)
         surface->height;
 
     /*
-     * Always keep the base scene opaque.
+     * --------------------------------------------------------
+     * GUI_Z_DESKTOP
+     * --------------------------------------------------------
      */
+
     gui_surface_fill_vertical_gradient(
         surface,
         desktop_rect,
         theme->desktop_gradient_top,
         theme->desktop_gradient_bottom);
 
+    /*
+     * --------------------------------------------------------
+     * GUI_Z_NORMAL
+     * --------------------------------------------------------
+     */
+
     gui_window_composite(
         &desktop_test_window);
+
+    /*
+     * --------------------------------------------------------
+     * GUI_Z_TASKBAR
+     * --------------------------------------------------------
+     *
+     * Explicit ordering is temporary.
+     *
+     * A later window-manager milestone will own ordering inside
+     * and between z classes.
+     */
+
+    gui_taskbar_composite();
+
+    /*
+     * Cursor remains outside this scene reconstruction and stays
+     * above compositor presentation through the existing cursor /
+     * framebuffer coordination.
+     */
 
     gui_compositor_damage_all();
 

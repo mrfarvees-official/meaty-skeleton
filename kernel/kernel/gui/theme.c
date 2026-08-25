@@ -4,8 +4,11 @@
 static const gui_theme_t default_theme =
 {
     /*
-     * Desktop.
+     * --------------------------------------------------------
+     * Desktop
+     * --------------------------------------------------------
      */
+
     .desktop_gradient_top =
         GUI_RGB(24u, 49u, 83u),
 
@@ -13,8 +16,11 @@ static const gui_theme_t default_theme =
         GUI_RGB(10u, 23u, 42u),
 
     /*
-     * Window material.
+     * --------------------------------------------------------
+     * Normal window material
+     * --------------------------------------------------------
      */
+
     .window_gradient_top =
         GUI_RGBA(250u, 252u, 255u, 242u),
 
@@ -24,16 +30,39 @@ static const gui_theme_t default_theme =
     .window_border =
         GUI_RGBA(255u, 255u, 255u, 118u),
 
-    /*
-     * Keep the shadow relatively restrained.
-     * Multiple painter falloff rings provide softness.
-     */
     .window_shadow =
         GUI_RGBA(0u, 0u, 0u, 68u),
 
     /*
-     * Typography.
+     * --------------------------------------------------------
+     * Taskbar material
+     * --------------------------------------------------------
+     *
+     * Slightly darker and more translucent than a normal window,
+     * giving the desktop shell its own visual identity.
      */
+
+    .taskbar_gradient_top =
+        GUI_RGBA(38u, 47u, 63u, 232u),
+
+    .taskbar_gradient_bottom =
+        GUI_RGBA(25u, 32u, 45u, 224u),
+
+    .taskbar_border =
+        GUI_RGBA(255u, 255u, 255u, 72u),
+
+    .taskbar_shadow =
+        GUI_RGBA(0u, 0u, 0u, 82u),
+
+    .taskbar_text =
+        GUI_RGB(242u, 245u, 250u),
+
+    /*
+     * --------------------------------------------------------
+     * Typography
+     * --------------------------------------------------------
+     */
+
     .text_primary =
         GUI_RGB(24u, 31u, 42u),
 
@@ -41,14 +70,20 @@ static const gui_theme_t default_theme =
         GUI_RGB(80u, 91u, 108u),
 
     /*
-     * System accent.
+     * --------------------------------------------------------
+     * Accent
+     * --------------------------------------------------------
      */
+
     .accent =
         GUI_RGB(65u, 139u, 255u),
 
     /*
-     * Window geometry.
+     * --------------------------------------------------------
+     * Normal window geometry
+     * --------------------------------------------------------
      */
+
     .window_corner_radius =
         18u,
 
@@ -65,7 +100,31 @@ static const gui_theme_t default_theme =
         1u,
 
     .window_shadow_blur =
-        12u
+        12u,
+
+    /*
+     * --------------------------------------------------------
+     * Taskbar geometry
+     * --------------------------------------------------------
+     */
+
+    .taskbar_corner_radius =
+        18u,
+
+    .taskbar_border_thickness =
+        1u,
+
+    .taskbar_shadow_offset_x =
+        0,
+
+    .taskbar_shadow_offset_y =
+        4,
+
+    .taskbar_shadow_spread =
+        1u,
+
+    .taskbar_shadow_blur =
+        8u
 };
 
 
