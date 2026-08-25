@@ -11,7 +11,7 @@ RECREATE_BENCH_DISK=${RECREATE_BENCH_DISK:-false}
 # Optional one-time, non-destructive installation of the local
 # system font into an already-existing persistent ext2 disk.
 #
-INSTALL_FONT_ASSET=${INSTALL_FONT_ASSET:-true}
+INSTALL_FONT_ASSET=${INSTALL_FONT_ASSET:-false}
 
 #
 # Local source only.

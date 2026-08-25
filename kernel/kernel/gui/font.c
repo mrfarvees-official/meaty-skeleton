@@ -540,14 +540,8 @@ static void gui_font_blend_glyph(
         return;
     }
 
-    uint8_t source_red =
-        gui_font_color_red(color);
-
-    uint8_t source_green =
-        gui_font_color_green(color);
-
-    uint8_t source_blue =
-        gui_font_color_blue(color);
+    uint32_t color_alpha =
+        gui_color_alpha(color);
 
     for (uint32_t glyph_y = 0u;
          glyph_y < glyph->metrics.height;
@@ -588,53 +582,27 @@ static void gui_font_blend_glyph(
             if (coverage == 0u)
                 continue;
 
-            uint8_t *row =
-                (uint8_t *)surface->pixels +
-                (size_t)destination_y *
-                    surface->pitch;
+            uint32_t effective_alpha =
+                (color_alpha *
+                 (uint32_t)coverage +
+                 127u) /
+                255u;
 
-            gui_color_t *pixel =
-                (gui_color_t *)row +
-                (size_t)destination_x;
+            if (effective_alpha == 0u)
+                continue;
 
-            gui_color_t destination =
-                *pixel;
+            gui_color_t glyph_color =
+                GUI_RGBA(
+                    gui_color_red(color),
+                    gui_color_green(color),
+                    gui_color_blue(color),
+                    effective_alpha);
 
-            uint8_t destination_red =
-                gui_font_color_red(
-                    destination);
-
-            uint8_t destination_green =
-                gui_font_color_green(
-                    destination);
-
-            uint8_t destination_blue =
-                gui_font_color_blue(
-                    destination);
-
-            uint8_t result_red =
-                gui_font_blend_channel(
-                    destination_red,
-                    source_red,
-                    coverage);
-
-            uint8_t result_green =
-                gui_font_blend_channel(
-                    destination_green,
-                    source_green,
-                    coverage);
-
-            uint8_t result_blue =
-                gui_font_blend_channel(
-                    destination_blue,
-                    source_blue,
-                    coverage);
-
-            *pixel =
-                GUI_RGB(
-                    result_red,
-                    result_green,
-                    result_blue);
+            gui_surface_blend_pixel(
+                surface,
+                (int32_t)destination_x,
+                (int32_t)destination_y,
+                glyph_color);
         }
     }
 }

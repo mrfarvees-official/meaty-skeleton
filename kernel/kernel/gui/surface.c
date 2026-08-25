@@ -38,6 +38,295 @@ static bool gui_surface_dimensions_valid(
 }
 
 
+static bool gui_surface_get_pixel_pointer(
+    gui_surface_t *surface,
+    int32_t x,
+    int32_t y,
+    gui_color_t **result)
+{
+    if (result == NULL)
+        return false;
+
+    *result = NULL;
+
+    if (surface == NULL ||
+        surface->pixels == NULL)
+    {
+        return false;
+    }
+
+    if (x < 0 ||
+        y < 0)
+    {
+        return false;
+    }
+
+    if ((uint32_t)x >= surface->width ||
+        (uint32_t)y >= surface->height)
+    {
+        return false;
+    }
+
+    uint8_t *row =
+        (uint8_t *)surface->pixels +
+        (size_t)(uint32_t)y *
+            surface->pitch;
+
+    *result =
+        (gui_color_t *)row +
+        (uint32_t)x;
+
+    return true;
+}
+
+
+static uint8_t gui_color_interpolate_channel(
+    uint8_t first,
+    uint8_t second,
+    uint32_t numerator,
+    uint32_t denominator)
+{
+    if (denominator == 0u)
+        return first;
+
+    uint32_t inverse =
+        denominator - numerator;
+
+    uint32_t value =
+        (uint32_t)first * inverse +
+        (uint32_t)second * numerator;
+
+    value += denominator / 2u;
+
+    return
+        (uint8_t)
+        (value / denominator);
+}
+
+
+static gui_color_t gui_color_interpolate(
+    gui_color_t first,
+    gui_color_t second,
+    uint32_t numerator,
+    uint32_t denominator)
+{
+    return
+        GUI_RGBA(
+            gui_color_interpolate_channel(
+                gui_color_red(first),
+                gui_color_red(second),
+                numerator,
+                denominator),
+            gui_color_interpolate_channel(
+                gui_color_green(first),
+                gui_color_green(second),
+                numerator,
+                denominator),
+            gui_color_interpolate_channel(
+                gui_color_blue(first),
+                gui_color_blue(second),
+                numerator,
+                denominator),
+            gui_color_interpolate_channel(
+                gui_color_alpha(first),
+                gui_color_alpha(second),
+                numerator,
+                denominator));
+}
+
+
+static uint32_t gui_rounded_rect_clamp_radius(
+    gui_rect_t rect,
+    uint32_t radius)
+{
+    uint32_t maximum =
+        rect.width < rect.height
+            ? rect.width / 2u
+            : rect.height / 2u;
+
+    if (radius > maximum)
+        radius = maximum;
+
+    return radius;
+}
+
+
+static bool gui_rounded_rect_contains_local_point(
+    uint32_t x,
+    uint32_t y,
+    uint32_t width,
+    uint32_t height,
+    uint32_t radius)
+{
+    if (radius == 0u)
+        return true;
+
+    if (x >= radius &&
+        x < width - radius)
+    {
+        return true;
+    }
+
+    if (y >= radius &&
+        y < height - radius)
+    {
+        return true;
+    }
+
+    int64_t center_x;
+    int64_t center_y;
+
+    if (x < radius)
+        center_x = (int64_t)radius - 1;
+    else
+        center_x =
+            (int64_t)width -
+            (int64_t)radius;
+
+    if (y < radius)
+        center_y = (int64_t)radius - 1;
+    else
+        center_y =
+            (int64_t)height -
+            (int64_t)radius;
+
+    int64_t dx =
+        (int64_t)x - center_x;
+
+    int64_t dy =
+        (int64_t)y - center_y;
+
+    int64_t radius_squared =
+        (int64_t)radius *
+        (int64_t)radius;
+
+    return
+        dx * dx +
+        dy * dy <=
+        radius_squared;
+}
+
+
+uint8_t gui_color_alpha(
+    gui_color_t color)
+{
+    return
+        (uint8_t)
+        ((color >> 24) & 0xFFu);
+}
+
+
+uint8_t gui_color_red(
+    gui_color_t color)
+{
+    return
+        (uint8_t)
+        ((color >> 16) & 0xFFu);
+}
+
+
+uint8_t gui_color_green(
+    gui_color_t color)
+{
+    return
+        (uint8_t)
+        ((color >> 8) & 0xFFu);
+}
+
+
+uint8_t gui_color_blue(
+    gui_color_t color)
+{
+    return
+        (uint8_t)
+        (color & 0xFFu);
+}
+
+
+gui_color_t gui_color_blend(
+    gui_color_t destination,
+    gui_color_t source)
+{
+    uint32_t source_alpha =
+        gui_color_alpha(source);
+
+    if (source_alpha == 0u)
+        return destination;
+
+    if (source_alpha == 255u)
+        return source;
+
+    uint32_t destination_alpha =
+        gui_color_alpha(destination);
+
+    uint32_t inverse_source_alpha =
+        255u - source_alpha;
+
+    /*
+     * out_alpha_numerator is alpha scaled by 255:
+     *
+     *     As * 255 + Ad * (255 - As)
+     */
+    uint32_t out_alpha_numerator =
+        source_alpha * 255u +
+        destination_alpha *
+            inverse_source_alpha;
+
+    if (out_alpha_numerator == 0u)
+        return GUI_TRANSPARENT;
+
+    uint32_t out_alpha =
+        (out_alpha_numerator + 127u) /
+        255u;
+
+    uint32_t red_numerator =
+        (uint32_t)gui_color_red(source) *
+            source_alpha *
+            255u +
+        (uint32_t)gui_color_red(destination) *
+            destination_alpha *
+            inverse_source_alpha;
+
+    uint32_t green_numerator =
+        (uint32_t)gui_color_green(source) *
+            source_alpha *
+            255u +
+        (uint32_t)gui_color_green(destination) *
+            destination_alpha *
+            inverse_source_alpha;
+
+    uint32_t blue_numerator =
+        (uint32_t)gui_color_blue(source) *
+            source_alpha *
+            255u +
+        (uint32_t)gui_color_blue(destination) *
+            destination_alpha *
+            inverse_source_alpha;
+
+    uint32_t red =
+        (red_numerator +
+         out_alpha_numerator / 2u) /
+        out_alpha_numerator;
+
+    uint32_t green =
+        (green_numerator +
+         out_alpha_numerator / 2u) /
+        out_alpha_numerator;
+
+    uint32_t blue =
+        (blue_numerator +
+         out_alpha_numerator / 2u) /
+        out_alpha_numerator;
+
+    return
+        GUI_RGBA(
+            red,
+            green,
+            blue,
+            out_alpha);
+}
+
+
 bool gui_surface_create(
     gui_surface_t *surface,
     uint32_t width,
@@ -122,37 +411,42 @@ void gui_surface_put_pixel(
     int32_t y,
     gui_color_t color)
 {
-    if (surface == NULL ||
-        surface->pixels == NULL)
+    gui_color_t *pixel = NULL;
+
+    if (!gui_surface_get_pixel_pointer(
+            surface,
+            x,
+            y,
+            &pixel))
     {
         return;
     }
 
-    if (x < 0 ||
-        y < 0)
+    *pixel = color;
+}
+
+
+void gui_surface_blend_pixel(
+    gui_surface_t *surface,
+    int32_t x,
+    int32_t y,
+    gui_color_t color)
+{
+    gui_color_t *pixel = NULL;
+
+    if (!gui_surface_get_pixel_pointer(
+            surface,
+            x,
+            y,
+            &pixel))
     {
         return;
     }
-
-    if ((uint32_t)x >=
-            surface->width ||
-        (uint32_t)y >=
-            surface->height)
-    {
-        return;
-    }
-
-    uint8_t *row =
-        (uint8_t *)surface->pixels +
-        (size_t)(uint32_t)y *
-            surface->pitch;
-
-    gui_color_t *pixel =
-        (gui_color_t *)row +
-        (uint32_t)x;
 
     *pixel =
-        color;
+        gui_color_blend(
+            *pixel,
+            color);
 }
 
 
@@ -294,17 +588,16 @@ bool gui_rect_union(
 
     if (gui_rect_is_empty(first))
     {
-        *result =
-            second;
+        *result = second;
 
-        return !gui_rect_is_empty(
-            second);
+        return
+            !gui_rect_is_empty(
+                second);
     }
 
     if (gui_rect_is_empty(second))
     {
-        *result =
-            first;
+        *result = first;
 
         return true;
     }
@@ -426,6 +719,290 @@ void gui_surface_fill_rect(
         {
             destination[x] =
                 color;
+        }
+    }
+}
+
+
+void gui_surface_fill_rect_blend(
+    gui_surface_t *surface,
+    gui_rect_t rect,
+    gui_color_t color)
+{
+    if (surface == NULL ||
+        surface->pixels == NULL)
+    {
+        return;
+    }
+
+    gui_rect_t bounds;
+
+    bounds.x = 0;
+    bounds.y = 0;
+    bounds.width = surface->width;
+    bounds.height = surface->height;
+
+    gui_rect_t clipped;
+
+    if (!gui_rect_intersect(
+            rect,
+            bounds,
+            &clipped))
+    {
+        return;
+    }
+
+    for (uint32_t y = 0u;
+         y < clipped.height;
+         ++y)
+    {
+        for (uint32_t x = 0u;
+             x < clipped.width;
+             ++x)
+        {
+            gui_surface_blend_pixel(
+                surface,
+                clipped.x + (int32_t)x,
+                clipped.y + (int32_t)y,
+                color);
+        }
+    }
+}
+
+
+void gui_surface_fill_vertical_gradient(
+    gui_surface_t *surface,
+    gui_rect_t rect,
+    gui_color_t top_color,
+    gui_color_t bottom_color)
+{
+    if (surface == NULL ||
+        surface->pixels == NULL ||
+        rect.height == 0u)
+    {
+        return;
+    }
+
+    gui_rect_t bounds;
+
+    bounds.x = 0;
+    bounds.y = 0;
+    bounds.width = surface->width;
+    bounds.height = surface->height;
+
+    gui_rect_t clipped;
+
+    if (!gui_rect_intersect(
+            rect,
+            bounds,
+            &clipped))
+    {
+        return;
+    }
+
+    uint32_t denominator =
+        rect.height > 1u
+            ? rect.height - 1u
+            : 1u;
+
+    for (uint32_t y = 0u;
+         y < clipped.height;
+         ++y)
+    {
+        uint32_t absolute_y =
+            (uint32_t)clipped.y +
+            y;
+
+        uint32_t gradient_y =
+            (uint32_t)
+            ((int64_t)absolute_y -
+             (int64_t)rect.y);
+
+        if (gradient_y > denominator)
+            gradient_y = denominator;
+
+        gui_color_t color =
+            gui_color_interpolate(
+                top_color,
+                bottom_color,
+                gradient_y,
+                denominator);
+
+        gui_rect_t row;
+
+        row.x = clipped.x;
+        row.y = (int32_t)absolute_y;
+        row.width = clipped.width;
+        row.height = 1u;
+
+        gui_surface_fill_rect(
+            surface,
+            row,
+            color);
+    }
+}
+
+
+void gui_surface_fill_vertical_gradient_blend(
+    gui_surface_t *surface,
+    gui_rect_t rect,
+    gui_color_t top_color,
+    gui_color_t bottom_color)
+{
+    if (surface == NULL ||
+        surface->pixels == NULL ||
+        rect.height == 0u)
+    {
+        return;
+    }
+
+    gui_rect_t bounds;
+
+    bounds.x = 0;
+    bounds.y = 0;
+    bounds.width = surface->width;
+    bounds.height = surface->height;
+
+    gui_rect_t clipped;
+
+    if (!gui_rect_intersect(
+            rect,
+            bounds,
+            &clipped))
+    {
+        return;
+    }
+
+    uint32_t denominator =
+        rect.height > 1u
+            ? rect.height - 1u
+            : 1u;
+
+    for (uint32_t y = 0u;
+         y < clipped.height;
+         ++y)
+    {
+        uint32_t absolute_y =
+            (uint32_t)clipped.y +
+            y;
+
+        uint32_t gradient_y =
+            (uint32_t)
+            ((int64_t)absolute_y -
+             (int64_t)rect.y);
+
+        if (gradient_y > denominator)
+            gradient_y = denominator;
+
+        gui_color_t color =
+            gui_color_interpolate(
+                top_color,
+                bottom_color,
+                gradient_y,
+                denominator);
+
+        gui_rect_t row;
+
+        row.x = clipped.x;
+        row.y = (int32_t)absolute_y;
+        row.width = clipped.width;
+        row.height = 1u;
+
+        gui_surface_fill_rect_blend(
+            surface,
+            row,
+            color);
+    }
+}
+
+
+void gui_surface_fill_rounded_rect(
+    gui_surface_t *surface,
+    gui_rect_t rect,
+    uint32_t radius,
+    gui_color_t color)
+{
+    if (surface == NULL ||
+        surface->pixels == NULL ||
+        gui_rect_is_empty(rect))
+    {
+        return;
+    }
+
+    radius =
+        gui_rounded_rect_clamp_radius(
+            rect,
+            radius);
+
+    for (uint32_t y = 0u;
+         y < rect.height;
+         ++y)
+    {
+        for (uint32_t x = 0u;
+             x < rect.width;
+             ++x)
+        {
+            if (!gui_rounded_rect_contains_local_point(
+                    x,
+                    y,
+                    rect.width,
+                    rect.height,
+                    radius))
+            {
+                continue;
+            }
+
+            gui_surface_put_pixel(
+                surface,
+                rect.x + (int32_t)x,
+                rect.y + (int32_t)y,
+                color);
+        }
+    }
+}
+
+
+void gui_surface_fill_rounded_rect_blend(
+    gui_surface_t *surface,
+    gui_rect_t rect,
+    uint32_t radius,
+    gui_color_t color)
+{
+    if (surface == NULL ||
+        surface->pixels == NULL ||
+        gui_rect_is_empty(rect))
+    {
+        return;
+    }
+
+    radius =
+        gui_rounded_rect_clamp_radius(
+            rect,
+            radius);
+
+    for (uint32_t y = 0u;
+         y < rect.height;
+         ++y)
+    {
+        for (uint32_t x = 0u;
+             x < rect.width;
+             ++x)
+        {
+            if (!gui_rounded_rect_contains_local_point(
+                    x,
+                    y,
+                    rect.width,
+                    rect.height,
+                    radius))
+            {
+                continue;
+            }
+
+            gui_surface_blend_pixel(
+                surface,
+                rect.x + (int32_t)x,
+                rect.y + (int32_t)y,
+                color);
         }
     }
 }
