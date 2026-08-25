@@ -4,6 +4,7 @@
 #include <kernel/gui/compositor.h>
 #include <kernel/gui/desktop.h>
 #include <kernel/gui/font.h>
+#include <kernel/gui/painter.h>
 #include <kernel/gui/surface.h>
 #include <kernel/gui/theme.h>
 #include <kernel/gui/window.h>
@@ -11,27 +12,29 @@
 
 /*
  * ------------------------------------------------------------
- * Temporary theme validation window
+ * Temporary theme/painter validation window
  * ------------------------------------------------------------
- *
- * The surface includes room around the visible panel for its
- * composited shadow.
  */
 
 #define GUI_TEST_WINDOW_WIDTH \
-    500u
+    520u
 
 #define GUI_TEST_WINDOW_HEIGHT \
-    320u
+    340u
 
+/*
+ * Window surface includes transparent padding around the visual
+ * panel so the shadow remains part of the window's composited
+ * surface.
+ */
 #define GUI_TEST_WINDOW_MARGIN \
-    20u
-
-#define GUI_TEST_SHADOW_OFFSET_Y \
-    8
+    28u
 
 #define GUI_TEST_TEXT_PIXEL_HEIGHT \
     28u
+
+#define GUI_TEST_SUBTEXT_PIXEL_HEIGHT \
+    16u
 
 
 static bool desktop_initialized;
@@ -96,7 +99,8 @@ static bool gui_desktop_create_test_window(void)
         gui_window_surface(
             &desktop_test_window);
 
-    if (surface == NULL)
+    if (surface == NULL ||
+        surface->pixels == NULL)
     {
         gui_window_destroy(
             &desktop_test_window);
@@ -105,10 +109,8 @@ static bool gui_desktop_create_test_window(void)
     }
 
     /*
-     * Transparent window backing.
-     *
-     * This is what allows rounded corners and the shadow to reveal
-     * the desktop through the unused parts of the surface.
+     * Everything outside the visual panel, including its rounded
+     * corners, remains transparent.
      */
     gui_surface_clear(
         surface,
@@ -131,253 +133,74 @@ static bool gui_desktop_create_test_window(void)
         GUI_TEST_WINDOW_MARGIN * 2u;
 
     /*
-     * Very simple first soft-look shadow.
-     *
-     * Proper blurred shadows can come later. For this milestone
-     * the translucent expanded rounded rectangle validates alpha
-     * composition without introducing a blur engine.
+     * Shadow.
      */
-    gui_rect_t shadow_rect =
-        panel_rect;
-
-    shadow_rect.x -= 4;
-    shadow_rect.y +=
-        GUI_TEST_SHADOW_OFFSET_Y;
-
-    shadow_rect.width += 8u;
-    shadow_rect.height += 4u;
-
-    gui_surface_fill_rounded_rect_blend(
+    gui_painter_draw_rounded_shadow(
         surface,
-        shadow_rect,
-        theme->window_corner_radius + 4u,
+        panel_rect,
+        theme->window_corner_radius,
+        theme->window_shadow_offset_x,
+        theme->window_shadow_offset_y,
+        theme->window_shadow_spread,
+        theme->window_shadow_blur,
         theme->window_shadow);
 
     /*
-     * Start the panel transparent and build its gradient only
-     * inside the rounded mask.
+     * Window material.
      *
-     * Since the current gradient primitive is rectangular, build
-     * a temporary gradient by drawing one rounded row at a time.
+     * The alpha in the gradient is retained in the window surface
+     * and later composited against the desktop by window.c.
      */
-    uint32_t gradient_denominator =
-        panel_rect.height > 1u
-            ? panel_rect.height - 1u
-            : 1u;
-
-    for (uint32_t row = 0u;
-         row < panel_rect.height;
-         ++row)
-    {
-        uint32_t inverse =
-            gradient_denominator - row;
-
-        uint32_t top_alpha =
-            gui_color_alpha(
-                theme->window_gradient_top);
-
-        uint32_t bottom_alpha =
-            gui_color_alpha(
-                theme->window_gradient_bottom);
-
-        uint32_t top_red =
-            gui_color_red(
-                theme->window_gradient_top);
-
-        uint32_t bottom_red =
-            gui_color_red(
-                theme->window_gradient_bottom);
-
-        uint32_t top_green =
-            gui_color_green(
-                theme->window_gradient_top);
-
-        uint32_t bottom_green =
-            gui_color_green(
-                theme->window_gradient_bottom);
-
-        uint32_t top_blue =
-            gui_color_blue(
-                theme->window_gradient_top);
-
-        uint32_t bottom_blue =
-            gui_color_blue(
-                theme->window_gradient_bottom);
-
-        uint32_t red =
-            (top_red * inverse +
-             bottom_red * row +
-             gradient_denominator / 2u) /
-            gradient_denominator;
-
-        uint32_t green =
-            (top_green * inverse +
-             bottom_green * row +
-             gradient_denominator / 2u) /
-            gradient_denominator;
-
-        uint32_t blue =
-            (top_blue * inverse +
-             bottom_blue * row +
-             gradient_denominator / 2u) /
-            gradient_denominator;
-
-        uint32_t alpha =
-            (top_alpha * inverse +
-             bottom_alpha * row +
-             gradient_denominator / 2u) /
-            gradient_denominator;
-
-        gui_rect_t row_rect;
-
-        row_rect.x =
-            panel_rect.x;
-
-        row_rect.y =
-            panel_rect.y +
-            (int32_t)row;
-
-        row_rect.width =
-            panel_rect.width;
-
-        row_rect.height =
-            1u;
-
-        /*
-         * Only draw row pixels lying inside the complete rounded
-         * panel. The general rounded primitive supplies that mask.
-         *
-         * Drawing the complete panel repeatedly would be wasteful,
-         * so the panel gradient is first rectangular and the
-         * transparent surface around it remains untouched by
-         * explicitly clearing the corner pixels below.
-         */
-        gui_surface_fill_rect(
-            surface,
-            row_rect,
-            GUI_RGBA(
-                red,
-                green,
-                blue,
-                alpha));
-    }
-
-    /*
-     * Cut the four square corners back to transparency.
-     *
-     * Then repaint the rounded panel using a translucent overlay.
-     *
-     * For this validation milestone this keeps the primitive set
-     * small. A clipped gradient/mask API should come later with
-     * widgets rather than prematurely building a full painter.
-     */
-
-    uint32_t radius =
-        theme->window_corner_radius;
-
-    for (uint32_t local_y = 0u;
-         local_y < panel_rect.height;
-         ++local_y)
-    {
-        for (uint32_t local_x = 0u;
-             local_x < panel_rect.width;
-             ++local_x)
-        {
-            bool middle_x =
-                local_x >= radius &&
-                local_x <
-                    panel_rect.width - radius;
-
-            bool middle_y =
-                local_y >= radius &&
-                local_y <
-                    panel_rect.height - radius;
-
-            if (middle_x || middle_y)
-                continue;
-
-            int64_t center_x =
-                local_x < radius
-                    ? (int64_t)radius - 1
-                    : (int64_t)panel_rect.width -
-                        (int64_t)radius;
-
-            int64_t center_y =
-                local_y < radius
-                    ? (int64_t)radius - 1
-                    : (int64_t)panel_rect.height -
-                        (int64_t)radius;
-
-            int64_t dx =
-                (int64_t)local_x -
-                center_x;
-
-            int64_t dy =
-                (int64_t)local_y -
-                center_y;
-
-            if (dx * dx + dy * dy >
-                (int64_t)radius *
-                (int64_t)radius)
-            {
-                gui_surface_put_pixel(
-                    surface,
-                    panel_rect.x +
-                        (int32_t)local_x,
-                    panel_rect.y +
-                        (int32_t)local_y,
-                    GUI_TRANSPARENT);
-            }
-        }
-    }
-
-    /*
-     * Subtle translucent border.
-     *
-     * The first milestone does not need a dedicated stroked-rounded-
-     * rectangle primitive yet, so two nested rounded rectangles give
-     * us a simple border while retaining the translucent interior.
-     */
-    gui_surface_fill_rounded_rect_blend(
+    gui_painter_fill_rounded_vertical_gradient(
         surface,
         panel_rect,
-        radius,
-        theme->window_border);
-
-    gui_rect_t inner_rect;
-
-    inner_rect.x =
-        panel_rect.x + 1;
-
-    inner_rect.y =
-        panel_rect.y + 1;
-
-    inner_rect.width =
-        panel_rect.width - 2u;
-
-    inner_rect.height =
-        panel_rect.height - 2u;
-
-    gui_surface_fill_rounded_rect_blend(
-        surface,
-        inner_rect,
-        radius > 1u
-            ? radius - 1u
-            : 0u,
-        GUI_RGBA(255u, 255u, 255u, 12u));
+        theme->window_corner_radius,
+        theme->window_gradient_top,
+        theme->window_gradient_bottom);
 
     /*
-     * Keep the existing font validation, now rendered into an
-     * alpha-capable themed surface.
+     * Real border stroke.
+     *
+     * Unlike the previous validation implementation this does not
+     * tint the entire interior of the panel.
+     */
+    gui_painter_stroke_rounded_rect(
+        surface,
+        panel_rect,
+        theme->window_corner_radius,
+        theme->window_border_thickness,
+        theme->window_border);
+
+    /*
+     * Existing TrueType renderer remains the text owner.
      */
     if (!gui_font_draw_text(
             surface,
             font,
-            panel_rect.x + 32,
-            panel_rect.y + 30,
+            panel_rect.x + 34,
+            panel_rect.y + 34,
             GUI_TEST_TEXT_PIXEL_HEIGHT,
             "Meaty OS",
             theme->text_primary))
+    {
+        gui_window_destroy(
+            &desktop_test_window);
+
+        return false;
+    }
+
+    /*
+     * A second font size also gives us a useful visual check that
+     * the font cache remains correct across multiple pixel sizes.
+     */
+    if (!gui_font_draw_text(
+            surface,
+            font,
+            panel_rect.x + 35,
+            panel_rect.y + 82,
+            GUI_TEST_SUBTEXT_PIXEL_HEIGHT,
+            "Modern GUI rendering foundation",
+            theme->text_secondary))
     {
         gui_window_destroy(
             &desktop_test_window);
@@ -458,10 +281,7 @@ void gui_desktop_render(void)
         surface->height;
 
     /*
-     * The desktop is deliberately opaque.
-     *
-     * Therefore the compositor's final backbuffer always has a
-     * deterministic opaque base behind translucent windows.
+     * Always keep the base scene opaque.
      */
     gui_surface_fill_vertical_gradient(
         surface,

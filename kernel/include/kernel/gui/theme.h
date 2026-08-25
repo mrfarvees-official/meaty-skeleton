@@ -15,7 +15,6 @@ typedef struct gui_theme
     gui_color_t window_gradient_bottom;
 
     gui_color_t window_border;
-
     gui_color_t window_shadow;
 
     gui_color_t text_primary;
@@ -24,14 +23,21 @@ typedef struct gui_theme
     gui_color_t accent;
 
     uint32_t window_corner_radius;
+    uint32_t window_border_thickness;
+
+    int32_t window_shadow_offset_x;
+    int32_t window_shadow_offset_y;
+
+    uint32_t window_shadow_spread;
+    uint32_t window_shadow_blur;
 } gui_theme_t;
 
 
 /*
  * Built-in system theme.
  *
- * This is deliberately generic. Widgets can consume the same
- * theme object later without knowing anything about the desktop.
+ * Future widgets consume semantic theme values rather than
+ * hard-coded colors and geometry.
  */
 const gui_theme_t *gui_theme_default(void);
 

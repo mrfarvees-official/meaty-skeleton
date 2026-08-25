@@ -4,7 +4,7 @@
 static const gui_theme_t default_theme =
 {
     /*
-     * Deep blue desktop gradient.
+     * Desktop.
      */
     .desktop_gradient_top =
         GUI_RGB(24u, 49u, 83u),
@@ -13,10 +13,7 @@ static const gui_theme_t default_theme =
         GUI_RGB(10u, 23u, 42u),
 
     /*
-     * Slightly translucent neutral window surface.
-     *
-     * The compositor will blend this against whatever is behind
-     * the window.
+     * Window material.
      */
     .window_gradient_top =
         GUI_RGBA(250u, 252u, 255u, 242u),
@@ -25,22 +22,50 @@ static const gui_theme_t default_theme =
         GUI_RGBA(226u, 232u, 241u, 235u),
 
     .window_border =
-        GUI_RGBA(255u, 255u, 255u, 110u),
+        GUI_RGBA(255u, 255u, 255u, 118u),
 
+    /*
+     * Keep the shadow relatively restrained.
+     * Multiple painter falloff rings provide softness.
+     */
     .window_shadow =
-        GUI_RGBA(0u, 0u, 0u, 72u),
+        GUI_RGBA(0u, 0u, 0u, 68u),
 
+    /*
+     * Typography.
+     */
     .text_primary =
         GUI_RGB(24u, 31u, 42u),
 
     .text_secondary =
         GUI_RGB(80u, 91u, 108u),
 
+    /*
+     * System accent.
+     */
     .accent =
         GUI_RGB(65u, 139u, 255u),
 
+    /*
+     * Window geometry.
+     */
     .window_corner_radius =
-        18u
+        18u,
+
+    .window_border_thickness =
+        1u,
+
+    .window_shadow_offset_x =
+        0,
+
+    .window_shadow_offset_y =
+        8,
+
+    .window_shadow_spread =
+        1u,
+
+    .window_shadow_blur =
+        12u
 };
 
 
