@@ -4,3 +4,4 @@ sysroot
 *.img
 *.txt
 .vscode/
+assets/local/

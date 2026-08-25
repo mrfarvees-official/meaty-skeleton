@@ -103,13 +103,13 @@ install: $(PROGRAMS)
 
 clean:
 	rm -f \
-		$(PROGRAMS) \
-		hello.o \
-		spawn_child.o \
-		sh.o \
-		echo.o \
-		clear.o \
-		cat.o \
-		touch.o \
-		runtime.o \
+		$(PROGRAMS) 	\
+		hello.o 		\
+		spawn_child.o 	\
+		sh.o 			\
+		echo.o 			\
+		clear.o 		\
+		cat.o 			\
+		touch.o 		\
+		runtime.o 		\
 		crt0.o

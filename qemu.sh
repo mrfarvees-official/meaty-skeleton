@@ -5,26 +5,54 @@ set -e
 
 DISK=disk.img
 
-#
-# Benchmark disk setup.
-#
-# true:
-#   recreate disk.img
-#   create ext2 filesystem
-#   create benchmark file
-#   install all userspace .nex executables into /bin
-#
-# false:
-#   leave disk.img untouched and just boot QEMU
-#
-RECREATE_BENCH_DISK=false
+RECREATE_BENCH_DISK=${RECREATE_BENCH_DISK:-false}
 
 #
-# Disk and benchmark sizes.
+# Optional one-time, non-destructive installation of the local
+# system font into an already-existing persistent ext2 disk.
 #
+INSTALL_FONT_ASSET=${INSTALL_FONT_ASSET:-true}
+
+#
+# Local source only.
+#
+# This file is NOT required to be committed to the repository.
+#
+CONSOLAS_TTF=${MEATY_CONSOLAS_TTF:-assets/local/Consolas.ttf}
+
 DISK_SIZE=64M
 BENCH_FILE_SIZE=1M
 BENCH_FILE=double.txt
+
+
+copy_font_to_mounted_root()
+{
+    ROOT="$1"
+
+    if [ ! -f "$CONSOLAS_TTF" ]; then
+        echo "Error: Consolas TTF not found:"
+        echo "  $CONSOLAS_TTF"
+        echo
+        echo "Set MEATY_CONSOLAS_TTF=/path/to/Consolas.ttf"
+        exit 1
+    fi
+
+    echo "Installing system font as /fonts/Consolas.ttf..."
+
+    sudo mkdir -p \
+        "$ROOT/fonts"
+
+    sudo cp \
+        "$CONSOLAS_TTF" \
+        "$ROOT/fonts/Consolas.ttf"
+
+    sync
+
+    echo "Installed font:"
+    sudo ls -lh \
+        "$ROOT/fonts/Consolas.ttf"
+}
+
 
 create_benchmark_disk()
 {
@@ -122,6 +150,13 @@ create_benchmark_disk()
             /mnt/meaty-bench/bin/
     done
 
+    #
+    # A freshly created filesystem must receive the default font
+    # because GUI bootstrap requires /fonts/Consolas.ttf.
+    #
+    copy_font_to_mounted_root \
+        /mnt/meaty-bench
+
     sync
 
     echo "Installed userspace executables:"
@@ -151,6 +186,76 @@ create_benchmark_disk()
     echo "Benchmark disk ready."
 }
 
+
+install_font_into_existing_disk()
+{
+    if [ ! -f "$DISK" ]; then
+        echo "Error: $DISK does not exist."
+        exit 1
+    fi
+
+    if [ ! -f "$CONSOLAS_TTF" ]; then
+        echo "Error: Consolas TTF not found:"
+        echo "  $CONSOLAS_TTF"
+        echo
+        echo "Set MEATY_CONSOLAS_TTF=/path/to/Consolas.ttf"
+        exit 1
+    fi
+
+    LOOP=""
+
+    cleanup_font_install()
+    {
+        if [ -n "$LOOP" ]; then
+            sudo umount "${LOOP}p1" 2>/dev/null || true
+            sudo losetup -d "$LOOP" 2>/dev/null || true
+        fi
+
+        sudo rmdir /mnt/meaty-font-install 2>/dev/null || true
+    }
+
+    trap cleanup_font_install EXIT INT TERM
+
+    echo "Attaching existing persistent disk..."
+
+    LOOP=$(sudo losetup \
+        --find \
+        --show \
+        --partscan \
+        "$DISK")
+
+    sudo mkdir -p \
+        /mnt/meaty-font-install
+
+    echo "Mounting existing ext2 filesystem..."
+
+    sudo mount \
+        "${LOOP}p1" \
+        /mnt/meaty-font-install
+
+    copy_font_to_mounted_root \
+        /mnt/meaty-font-install
+
+    echo "Unmounting existing filesystem..."
+
+    sudo umount \
+        /mnt/meaty-font-install
+
+    sudo losetup -d \
+        "$LOOP"
+
+    LOOP=""
+
+    sudo rmdir \
+        /mnt/meaty-font-install \
+        2>/dev/null || true
+
+    trap - EXIT INT TERM
+
+    echo "Font installation complete."
+}
+
+
 case "$RECREATE_BENCH_DISK" in
     true)
         create_benchmark_disk
@@ -169,6 +274,24 @@ case "$RECREATE_BENCH_DISK" in
         exit 1
         ;;
 esac
+
+
+case "$INSTALL_FONT_ASSET" in
+    true)
+        if [ "$RECREATE_BENCH_DISK" = false ]; then
+            install_font_into_existing_disk
+        fi
+        ;;
+
+    false)
+        ;;
+
+    *)
+        echo "Error: INSTALL_FONT_ASSET must be true or false."
+        exit 1
+        ;;
+esac
+
 
 echo "Starting QEMU..."
 

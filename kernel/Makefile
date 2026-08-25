@@ -15,7 +15,7 @@ BOOTDIR?=$(EXEC_PREFIX)/boot
 INCLUDEDIR?=$(PREFIX)/include
 
 CFLAGS:=$(CFLAGS) -ffreestanding -fstack-protector-strong -Wall -Wextra
-CPPFLAGS:=$(CPPFLAGS) -D__is_kernel -Iinclude
+CPPFLAGS:=$(CPPFLAGS) -D__is_kernel -Iinclude -Ithird_party
 CXXFLAGS:=$(CXXFLAGS) -ffreestanding -Wall -Wextra -fno-exceptions -fno-rtti
 LDFLAGS:=$(LDFLAGS)
 LIBS:=$(LIBS) -nostdlib -lk -lgcc
@@ -58,6 +58,7 @@ kernel/device/keyboard.o 		\
 kernel/device/pci.o 			\
 kernel/device/ahci.o 			\
 kernel/gui/surface.o 			\
+kernel/gui/font.o 				\
 kernel/gui/compositor.o 		\
 kernel/gui/window.o 			\
 kernel/gui/desktop.o 			\
@@ -81,7 +82,7 @@ OBJS=\
 	$(ARCHDIR)/crtbegin.o 		\
 	$(KERNEL_OBJS) 				\
 	$(ARCHDIR)/crtend.o 		\
-	$(ARCHDIR)/crtn.o 
+	$(ARCHDIR)/crtn.o
 
 LINK_LIST=\
 	$(LDFLAGS) 					\
@@ -90,7 +91,7 @@ LINK_LIST=\
 	$(KERNEL_OBJS) 				\
 	$(LIBS) 					\
 	$(ARCHDIR)/crtend.o 		\
-	$(ARCHDIR)/crtn.o 
+	$(ARCHDIR)/crtn.o
 
 .PHONY: all clean install install-headers install-kernel
 .SUFFIXES: .o .c .cpp .S
@@ -107,6 +108,11 @@ $(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
 kernel/kernel.o: CFLAGS += -O0 -fstack-protector-all
 kernel/panic.o: CFLAGS += -fno-stack-protector
 kernel/ssp.o: CFLAGS += -fno-stack-protector
+
+# stb_truetype is deliberately private/static inside font.c.
+# The header contains API routines which this milestone does not
+# call, so suppress only the resulting unused-static warnings.
+kernel/gui/font.o: CFLAGS += -Wno-unused-function
 
 .c.o:
 	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
