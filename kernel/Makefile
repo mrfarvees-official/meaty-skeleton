@@ -64,6 +64,7 @@ kernel/gui/theme.o 				\
 kernel/gui/painter.o 			\
 kernel/gui/compositor.o 		\
 kernel/gui/window.o 			\
+kernel/gui/input.o 				\
 kernel/gui/taskbar.o 			\
 kernel/gui/topbar.o 			\
 kernel/gui/desktop.o 			\

@@ -11,6 +11,7 @@
 #include <kernel/gui/topbar.h>
 #include <kernel/gui/window.h>
 #include <kernel/system_time.h>
+#include <kernel/sleep_queue.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
 
@@ -478,34 +479,25 @@ static void gui_topbar_clock_thread(
 {
     (void)argument;
 
-    uint64_t previous_second =
-        UINT64_MAX;
-
     for (;;)
     {
-        uint64_t current_second =
-            timer_uptime_ms() /
-            1000u;
-
-        if (current_second !=
-            previous_second)
+        /*
+         * Dynamic GUI work deliberately occurs from normal task
+         * context, never from IRQ0.
+         */
+        if (topbar_initialized &&
+            gui_topbar_refresh())
         {
-            previous_second =
-                current_second;
-
-            if (topbar_initialized &&
-                gui_topbar_refresh())
-            {
-                /*
-                 * Reconstruct from normal task context.
-                 *
-                 * Never repaint the GUI from IRQ0.
-                 */
-                gui_desktop_render();
-            }
+            gui_desktop_render();
         }
 
-        task_yield();
+        /*
+         * The topbar only needs second-level clock updates.
+         *
+         * Sleep instead of remaining continuously runnable and
+         * polling timer_uptime_ms() on every scheduler pass.
+         */
+        task_sleep(1000u);
     }
 }
 

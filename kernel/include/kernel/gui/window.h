@@ -6,16 +6,7 @@
 
 #include <kernel/gui/surface.h>
 
-/*
- * ------------------------------------------------------------
- * GUI z-order classes
- * ------------------------------------------------------------
- *
- * These define broad stacking groups.
- *
- * Ordering within a class comes later when the window manager
- * owns multiple windows.
- */
+
 typedef enum gui_z_class
 {
     GUI_Z_DESKTOP = 0,
@@ -25,22 +16,10 @@ typedef enum gui_z_class
     GUI_Z_POPUP,
     GUI_Z_OVERLAY,
     GUI_Z_CURSOR
+
 } gui_z_class_t;
 
-/*
- * ------------------------------------------------------------
- * GUI window
- * ------------------------------------------------------------
- *
- * For the first G1 milestone a window owns:
- *
- *     - screen position
- *     - an off-screen surface
- *     - visibility
- *     - z-order class
- *
- * There is deliberately no input/focus/widget state yet.
- */
+
 typedef struct gui_window
 {
     int32_t x;
@@ -51,7 +30,9 @@ typedef struct gui_window
     bool visible;
 
     gui_surface_t surface;
+
 } gui_window_t;
+
 
 bool gui_window_create(
     gui_window_t *window,
@@ -74,15 +55,52 @@ void gui_window_set_visible(
     gui_window_t *window,
     bool visible);
 
-/*
- * Composite this window into the compositor backbuffer.
- *
- * The window is clipped against the physical screen bounds.
- *
- * This function marks the affected compositor region dirty but does
- * not call gui_compositor_present().
- */
 void gui_window_composite(
     const gui_window_t *window);
+
+
+/*
+ * ------------------------------------------------------------
+ * First normal-window registry / focus model
+ * ------------------------------------------------------------
+ *
+ * Only GUI_Z_NORMAL windows participate for now.
+ *
+ * Other z classes remain explicitly composited by the desktop shell.
+ */
+
+gui_window_t *gui_window_active(void);
+
+
+/*
+ * Focus a visible normal window.
+ *
+ * Focusing also moves it to the front of the normal-window stack.
+ */
+bool gui_window_focus(
+    gui_window_t *window);
+
+
+/*
+ * Focus the uppermost normal window containing the screen point.
+ */
+bool gui_window_focus_at_point(
+    int32_t x,
+    int32_t y);
+
+
+/*
+ * Keyboard traversal.
+ */
+bool gui_window_focus_next(void);
+
+bool gui_window_focus_previous(void);
+
+
+/*
+ * Composite all visible normal windows from back to front.
+ */
+void gui_window_composite_normal_windows(void);
+
 
 #endif

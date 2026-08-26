@@ -7,7 +7,7 @@
 #include <kernel/mouse.h>
 #include <kernel/paging.h>
 #include <kernel/spinlock.h>
-
+#include <kernel/gui/input.h>
 
 /*
  * ------------------------------------------------------------
@@ -34,10 +34,8 @@
  * The low-level PS/2 driver remains physical-event-only.
  */
 
-
-#define MOUSE_CURSOR_WIDTH  12u
+#define MOUSE_CURSOR_WIDTH 12u
 #define MOUSE_CURSOR_HEIGHT 18u
-
 
 /*
  * Cursor pixels:
@@ -50,35 +48,31 @@
  */
 static const char
     mouse_cursor_shape[MOUSE_CURSOR_HEIGHT][MOUSE_CURSOR_WIDTH + 1u] =
-{
-    "B...........",
-    "BB..........",
-    "BWB.........",
-    "BWWB........",
-    "BWWWB.......",
-    "BWWWWB......",
-    "BWWWWWB.....",
-    "BWWWWWWB....",
-    "BWWWWWWWB...",
-    "BWWWWBBBB...",
-    "BWWBWB......",
-    "BWB.BWB.....",
-    "BB..BWB.....",
-    "B....BWB....",
-    ".....BWB....",
-    ".....BWB....",
-    ".....BB.....",
-    "............"
-};
-
+        {
+            "B...........",
+            "BB..........",
+            "BWB.........",
+            "BWWB........",
+            "BWWWB.......",
+            "BWWWWB......",
+            "BWWWWWB.....",
+            "BWWWWWWB....",
+            "BWWWWWWWB...",
+            "BWWWWBBBB...",
+            "BWWBWB......",
+            "BWB.BWB.....",
+            "BB..BWB.....",
+            "B....BWB....",
+            ".....BWB....",
+            ".....BWB....",
+            ".....BB.....",
+            "............"};
 
 static spinlock_t mouse_cursor_lock =
     SPINLOCK_INITIALIZER;
 
-
 static bool mouse_cursor_initialized;
 static bool mouse_cursor_visible;
-
 
 /*
  * Number of framebuffer updates currently in progress.
@@ -89,13 +83,11 @@ static bool mouse_cursor_visible;
  */
 static size_t mouse_cursor_framebuffer_updates;
 
-
 /*
  * Absolute cursor hotspot position.
  */
 static uint32_t mouse_cursor_x;
 static uint32_t mouse_cursor_y;
-
 
 /*
  * Saved framebuffer pixels underneath the currently visible cursor.
@@ -105,11 +97,8 @@ static uint32_t mouse_cursor_y;
  * round-tripping.
  */
 static uint32_t
-    mouse_cursor_backing[
-        MOUSE_CURSOR_HEIGHT]
-                        [
-        MOUSE_CURSOR_WIDTH];
-
+    mouse_cursor_backing[MOUSE_CURSOR_HEIGHT]
+                        [MOUSE_CURSOR_WIDTH];
 
 static uint32_t mouse_cursor_backing_width;
 static uint32_t mouse_cursor_backing_height;
@@ -121,7 +110,6 @@ static uint32_t mouse_cursor_backing_pitch;
 
 static volatile uint8_t *
     mouse_cursor_backing_base;
-
 
 /*
  * ------------------------------------------------------------
@@ -136,7 +124,6 @@ static volatile uint8_t *
  * Cursor drawing itself still goes through framebuffer_put_pixel().
  */
 
-
 static volatile uint8_t *
 mouse_cursor_framebuffer_base(void)
 {
@@ -147,13 +134,9 @@ mouse_cursor_framebuffer_base(void)
         physical_address &
         (PAGE_SIZE - 1u);
 
-    return
-        (volatile uint8_t *)
-        (uintptr_t)
-        (FRAMEBUFFER_VIRTUAL_BASE +
-         physical_offset);
+    return (volatile uint8_t *)(uintptr_t)(FRAMEBUFFER_VIRTUAL_BASE +
+                                           physical_offset);
 }
-
 
 static volatile uint32_t *
 mouse_cursor_raw_pixel(
@@ -162,20 +145,16 @@ mouse_cursor_raw_pixel(
     uint32_t x,
     uint32_t y)
 {
-    return
-        (volatile uint32_t *)
-        (base +
-         (uintptr_t)y * pitch +
-         (uintptr_t)x * 4u);
+    return (volatile uint32_t *)(base +
+                                 (uintptr_t)y * pitch +
+                                 (uintptr_t)x * 4u);
 }
-
 
 /*
  * ------------------------------------------------------------
  * Cursor backing store
  * ------------------------------------------------------------
  */
-
 
 static void mouse_cursor_restore_locked(void)
 {
@@ -213,7 +192,6 @@ static void mouse_cursor_restore_locked(void)
     mouse_cursor_visible =
         false;
 }
-
 
 static void mouse_cursor_capture_locked(void)
 {
@@ -305,13 +283,11 @@ static void mouse_cursor_capture_locked(void)
     }
 }
 
-
 /*
  * ------------------------------------------------------------
  * Rendering
  * ------------------------------------------------------------
  */
-
 
 static void mouse_cursor_draw_locked(void)
 {
@@ -362,13 +338,11 @@ static void mouse_cursor_draw_locked(void)
         true;
 }
 
-
 /*
  * ------------------------------------------------------------
  * Position
  * ------------------------------------------------------------
  */
-
 
 static void mouse_cursor_apply_movement_locked(
     int64_t dx,
@@ -435,13 +409,11 @@ static void mouse_cursor_apply_movement_locked(
     }
 }
 
-
 /*
  * ------------------------------------------------------------
  * Public initialization
  * ------------------------------------------------------------
  */
-
 
 bool mouse_cursor_initialize(void)
 {
@@ -518,6 +490,11 @@ bool mouse_cursor_initialize(void)
     return true;
 }
 
+/*
+ * ------------------------------------------------------------
+ * Mouse event consumer
+ * ------------------------------------------------------------
+ */
 
 /*
  * ------------------------------------------------------------
@@ -525,44 +502,19 @@ bool mouse_cursor_initialize(void)
  * ------------------------------------------------------------
  */
 
-
-void mouse_cursor_poll(void)
+static void mouse_cursor_flush_movement(
+    int64_t *dx,
+    int64_t *dy,
+    uint8_t buttons)
 {
-    if (!mouse_cursor_initialized)
-        return;
-
-    /*
-     * Drain the physical event queue every time this context runs.
-     *
-     * Multiple MOVE events are accumulated so a burst causes one
-     * framebuffer restore/redraw instead of one redraw per packet.
-     *
-     * Button events are intentionally consumed and ignored at this
-     * milestone.
-     */
-    int64_t total_dx = 0;
-    int64_t total_dy = 0;
-
-    mouse_event_t event;
-
-    while (mouse_read_event(
-        &event))
+    if (dx == NULL ||
+        dy == NULL)
     {
-        if (event.type !=
-            MOUSE_EVENT_MOVE)
-        {
-            continue;
-        }
-
-        total_dx +=
-            event.dx;
-
-        total_dy +=
-            event.dy;
+        return;
     }
 
-    if (total_dx == 0 &&
-        total_dy == 0)
+    if (*dx == 0 &&
+        *dy == 0)
     {
         return;
     }
@@ -572,14 +524,117 @@ void mouse_cursor_poll(void)
             &mouse_cursor_lock);
 
     mouse_cursor_apply_movement_locked(
-        total_dx,
-        total_dy);
+        *dx,
+        *dy);
+
+    int32_t x =
+        (int32_t)mouse_cursor_x;
+
+    int32_t y =
+        (int32_t)mouse_cursor_y;
 
     spin_unlock_irqrestore(
         &mouse_cursor_lock,
         flags);
+
+    *dx = 0;
+    *dy = 0;
+
+    gui_input_publish_mouse(
+        GUI_INPUT_EVENT_MOUSE_MOVE,
+        x,
+        y,
+        MOUSE_BUTTON_LEFT,
+        buttons);
 }
 
+void mouse_cursor_poll(void)
+{
+    if (!mouse_cursor_initialized)
+        return;
+
+    int64_t total_dx = 0;
+    int64_t total_dy = 0;
+
+    uint8_t current_buttons =
+        mouse_get_buttons();
+
+    mouse_event_t event;
+
+    while (mouse_read_event(
+        &event))
+    {
+        if (event.type ==
+            MOUSE_EVENT_MOVE)
+        {
+            total_dx +=
+                event.dx;
+
+            total_dy +=
+                event.dy;
+
+            current_buttons =
+                event.buttons;
+
+            continue;
+        }
+
+        /*
+         * A button transition must occur at the cursor position that
+         * existed at that exact point in the physical event stream.
+         *
+         * Therefore flush all movement preceding the button event
+         * before publishing the click.
+         */
+        mouse_cursor_flush_movement(
+            &total_dx,
+            &total_dy,
+            current_buttons);
+
+        uint32_t flags =
+            spin_lock_irqsave(
+                &mouse_cursor_lock);
+
+        int32_t x =
+            (int32_t)mouse_cursor_x;
+
+        int32_t y =
+            (int32_t)mouse_cursor_y;
+
+        spin_unlock_irqrestore(
+            &mouse_cursor_lock,
+            flags);
+
+        current_buttons =
+            event.buttons;
+
+        if (event.type ==
+            MOUSE_EVENT_BUTTON_DOWN)
+        {
+            gui_input_publish_mouse(
+                GUI_INPUT_EVENT_MOUSE_BUTTON_DOWN,
+                x,
+                y,
+                event.button,
+                event.buttons);
+        }
+        else if (event.type ==
+                 MOUSE_EVENT_BUTTON_UP)
+        {
+            gui_input_publish_mouse(
+                GUI_INPUT_EVENT_MOUSE_BUTTON_UP,
+                x,
+                y,
+                event.button,
+                event.buttons);
+        }
+    }
+
+    mouse_cursor_flush_movement(
+        &total_dx,
+        &total_dy,
+        current_buttons);
+}
 
 /*
  * ------------------------------------------------------------
@@ -613,7 +668,6 @@ void mouse_cursor_poll(void)
  *         redraw cursor
  */
 
-
 void mouse_cursor_begin_framebuffer_update(void)
 {
     uint32_t flags =
@@ -631,7 +685,6 @@ void mouse_cursor_begin_framebuffer_update(void)
         &mouse_cursor_lock,
         flags);
 }
-
 
 void mouse_cursor_end_framebuffer_update(void)
 {

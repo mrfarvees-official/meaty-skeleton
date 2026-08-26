@@ -4,38 +4,20 @@
 #include <stdbool.h>
 
 
-/*
- * Initialize the first software framebuffer mouse cursor.
- *
- * Requires:
- *
- *     - framebuffer initialized
- *     - 32-bpp framebuffer mode active
- *     - PS/2 mouse initialized
- */
 bool mouse_cursor_initialize(void);
 
 
 /*
  * Consume queued physical mouse events.
  *
- * MOVE events update the absolute cursor position.
- * Button events are currently consumed and ignored.
+ * MOVE events update the absolute cursor.
+ *
+ * Button events are forwarded to the GUI input dispatcher with the
+ * exact absolute cursor position at which the transition occurred.
  */
 void mouse_cursor_poll(void);
 
 
-/*
- * Coordinate framebuffer writers with the software cursor.
- *
- * begin:
- *     hides/restores the cursor before framebuffer contents change
- *
- * end:
- *     captures the new framebuffer contents and redraws the cursor
- *
- * Calls may be nested.
- */
 void mouse_cursor_begin_framebuffer_update(void);
 
 void mouse_cursor_end_framebuffer_update(void);

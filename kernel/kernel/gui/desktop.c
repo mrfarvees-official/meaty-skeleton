@@ -13,6 +13,7 @@
 #include <kernel/gui/theme.h>
 #include <kernel/gui/window.h>
 #include <kernel/gui/topbar.h>
+#include <kernel/gui/input.h>
 
 
 /*
@@ -603,9 +604,6 @@ bool gui_desktop_initialize(void)
     if (!gui_font_system_initialize())
         return false;
 
-    /*
-     * Default wallpaper remains optional.
-     */
     if (desktop_wallpaper == NULL)
     {
         (void)gui_desktop_set_wallpaper(
@@ -618,13 +616,20 @@ bool gui_desktop_initialize(void)
     if (!gui_desktop_create_test_window())
         return false;
 
-    /*
-     * Desktop shell chrome.
-     */
     if (!gui_topbar_initialize())
         return false;
 
     if (!gui_taskbar_initialize())
+        return false;
+
+    /*
+     * Input is initialized only after all initial desktop windows and
+     * shell surfaces exist.
+     *
+     * Scheduling is still disabled during bootstrap, so the dispatcher
+     * task cannot race this initialization.
+     */
+    if (!gui_input_initialize())
         return false;
 
     desktop_initialized =
@@ -641,6 +646,7 @@ bool gui_desktop_initialize(void)
  * Scene reconstruction
  * ------------------------------------------------------------
  */
+
 
 void gui_desktop_render(void)
 {
@@ -702,17 +708,16 @@ void gui_desktop_render(void)
      * --------------------------------------------------------
      * GUI_Z_NORMAL
      * --------------------------------------------------------
+     *
+     * Normal windows are now compositor-ordered by the first window
+     * focus registry rather than hard-coded individually here.
      */
-    gui_window_composite(
-        &desktop_test_window);
+    gui_window_composite_normal_windows();
 
     /*
      * --------------------------------------------------------
      * Desktop shell chrome
      * --------------------------------------------------------
-     *
-     * Ordering remains explicit until the window manager owns
-     * z-sorted windows.
      */
     gui_topbar_composite();
 
@@ -722,5 +727,4 @@ void gui_desktop_render(void)
 
     gui_compositor_present();
 }
-
 

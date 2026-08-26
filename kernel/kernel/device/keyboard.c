@@ -4,6 +4,7 @@
 
 #include <kernel/keyboard.h>
 #include <kernel/semaphore.h>
+#include <kernel/gui/input.h>
 
 #include "../arch/i386/interrupts.h"
 #include "../arch/i386/io.h"
@@ -934,9 +935,6 @@ static char keyboard_translate_character(
 static void keyboard_decode_scancode(
     uint8_t scancode)
 {
-    /*
-     * Ignore remainder of E1 Pause sequence.
-     */
     if (decoder_e1_bytes_remaining != 0)
     {
         --decoder_e1_bytes_remaining;
@@ -951,9 +949,6 @@ static void keyboard_decode_scancode(
         return;
     }
 
-    /*
-     * E0 prefix.
-     */
     if (scancode == 0xE0u)
     {
         decoder_e0_pending = true;
@@ -1033,26 +1028,23 @@ static void keyboard_decode_scancode(
     }
 
     /*
-     * Publish every supported key event.
+     * The GUI sees the physical key transition first.
+     *
+     * Global desktop shortcuts are consumed here so they cannot also
+     * leak into userspace terminal input.
+     *
+     * Ordinary keys continue through the existing queues unchanged.
      */
+    bool consumed =
+        gui_input_filter_keyboard_event(
+            &event);
+
+    if (consumed)
+        return;
+
     keyboard_event_push(
         &event);
 
-    /*
-     * Publish the terminal input stream.
-     *
-     * Printable/control characters are emitted directly.
-     *
-     * Navigation keys use conventional terminal escape sequences:
-     *
-     *     Up      ESC [ A
-     *     Down    ESC [ B
-     *     Right   ESC [ C
-     *     Left    ESC [ D
-     *     Home    ESC [ H
-     *     End     ESC [ F
-     *     Delete  ESC [ 3 ~
-     */
     if (event.character != '\0')
     {
         keyboard_character_push(
