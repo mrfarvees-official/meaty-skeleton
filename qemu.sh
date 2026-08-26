@@ -18,6 +18,9 @@ INSTALL_FONT_ASSET=${INSTALL_FONT_ASSET:-true}
 #
 INSTALL_GUI_ASSETS=${INSTALL_GUI_ASSETS:-true}
 
+SHELL_ASSET_ROOT=${MEATY_SHELL_ASSET_ROOT:-assets/shell}
+INSTALL_SHELL_ASSETS=${INSTALL_SHELL_ASSETS:-true}
+
 
 #
 # ------------------------------------------------------------
@@ -215,6 +218,119 @@ copy_gui_assets_to_mounted_root()
         "$ROOT/icons/system/"
 }
 
+copy_shell_assets_to_mounted_root()
+{
+    ROOT="$1"
+
+    if [ ! -d "$SHELL_ASSET_ROOT/apps" ]; then
+        echo "Error: shell app descriptor directory not found:"
+        echo "  $SHELL_ASSET_ROOT/apps"
+        exit 1
+    fi
+
+    if [ ! -d "$SHELL_ASSET_ROOT/taskbar" ]; then
+        echo "Error: shell taskbar directory not found:"
+        echo "  $SHELL_ASSET_ROOT/taskbar"
+        exit 1
+    fi
+
+    echo "Installing shell metadata..."
+
+    sudo mkdir -p \
+        "$ROOT/apps" \
+        "$ROOT/taskbar"
+
+    for APP in "$SHELL_ASSET_ROOT"/apps/*.app
+    do
+        if [ -f "$APP" ]; then
+            echo "Installing application descriptor: $(basename "$APP")"
+
+            sudo cp \
+                "$APP" \
+                "$ROOT/apps/"
+        fi
+    done
+
+    for LINK in "$SHELL_ASSET_ROOT"/taskbar/*.link
+    do
+        if [ -f "$LINK" ]; then
+            echo "Installing taskbar link: $(basename "$LINK")"
+
+            sudo cp \
+                "$LINK" \
+                "$ROOT/taskbar/"
+        fi
+    done
+
+    sync
+
+    echo "Installed application descriptors:"
+    sudo ls -lh "$ROOT/apps/"
+
+    echo "Installed taskbar links:"
+    sudo ls -lh "$ROOT/taskbar/"
+}
+
+install_shell_assets_into_existing_disk()
+{
+    if [ ! -f "$DISK" ]; then
+        echo "Error: $DISK does not exist."
+        exit 1
+    fi
+
+    LOOP=""
+
+    cleanup_shell_asset_install()
+    {
+        if [ -n "$LOOP" ]; then
+            sudo umount "${LOOP}p1" 2>/dev/null || true
+            sudo losetup -d "$LOOP" 2>/dev/null || true
+        fi
+
+        sudo rmdir /mnt/meaty-shell-assets 2>/dev/null || true
+    }
+
+    trap cleanup_shell_asset_install EXIT INT TERM
+
+    echo "Attaching existing persistent disk..."
+
+    LOOP=$(sudo losetup \
+        --find \
+        --show \
+        --partscan \
+        "$DISK")
+
+    sudo mkdir -p \
+        /mnt/meaty-shell-assets
+
+    echo "Mounting existing ext2 filesystem..."
+
+    sudo mount \
+        "${LOOP}p1" \
+        /mnt/meaty-shell-assets
+
+    copy_shell_assets_to_mounted_root \
+        /mnt/meaty-shell-assets
+
+    echo "Unmounting existing filesystem..."
+
+    sudo umount \
+        /mnt/meaty-shell-assets
+
+    sudo losetup -d \
+        "$LOOP"
+
+    LOOP=""
+
+    sudo rmdir \
+        /mnt/meaty-shell-assets \
+        2>/dev/null || true
+
+    trap - EXIT INT TERM
+
+    echo "Shell metadata installation complete."
+}
+
 
 #
 # ------------------------------------------------------------
@@ -328,6 +444,9 @@ create_benchmark_disk()
     # Newly created filesystem receives all GUI assets.
     #
     copy_gui_assets_to_mounted_root \
+        /mnt/meaty-bench
+
+    copy_shell_assets_to_mounted_root \
         /mnt/meaty-bench
 
     sync
@@ -567,6 +686,22 @@ case "$INSTALL_GUI_ASSETS" in
 
     *)
         echo "Error: INSTALL_GUI_ASSETS must be true or false."
+        exit 1
+        ;;
+esac
+
+case "$INSTALL_SHELL_ASSETS" in
+    true)
+        if [ "$RECREATE_BENCH_DISK" = false ]; then
+            install_shell_assets_into_existing_disk
+        fi
+        ;;
+
+    false)
+        ;;
+
+    *)
+        echo "Error: INSTALL_SHELL_ASSETS must be true or false."
         exit 1
         ;;
 esac
