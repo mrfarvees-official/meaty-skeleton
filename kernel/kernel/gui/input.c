@@ -5,7 +5,8 @@
 #include <kernel/gui/desktop.h>
 #include <kernel/gui/input.h>
 #include <kernel/gui/window.h>
-
+#include <kernel/gui/topbar.h>
+#include <kernel/gui/taskbar.h>
 #include <kernel/semaphore.h>
 #include <kernel/spinlock.h>
 #include <kernel/task.h>
@@ -373,6 +374,31 @@ static void gui_input_dispatch_mouse(
 {
     if (event == NULL)
         return;
+
+    /*
+     * System chrome receives input before application windows.
+     *
+     * The topbar owns:
+     *
+     *     - Meaty OS / Start
+     *     - system menus
+     *     - power controls
+     */
+    if (gui_topbar_handle_pointer(
+            event->type,
+            event->mouse_x,
+            event->mouse_y,
+            event->mouse_button))
+    {
+        return;
+    }
+
+    /*
+     * The bottom dock is intentionally application-only.
+     *
+     * It has no controls yet, therefore it needs no pointer
+     * dispatcher at this milestone.
+     */
 
     if (event->type !=
             GUI_INPUT_EVENT_MOUSE_BUTTON_DOWN ||

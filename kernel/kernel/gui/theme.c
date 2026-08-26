@@ -5,100 +5,101 @@ static const gui_theme_t default_theme =
 {
     /*
      * --------------------------------------------------------
-     * Desktop
+     * Desktop fallback
      * --------------------------------------------------------
+     *
+     * Normally covered by wallpaper.
      */
-
     .desktop_gradient_top =
-        GUI_RGB(24u, 49u, 83u),
+        GUI_RGB(226u, 233u, 242u),
 
     .desktop_gradient_bottom =
-        GUI_RGB(10u, 23u, 42u),
+        GUI_RGB(194u, 205u, 219u),
+
 
     /*
      * --------------------------------------------------------
-     * Normal window material
+     * Normal windows
      * --------------------------------------------------------
      */
-
     .window_gradient_top =
-        GUI_RGBA(250u, 252u, 255u, 242u),
+        GUI_RGBA(255u, 255u, 255u, 246u),
 
     .window_gradient_bottom =
-        GUI_RGBA(226u, 232u, 241u, 235u),
+        GUI_RGBA(235u, 239u, 245u, 240u),
 
     .window_border =
-        GUI_RGBA(255u, 255u, 255u, 118u),
+        GUI_RGBA(255u, 255u, 255u, 210u),
 
     .window_shadow =
-        GUI_RGBA(0u, 0u, 0u, 68u),
+        GUI_RGBA(0u, 0u, 0u, 54u),
+
 
     /*
      * --------------------------------------------------------
      * Top system bar
      * --------------------------------------------------------
      */
-
     .topbar_background =
-        GUI_RGBA(16u, 23u, 34u, 220u),
+        GUI_RGBA(250u, 252u, 255u, 232u),
 
     .topbar_border =
-        GUI_RGBA(255u, 255u, 255u, 32u),
+        GUI_RGBA(80u, 90u, 105u, 32u),
 
     .topbar_text =
-        GUI_RGB(245u, 247u, 250u),
+        GUI_RGB(29u, 34u, 43u),
 
     .topbar_text_secondary =
-        GUI_RGB(216u, 222u, 231u),
+        GUI_RGB(92u, 101u, 115u),
+
 
     /*
      * --------------------------------------------------------
-     * Floating dock
+     * Floating application dock
      * --------------------------------------------------------
      */
-
     .taskbar_gradient_top =
-        GUI_RGBA(38u, 47u, 63u, 232u),
+        GUI_RGBA(255u, 255u, 255u, 232u),
 
     .taskbar_gradient_bottom =
-        GUI_RGBA(25u, 32u, 45u, 224u),
+        GUI_RGBA(231u, 236u, 243u, 224u),
 
     .taskbar_border =
-        GUI_RGBA(255u, 255u, 255u, 72u),
+        GUI_RGBA(255u, 255u, 255u, 190u),
 
     .taskbar_shadow =
-        GUI_RGBA(0u, 0u, 0u, 82u),
+        GUI_RGBA(0u, 0u, 0u, 68u),
 
     .taskbar_text =
-        GUI_RGB(242u, 245u, 250u),
+        GUI_RGB(30u, 35u, 44u),
+
 
     /*
      * --------------------------------------------------------
      * Typography
      * --------------------------------------------------------
      */
-
     .text_primary =
-        GUI_RGB(24u, 31u, 42u),
+        GUI_RGB(28u, 33u, 42u),
 
     .text_secondary =
-        GUI_RGB(80u, 91u, 108u),
+        GUI_RGB(92u, 101u, 115u),
+
 
     /*
      * --------------------------------------------------------
      * Accent
      * --------------------------------------------------------
      */
-
     .accent =
-        GUI_RGB(65u, 139u, 255u),
+        GUI_RGB(54u, 123u, 246u),
+
 
     /*
      * --------------------------------------------------------
-     * Normal window geometry
+     * Window geometry
      * --------------------------------------------------------
      */
-
     .window_corner_radius =
         18u,
 
@@ -117,21 +118,21 @@ static const gui_theme_t default_theme =
     .window_shadow_blur =
         12u,
 
+
     /*
      * --------------------------------------------------------
-     * Top system bar geometry
+     * Topbar
      * --------------------------------------------------------
      */
-
     .topbar_height =
         32u,
 
+
     /*
      * --------------------------------------------------------
-     * Floating dock geometry
+     * Floating application dock
      * --------------------------------------------------------
      */
-
     .taskbar_corner_radius =
         18u,
 

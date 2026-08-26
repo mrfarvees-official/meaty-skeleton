@@ -2,29 +2,34 @@
 #define KERNEL_GUI_TASKBAR_H
 
 #include <stdbool.h>
+#include <stdint.h>
+
+#include <kernel/gui/input.h>
+#include <kernel/mouse.h>
 
 
-/*
- * Desktop-shell taskbar foundation.
- *
- * Initial milestone:
- *
- *     - owns one GUI_Z_TASKBAR window
- *     - draws only static shell chrome
- *     - no widgets
- *     - no buttons
- *     - no process/window enumeration
- *     - no input handling
- */
 bool gui_taskbar_initialize(void);
 
 
 /*
- * Composite the taskbar into the compositor backbuffer.
- *
- * The caller controls scene ordering.
+ * Composite the dock and any active GUI_Z_POPUP menu.
  */
 void gui_taskbar_composite(void);
+
+
+/*
+ * Desktop-shell pointer dispatch.
+ *
+ * Coordinates are physical screen coordinates.
+ *
+ * Returns true if the taskbar or one of its popup menus consumed
+ * the event.
+ */
+bool gui_taskbar_handle_pointer(
+    gui_input_event_type_t type,
+    int32_t x,
+    int32_t y,
+    mouse_button_t button);
 
 
 #endif

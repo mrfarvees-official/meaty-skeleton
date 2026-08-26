@@ -2,31 +2,32 @@
 #define KERNEL_GUI_TOPBAR_H
 
 #include <stdbool.h>
+#include <stdint.h>
+
+#include <kernel/gui/input.h>
+#include <kernel/mouse.h>
 
 
-/*
- * Initialize the compositor-owned desktop system bar.
- */
 bool gui_topbar_initialize(void);
 
-
-/*
- * Rebuild dynamic system-bar contents.
- *
- * Currently updates:
- *
- *     date
- *     time
- */
 bool gui_topbar_refresh(void);
 
+void gui_topbar_composite(void);
+
 
 /*
- * Composite the current system-bar surface.
+ * Desktop-shell pointer dispatch.
  *
- * Does not present the framebuffer itself.
+ * Screen coordinates.
+ *
+ * Returns true when the topbar or one of its popup menus consumed
+ * the event.
  */
-void gui_topbar_composite(void);
+bool gui_topbar_handle_pointer(
+    gui_input_event_type_t type,
+    int32_t x,
+    int32_t y,
+    mouse_button_t button);
 
 
 #endif

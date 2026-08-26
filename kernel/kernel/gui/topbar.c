@@ -8,6 +8,7 @@
 #include <kernel/gui/font.h>
 #include <kernel/gui/surface.h>
 #include <kernel/gui/theme.h>
+#include <kernel/gui/components.h>
 #include <kernel/gui/topbar.h>
 #include <kernel/gui/window.h>
 #include <kernel/system_time.h>
@@ -27,11 +28,47 @@
 #define SYSTEM_TIME_DEFAULT_UTC_OFFSET_MINUTES \
     (5 * 60 + 30)
 
+typedef enum gui_topbar_popup
+{
+    GUI_TOPBAR_POPUP_NONE = 0,
+    GUI_TOPBAR_POPUP_START,
+    GUI_TOPBAR_POPUP_POWER
+
+} gui_topbar_popup_t;
+
+
+static gui_topbar_popup_t
+    active_popup;
+
+static gui_button_t *
+    hovered_button;
+
+static gui_button_t *
+    pressed_button;
+
 static bool topbar_initialized;
 
 static gui_window_t topbar_window;
 
 static task_t *topbar_clock_task;
+
+static gui_window_t topbar_window;
+static gui_window_t start_menu_window;
+static gui_window_t power_menu_window;
+
+static gui_widget_t topbar_root;
+static gui_widget_t start_menu_root;
+static gui_widget_t power_menu_root;
+
+static gui_button_t meaty_button;
+static gui_button_t power_button;
+
+static gui_button_t explorer_button;
+static gui_button_t terminal_button;
+static gui_button_t settings_button;
+
+static gui_button_t restart_button;
+static gui_button_t shutdown_button;
 
 /*
  * ------------------------------------------------------------
@@ -588,4 +625,559 @@ void gui_topbar_composite(void)
 
     gui_window_composite(
         &topbar_window);
+}
+
+/*
+ * ------------------------------------------------------------
+ * Pointer geometry
+ * ------------------------------------------------------------
+ */
+
+static bool gui_topbar_point_in_window(
+    const gui_window_t *window,
+    int32_t x,
+    int32_t y)
+{
+    if (window == NULL ||
+        !window->visible)
+    {
+        return false;
+    }
+
+    gui_rect_t bounds =
+        gui_window_bounds(
+            window);
+
+    int64_t right =
+        (int64_t)bounds.x +
+        (int64_t)bounds.width;
+
+    int64_t bottom =
+        (int64_t)bounds.y +
+        (int64_t)bounds.height;
+
+    return
+        (int64_t)x >=
+            (int64_t)bounds.x &&
+        (int64_t)y >=
+            (int64_t)bounds.y &&
+        (int64_t)x <
+            right &&
+        (int64_t)y <
+            bottom;
+}
+
+
+static gui_widget_t *gui_topbar_hit_window(
+    gui_window_t *window,
+    gui_widget_t *root,
+    int32_t screen_x,
+    int32_t screen_y)
+{
+    if (window == NULL ||
+        root == NULL ||
+        !window->visible)
+    {
+        return NULL;
+    }
+
+    if (!gui_topbar_point_in_window(
+            window,
+            screen_x,
+            screen_y))
+    {
+        return NULL;
+    }
+
+    /*
+     * Widget coordinates are local to the window surface.
+     */
+    int32_t local_x =
+        screen_x -
+        window->x;
+
+    int32_t local_y =
+        screen_y -
+        window->y;
+
+    return
+        gui_widget_hit_test(
+            root,
+            local_x,
+            local_y);
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * Widget -> button mapping
+ * ------------------------------------------------------------
+ */
+
+static gui_button_t *gui_topbar_button_from_widget(
+    gui_widget_t *widget)
+{
+    if (widget == NULL)
+        return NULL;
+
+    if (widget ==
+        gui_button_widget(
+            &meaty_button))
+    {
+        return
+            &meaty_button;
+    }
+
+    if (widget ==
+        gui_button_widget(
+            &power_button))
+    {
+        return
+            &power_button;
+    }
+
+    if (widget ==
+        gui_button_widget(
+            &explorer_button))
+    {
+        return
+            &explorer_button;
+    }
+
+    if (widget ==
+        gui_button_widget(
+            &terminal_button))
+    {
+        return
+            &terminal_button;
+    }
+
+    if (widget ==
+        gui_button_widget(
+            &settings_button))
+    {
+        return
+            &settings_button;
+    }
+
+    if (widget ==
+        gui_button_widget(
+            &restart_button))
+    {
+        return
+            &restart_button;
+    }
+
+    if (widget ==
+        gui_button_widget(
+            &shutdown_button))
+    {
+        return
+            &shutdown_button;
+    }
+
+    return NULL;
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * Popup state
+ * ------------------------------------------------------------
+ */
+
+static void gui_topbar_set_popup(
+    gui_topbar_popup_t popup)
+{
+    active_popup =
+        popup;
+
+    gui_window_set_visible(
+        &start_menu_window,
+        popup ==
+            GUI_TOPBAR_POPUP_START);
+
+    gui_window_set_visible(
+        &power_menu_window,
+        popup ==
+            GUI_TOPBAR_POPUP_POWER);
+}
+
+
+static void gui_topbar_close_popup(void)
+{
+    gui_topbar_set_popup(
+        GUI_TOPBAR_POPUP_NONE);
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * Surface refresh
+ * ------------------------------------------------------------
+ *
+ * The topbar clock has its own refresh path, so here we only need
+ * to rebuild widget-owned shell surfaces after pointer-state changes.
+ */
+
+static bool gui_topbar_render_widget_window(
+    gui_window_t *window,
+    gui_widget_t *root)
+{
+    if (window == NULL ||
+        root == NULL)
+    {
+        return false;
+    }
+
+    gui_surface_t *surface =
+        gui_window_surface(
+            window);
+
+    if (surface == NULL ||
+        surface->pixels == NULL)
+    {
+        return false;
+    }
+
+    gui_surface_clear(
+        surface,
+        GUI_TRANSPARENT);
+
+    return
+        gui_widget_render_tree(
+            root,
+            surface);
+}
+
+
+static bool gui_topbar_render_widgets(void)
+{
+    /*
+     * If your main topbar still draws the clock separately inside
+     * gui_topbar_refresh(), do not clear/redraw topbar_window here.
+     *
+     * Instead gui_topbar_refresh() should render the background,
+     * clock, and topbar_root in one pass.
+     */
+
+    if (!gui_topbar_refresh())
+        return false;
+
+    if (!gui_topbar_render_widget_window(
+            &start_menu_window,
+            &start_menu_root))
+    {
+        return false;
+    }
+
+    if (!gui_topbar_render_widget_window(
+            &power_menu_window,
+            &power_menu_root))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * Topbar hit-test
+ * ------------------------------------------------------------
+ */
+
+static gui_widget_t *gui_topbar_hit_test(
+    int32_t x,
+    int32_t y)
+{
+    gui_widget_t *hit =
+        NULL;
+
+    /*
+     * Popups sit above the system bar and therefore get first
+     * refusal.
+     */
+    if (active_popup ==
+        GUI_TOPBAR_POPUP_START)
+    {
+        hit =
+            gui_topbar_hit_window(
+                &start_menu_window,
+                &start_menu_root,
+                x,
+                y);
+
+        if (hit != NULL)
+            return hit;
+    }
+    else if (active_popup ==
+             GUI_TOPBAR_POPUP_POWER)
+    {
+        hit =
+            gui_topbar_hit_window(
+                &power_menu_window,
+                &power_menu_root,
+                x,
+                y);
+
+        if (hit != NULL)
+            return hit;
+    }
+
+    /*
+     * Then the actual topbar.
+     */
+    return
+        gui_topbar_hit_window(
+            &topbar_window,
+            &topbar_root,
+            x,
+            y);
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * Public pointer dispatcher
+ * ------------------------------------------------------------
+ */
+
+bool gui_topbar_handle_pointer(
+    gui_input_event_type_t type,
+    int32_t x,
+    int32_t y,
+    mouse_button_t button)
+{
+    if (!topbar_initialized)
+        return false;
+
+    gui_widget_t *hit =
+        gui_topbar_hit_test(
+            x,
+            y);
+
+    gui_button_t *button_hit =
+        gui_topbar_button_from_widget(
+            hit);
+
+    /*
+     * hit != NULL means the pointer is currently over a topbar or
+     * popup widget.
+     */
+    bool over_shell =
+        hit != NULL;
+
+    /*
+     * --------------------------------------------------------
+     * Outside click closes popup.
+     * --------------------------------------------------------
+     *
+     * Do not consume the event after closing.
+     *
+     * This lets the same click continue down to normal-window
+     * focusing.
+     */
+    if (type ==
+            GUI_INPUT_EVENT_MOUSE_BUTTON_DOWN &&
+        button ==
+            MOUSE_BUTTON_LEFT &&
+        active_popup !=
+            GUI_TOPBAR_POPUP_NONE &&
+        hit == NULL)
+    {
+        gui_topbar_close_popup();
+
+        /*
+         * Cancel stale interaction state.
+         */
+        if (hovered_button != NULL)
+        {
+            gui_button_set_hovered(
+                hovered_button,
+                false);
+
+            hovered_button =
+                NULL;
+        }
+
+        if (pressed_button != NULL)
+        {
+            gui_button_set_pressed(
+                pressed_button,
+                false);
+
+            pressed_button =
+                NULL;
+        }
+
+        (void)gui_topbar_render_widgets();
+
+        gui_desktop_render();
+
+        return false;
+    }
+
+    /*
+     * --------------------------------------------------------
+     * Pointer movement / hover
+     * --------------------------------------------------------
+     */
+    if (type ==
+        GUI_INPUT_EVENT_MOUSE_MOVE)
+    {
+        if (hovered_button !=
+            button_hit)
+        {
+            if (hovered_button != NULL)
+            {
+                gui_button_set_hovered(
+                    hovered_button,
+                    false);
+            }
+
+            hovered_button =
+                button_hit;
+
+            if (hovered_button != NULL)
+            {
+                gui_button_set_hovered(
+                    hovered_button,
+                    true);
+            }
+
+            (void)gui_topbar_render_widgets();
+
+            gui_desktop_render();
+        }
+
+        return over_shell;
+    }
+
+    /*
+     * Current GUI controls only respond to the primary button.
+     */
+    if (button !=
+        MOUSE_BUTTON_LEFT)
+    {
+        return over_shell;
+    }
+
+    /*
+     * --------------------------------------------------------
+     * Button down
+     * --------------------------------------------------------
+     */
+    if (type ==
+        GUI_INPUT_EVENT_MOUSE_BUTTON_DOWN)
+    {
+        pressed_button =
+            button_hit;
+
+        if (pressed_button != NULL)
+        {
+            gui_button_set_pressed(
+                pressed_button,
+                true);
+
+            (void)gui_topbar_render_widgets();
+
+            gui_desktop_render();
+
+            return true;
+        }
+
+        /*
+         * Clicking non-button topbar material still belongs to the
+         * shell and should not focus an application underneath it.
+         */
+        return over_shell;
+    }
+
+    /*
+     * --------------------------------------------------------
+     * Button up / click
+     * --------------------------------------------------------
+     */
+    if (type ==
+        GUI_INPUT_EVENT_MOUSE_BUTTON_UP)
+    {
+        gui_button_t *released =
+            pressed_button;
+
+        if (released == NULL)
+        {
+            return over_shell;
+        }
+
+        gui_button_set_pressed(
+            released,
+            false);
+
+        pressed_button =
+            NULL;
+
+        /*
+         * A click occurs only if:
+         *
+         *     down occurred on the button
+         *     up occurred on the same button
+         *     button remains enabled
+         */
+        if (released ==
+                button_hit &&
+            released->widget.enabled)
+        {
+            gui_button_click(
+                released);
+        }
+
+        (void)gui_topbar_render_widgets();
+
+        gui_desktop_render();
+
+        return true;
+    }
+
+    return over_shell;
+}
+
+static void gui_topbar_meaty_clicked(
+    gui_button_t *button,
+    void *context)
+{
+    (void)button;
+    (void)context;
+
+    if (active_popup ==
+        GUI_TOPBAR_POPUP_START)
+    {
+        gui_topbar_close_popup();
+    }
+    else
+    {
+        gui_topbar_set_popup(
+            GUI_TOPBAR_POPUP_START);
+    }
+}
+
+
+static void gui_topbar_power_clicked(
+    gui_button_t *button,
+    void *context)
+{
+    (void)button;
+    (void)context;
+
+    if (active_popup ==
+        GUI_TOPBAR_POPUP_POWER)
+    {
+        gui_topbar_close_popup();
+    }
+    else
+    {
+        gui_topbar_set_popup(
+            GUI_TOPBAR_POPUP_POWER);
+    }
 }

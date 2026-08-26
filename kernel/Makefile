@@ -66,6 +66,7 @@ kernel/gui/compositor.o 		\
 kernel/gui/window.o 			\
 kernel/gui/input.o 				\
 kernel/gui/widget.o 			\
+kernel/gui/components.o 		\
 kernel/gui/taskbar.o 			\
 kernel/gui/topbar.o 			\
 kernel/gui/desktop.o 			\
