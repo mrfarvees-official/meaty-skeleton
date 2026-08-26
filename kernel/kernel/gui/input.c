@@ -78,6 +78,61 @@ static bool gui_input_push(
         spin_lock_irqsave(
             &gui_input_lock);
 
+    /*
+     * --------------------------------------------------------
+     * Mouse-move coalescing
+     * --------------------------------------------------------
+     *
+     * Mouse movement represents current pointer position rather
+     * than a state transition that must be replayed individually.
+     *
+     * If the newest event already waiting in the queue is another
+     * mouse move, replace it with the latest position instead of
+     * appending another move.
+     *
+     * Button and keyboard events are never coalesced.
+     *
+     * This also preserves ordering around button transitions:
+     *
+     *     MOVE
+     *     BUTTON_DOWN
+     *     MOVE
+     *
+     * remains three distinct queue entries because the event
+     * immediately before the final MOVE is BUTTON_DOWN.
+     */
+    if (event->type ==
+            GUI_INPUT_EVENT_MOUSE_MOVE &&
+        gui_input_read_index !=
+            gui_input_write_index)
+    {
+        size_t previous_index =
+            (gui_input_write_index - 1u) &
+            (GUI_INPUT_EVENT_BUFFER_SIZE - 1u);
+
+        if (gui_input_events[
+                previous_index].type ==
+            GUI_INPUT_EVENT_MOUSE_MOVE)
+        {
+            gui_input_events[
+                previous_index] =
+                    *event;
+
+            spin_unlock_irqrestore(
+                &gui_input_lock,
+                flags);
+
+            /*
+             * Do not signal the semaphore here.
+             *
+             * We replaced an event already represented by an
+             * existing semaphore count; no additional queued item
+             * was created.
+             */
+            return true;
+        }
+    }
+
     size_t next =
         gui_input_next_index(
             gui_input_write_index);
@@ -106,8 +161,8 @@ static bool gui_input_push(
         flags);
 
     /*
-     * semaphore_signal() is already used by the keyboard subsystem
-     * from IRQ context, so this queue follows the same model.
+     * A new queue entry was created, therefore publish exactly
+     * one semaphore token for the dispatcher.
      */
     semaphore_signal(
         &gui_input_available);
