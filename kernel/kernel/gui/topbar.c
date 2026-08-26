@@ -17,7 +17,6 @@
 #include <kernel/system_time.h>
 #include <kernel/task.h>
 
-
 #define GUI_TOPBAR_FONT_PIXEL_HEIGHT \
     16u
 
@@ -45,7 +44,6 @@
 #define GUI_TOPBAR_CLOCK_GAP \
     12
 
-
 #define GUI_START_MENU_WIDTH \
     280u
 
@@ -60,7 +58,6 @@
 
 #define GUI_TOPBAR_POPUP_GAP \
     6
-
 
 /*
  * ------------------------------------------------------------
@@ -86,7 +83,6 @@
 #define GUI_ICON_EXPLORER \
     "/icons/apps/explorer.png"
 
-
 typedef enum gui_topbar_popup
 {
     GUI_TOPBAR_POPUP_NONE = 0,
@@ -95,7 +91,6 @@ typedef enum gui_topbar_popup
     GUI_TOPBAR_POPUP_POWER
 
 } gui_topbar_popup_t;
-
 
 /*
  * ------------------------------------------------------------
@@ -109,7 +104,6 @@ static bool
 static task_t *
     topbar_clock_task;
 
-
 static gui_window_t
     topbar_window;
 
@@ -119,10 +113,8 @@ static gui_window_t
 static gui_window_t
     power_menu_window;
 
-
 static gui_topbar_popup_t
     active_popup;
-
 
 /*
  * ------------------------------------------------------------
@@ -139,7 +131,6 @@ static gui_widget_t
 static gui_widget_t
     power_menu_root;
 
-
 /*
  * ------------------------------------------------------------
  * Topbar widgets
@@ -151,7 +142,6 @@ static gui_button_t
 
 static gui_button_t
     power_button;
-
 
 /*
  * ------------------------------------------------------------
@@ -174,7 +164,6 @@ static gui_button_t
 static gui_button_t
     settings_button;
 
-
 /*
  * ------------------------------------------------------------
  * Power-menu widgets
@@ -193,7 +182,6 @@ static gui_button_t
 static gui_button_t
     shutdown_button;
 
-
 /*
  * ------------------------------------------------------------
  * Pointer state
@@ -205,7 +193,6 @@ static gui_button_t *
 
 static gui_button_t *
     pressed_button;
-
 
 /*
  * ------------------------------------------------------------
@@ -230,7 +217,6 @@ static const gui_image_t *
 
 static const gui_image_t *
     icon_explorer;
-
 
 /*
  * ------------------------------------------------------------
@@ -261,7 +247,6 @@ static bool gui_topbar_render_widget_window(
 
 static bool gui_topbar_render_widgets(void);
 
-
 /*
  * ============================================================
  * Calendar helpers
@@ -274,11 +259,10 @@ static uint8_t gui_topbar_weekday(
     uint8_t day)
 {
     static const uint8_t offsets[12] =
-    {
-        0u, 3u, 2u, 5u,
-        0u, 3u, 5u, 1u,
-        4u, 6u, 2u, 4u
-    };
+        {
+            0u, 3u, 2u, 5u,
+            0u, 3u, 5u, 1u,
+            4u, 6u, 2u, 4u};
 
     uint32_t calculation_year =
         year;
@@ -286,17 +270,14 @@ static uint8_t gui_topbar_weekday(
     if (month < 3u)
         --calculation_year;
 
-    return
-        (uint8_t)
-        ((calculation_year +
-          calculation_year / 4u -
-          calculation_year / 100u +
-          calculation_year / 400u +
-          offsets[month - 1u] +
-          day) %
-         7u);
+    return (uint8_t)((calculation_year +
+                      calculation_year / 4u -
+                      calculation_year / 100u +
+                      calculation_year / 400u +
+                      offsets[month - 1u] +
+                      day) %
+                     7u);
 }
-
 
 static char *gui_topbar_append_text(
     char *destination,
@@ -311,52 +292,43 @@ static char *gui_topbar_append_text(
     return destination;
 }
 
-
 static char *gui_topbar_append_two_digits(
     char *destination,
     uint8_t value)
 {
     *destination++ =
-        (char)
-        ('0' +
-         ((value / 10u) % 10u));
+        (char)('0' +
+               ((value / 10u) % 10u));
 
     *destination++ =
-        (char)
-        ('0' +
-         (value % 10u));
+        (char)('0' +
+               (value % 10u));
 
     return destination;
 }
-
 
 static char *gui_topbar_append_year(
     char *destination,
     uint16_t year)
 {
     *destination++ =
-        (char)
-        ('0' +
-         ((year / 1000u) % 10u));
+        (char)('0' +
+               ((year / 1000u) % 10u));
 
     *destination++ =
-        (char)
-        ('0' +
-         ((year / 100u) % 10u));
+        (char)('0' +
+               ((year / 100u) % 10u));
 
     *destination++ =
-        (char)
-        ('0' +
-         ((year / 10u) % 10u));
+        (char)('0' +
+               ((year / 10u) % 10u));
 
     *destination++ =
-        (char)
-        ('0' +
-         (year % 10u));
+        (char)('0' +
+               (year % 10u));
 
     return destination;
 }
-
 
 static bool gui_topbar_format_datetime(
     const rtc_datetime_t *datetime,
@@ -372,31 +344,29 @@ static bool gui_topbar_format_datetime(
     }
 
     static const char *weekday_names[7] =
-    {
-        "Sun",
-        "Mon",
-        "Tue",
-        "Wed",
-        "Thu",
-        "Fri",
-        "Sat"
-    };
+        {
+            "Sun",
+            "Mon",
+            "Tue",
+            "Wed",
+            "Thu",
+            "Fri",
+            "Sat"};
 
     static const char *month_names[12] =
-    {
-        "Jan",
-        "Feb",
-        "Mar",
-        "Apr",
-        "May",
-        "Jun",
-        "Jul",
-        "Aug",
-        "Sep",
-        "Oct",
-        "Nov",
-        "Dec"
-    };
+        {
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec"};
 
     if (datetime->month < 1u ||
         datetime->month > 12u)
@@ -411,9 +381,8 @@ static bool gui_topbar_format_datetime(
             datetime->day);
 
     uint8_t hour_12 =
-        (uint8_t)
-        (datetime->hour %
-         12u);
+        (uint8_t)(datetime->hour %
+                  12u);
 
     if (hour_12 == 0u)
         hour_12 = 12u;
@@ -427,34 +396,30 @@ static bool gui_topbar_format_datetime(
     cursor =
         gui_topbar_append_text(
             cursor,
-            weekday_names[
-                weekday]);
+            weekday_names[weekday]);
 
     *cursor++ = ' ';
 
     cursor =
         gui_topbar_append_text(
             cursor,
-            month_names[
-                datetime->month -
-                1u]);
+            month_names[datetime->month -
+                        1u]);
 
     *cursor++ = ' ';
 
     if (datetime->day >= 10u)
     {
         *cursor++ =
-            (char)
-            ('0' +
-             datetime->day /
-             10u);
+            (char)('0' +
+                   datetime->day /
+                       10u);
     }
 
     *cursor++ =
-        (char)
-        ('0' +
-         datetime->day %
-         10u);
+        (char)('0' +
+               datetime->day %
+                   10u);
 
     *cursor++ = ' ';
 
@@ -470,17 +435,15 @@ static bool gui_topbar_format_datetime(
     if (hour_12 >= 10u)
     {
         *cursor++ =
-            (char)
-            ('0' +
-             hour_12 /
-             10u);
+            (char)('0' +
+                   hour_12 /
+                       10u);
     }
 
     *cursor++ =
-        (char)
-        ('0' +
-         hour_12 %
-         10u);
+        (char)('0' +
+               hour_12 %
+                   10u);
 
     *cursor++ = ':';
 
@@ -511,7 +474,6 @@ static bool gui_topbar_format_datetime(
     return true;
 }
 
-
 /*
  * ============================================================
  * Text measurement
@@ -535,8 +497,7 @@ static int32_t gui_topbar_measure_text(
     while (*text != '\0')
     {
         uint32_t codepoint =
-            (uint8_t)
-            *text++;
+            (uint8_t)*text++;
 
         if (codepoint >= 0x80u)
             codepoint = '?';
@@ -559,7 +520,6 @@ static int32_t gui_topbar_measure_text(
 
     return width;
 }
-
 
 /*
  * ============================================================
@@ -618,7 +578,6 @@ static void gui_topbar_load_icons(void)
         &icon_explorer);
 }
 
-
 /*
  * ============================================================
  * Common light-button styling
@@ -676,7 +635,6 @@ static void gui_topbar_style_light_button(
         8u;
 }
 
-
 /*
  * ============================================================
  * Main topbar widget tree
@@ -694,19 +652,17 @@ static bool gui_topbar_build_main_widgets(
         return false;
 
     gui_rect_t root_bounds =
-    {
-        .x = 0,
-        .y = 0,
-        .width = width,
-        .height = height
-    };
+        {
+            .x = 0,
+            .y = 0,
+            .width = width,
+            .height = height};
 
     gui_widget_initialize(
         &topbar_root,
         root_bounds,
         NULL,
         NULL);
-
 
     /*
      * --------------------------------------------------------
@@ -715,19 +671,18 @@ static bool gui_topbar_build_main_widgets(
      */
 
     gui_rect_t meaty_bounds =
-    {
-        .x =
-            GUI_TOPBAR_LEFT_MARGIN,
+        {
+            .x =
+                GUI_TOPBAR_LEFT_MARGIN,
 
-        .y =
-            GUI_TOPBAR_CONTROL_Y,
+            .y =
+                GUI_TOPBAR_CONTROL_Y,
 
-        .width =
-            GUI_TOPBAR_MEATY_WIDTH,
+            .width =
+                GUI_TOPBAR_MEATY_WIDTH,
 
-        .height =
-            GUI_TOPBAR_CONTROL_HEIGHT
-    };
+            .height =
+                GUI_TOPBAR_CONTROL_HEIGHT};
 
     gui_button_initialize(
         &meaty_button,
@@ -757,7 +712,6 @@ static bool gui_topbar_build_main_widgets(
         return false;
     }
 
-
     /*
      * --------------------------------------------------------
      * Power
@@ -765,21 +719,20 @@ static bool gui_topbar_build_main_widgets(
      */
 
     gui_rect_t power_bounds =
-    {
-        .x =
-            (int32_t)width -
-            GUI_TOPBAR_RIGHT_MARGIN -
-            GUI_TOPBAR_POWER_WIDTH,
+        {
+            .x =
+                (int32_t)width -
+                GUI_TOPBAR_RIGHT_MARGIN -
+                GUI_TOPBAR_POWER_WIDTH,
 
-        .y =
-            GUI_TOPBAR_CONTROL_Y,
+            .y =
+                GUI_TOPBAR_CONTROL_Y,
 
-        .width =
-            GUI_TOPBAR_POWER_WIDTH,
+            .width =
+                GUI_TOPBAR_POWER_WIDTH,
 
-        .height =
-            GUI_TOPBAR_CONTROL_HEIGHT
-    };
+            .height =
+                GUI_TOPBAR_CONTROL_HEIGHT};
 
     gui_button_initialize(
         &power_button,
@@ -825,7 +778,6 @@ static bool gui_topbar_build_main_widgets(
     return true;
 }
 
-
 /*
  * ============================================================
  * Start menu
@@ -841,16 +793,15 @@ static bool gui_topbar_build_start_menu(void)
         return false;
 
     gui_rect_t root_bounds =
-    {
-        .x = 0,
-        .y = 0,
+        {
+            .x = 0,
+            .y = 0,
 
-        .width =
-            GUI_START_MENU_WIDTH,
+            .width =
+                GUI_START_MENU_WIDTH,
 
-        .height =
-            GUI_START_MENU_HEIGHT
-    };
+            .height =
+                GUI_START_MENU_HEIGHT};
 
     gui_widget_initialize(
         &start_menu_root,
@@ -858,23 +809,21 @@ static bool gui_topbar_build_start_menu(void)
         NULL,
         NULL);
 
-
     /*
      * White popup panel.
      */
     gui_rect_t panel_bounds =
-    {
-        .x = 8,
-        .y = 8,
+        {
+            .x = 8,
+            .y = 8,
 
-        .width =
-            GUI_START_MENU_WIDTH -
-            16u,
+            .width =
+                GUI_START_MENU_WIDTH -
+                16u,
 
-        .height =
-            GUI_START_MENU_HEIGHT -
-            16u
-    };
+            .height =
+                GUI_START_MENU_HEIGHT -
+                16u};
 
     gui_panel_initialize(
         &start_menu_panel,
@@ -937,22 +886,20 @@ static bool gui_topbar_build_start_menu(void)
         return false;
     }
 
-
     /*
      * Title.
      */
     gui_rect_t title_bounds =
-    {
-        .x = 18,
-        .y = 10,
+        {
+            .x = 18,
+            .y = 10,
 
-        .width =
-            panel_bounds.width -
-            36u,
+            .width =
+                panel_bounds.width -
+                36u,
 
-        .height =
-            36u
-    };
+            .height =
+                36u};
 
     gui_label_initialize(
         &start_menu_title,
@@ -974,7 +921,6 @@ static bool gui_topbar_build_start_menu(void)
         return false;
     }
 
-
     /*
      * --------------------------------------------------------
      * Explorer
@@ -982,16 +928,15 @@ static bool gui_topbar_build_start_menu(void)
      */
 
     gui_rect_t item =
-    {
-        .x = 10,
-        .y = 52,
+        {
+            .x = 10,
+            .y = 52,
 
-        .width =
-            panel_bounds.width -
-            20u,
+            .width =
+                panel_bounds.width -
+                20u,
 
-        .height = 42u
-    };
+            .height = 42u};
 
     gui_button_initialize(
         &explorer_button,
@@ -1019,7 +964,6 @@ static bool gui_topbar_build_start_menu(void)
     {
         return false;
     }
-
 
     /*
      * --------------------------------------------------------
@@ -1056,7 +1000,6 @@ static bool gui_topbar_build_start_menu(void)
     {
         return false;
     }
-
 
     /*
      * --------------------------------------------------------
@@ -1097,7 +1040,6 @@ static bool gui_topbar_build_start_menu(void)
     return true;
 }
 
-
 /*
  * ============================================================
  * Power menu
@@ -1113,16 +1055,15 @@ static bool gui_topbar_build_power_menu(void)
         return false;
 
     gui_rect_t root_bounds =
-    {
-        .x = 0,
-        .y = 0,
+        {
+            .x = 0,
+            .y = 0,
 
-        .width =
-            GUI_POWER_MENU_WIDTH,
+            .width =
+                GUI_POWER_MENU_WIDTH,
 
-        .height =
-            GUI_POWER_MENU_HEIGHT
-    };
+            .height =
+                GUI_POWER_MENU_HEIGHT};
 
     gui_widget_initialize(
         &power_menu_root,
@@ -1130,20 +1071,18 @@ static bool gui_topbar_build_power_menu(void)
         NULL,
         NULL);
 
-
     gui_rect_t panel_bounds =
-    {
-        .x = 8,
-        .y = 8,
+        {
+            .x = 8,
+            .y = 8,
 
-        .width =
-            GUI_POWER_MENU_WIDTH -
-            16u,
+            .width =
+                GUI_POWER_MENU_WIDTH -
+                16u,
 
-        .height =
-            GUI_POWER_MENU_HEIGHT -
-            16u
-    };
+            .height =
+                GUI_POWER_MENU_HEIGHT -
+                16u};
 
     gui_panel_initialize(
         &power_menu_panel,
@@ -1206,21 +1145,19 @@ static bool gui_topbar_build_power_menu(void)
         return false;
     }
 
-
     /*
      * Title.
      */
     gui_rect_t title_bounds =
-    {
-        .x = 16,
-        .y = 8,
+        {
+            .x = 16,
+            .y = 8,
 
-        .width =
-            panel_bounds.width -
-            32u,
+            .width =
+                panel_bounds.width -
+                32u,
 
-        .height = 30u
-    };
+            .height = 30u};
 
     gui_label_initialize(
         &power_menu_title,
@@ -1242,21 +1179,19 @@ static bool gui_topbar_build_power_menu(void)
         return false;
     }
 
-
     /*
      * Restart.
      */
     gui_rect_t restart_bounds =
-    {
-        .x = 10,
-        .y = 44,
+        {
+            .x = 10,
+            .y = 44,
 
-        .width =
-            panel_bounds.width -
-            20u,
+            .width =
+                panel_bounds.width -
+                20u,
 
-        .height = 38u
-    };
+            .height = 38u};
 
     gui_button_initialize(
         &restart_button,
@@ -1288,21 +1223,19 @@ static bool gui_topbar_build_power_menu(void)
         return false;
     }
 
-
     /*
      * Shut Down.
      */
     gui_rect_t shutdown_bounds =
-    {
-        .x = 10,
-        .y = 86,
+        {
+            .x = 10,
+            .y = 86,
 
-        .width =
-            panel_bounds.width -
-            20u,
+            .width =
+                panel_bounds.width -
+                20u,
 
-        .height = 38u
-    };
+            .height = 38u};
 
     gui_button_initialize(
         &shutdown_button,
@@ -1334,7 +1267,6 @@ static bool gui_topbar_build_power_menu(void)
     return true;
 }
 
-
 /*
  * ============================================================
  * Popup rendering
@@ -1365,12 +1297,10 @@ static bool gui_topbar_render_widget_window(
         surface,
         GUI_TRANSPARENT);
 
-    return
-        gui_widget_render_tree(
-            root,
-            surface);
+    return gui_widget_render_tree(
+        root,
+        surface);
 }
-
 
 /*
  * ============================================================
@@ -1405,7 +1335,6 @@ bool gui_topbar_refresh(void)
         return false;
     }
 
-
     /*
      * --------------------------------------------------------
      * White translucent system bar
@@ -1417,22 +1346,20 @@ bool gui_topbar_refresh(void)
         GUI_TRANSPARENT);
 
     gui_rect_t bar_rect =
-    {
-        .x = 0,
-        .y = 0,
+        {
+            .x = 0,
+            .y = 0,
 
-        .width =
-            surface->width,
+            .width =
+                surface->width,
 
-        .height =
-            surface->height
-    };
+            .height =
+                surface->height};
 
     gui_surface_fill_rect(
         surface,
         bar_rect,
         theme->topbar_background);
-
 
     /*
      * Bottom separator.
@@ -1440,26 +1367,23 @@ bool gui_topbar_refresh(void)
     if (surface->height > 0u)
     {
         gui_rect_t border =
-        {
-            .x = 0,
+            {
+                .x = 0,
 
-            .y =
-                (int32_t)
-                (surface->height -
-                 1u),
+                .y =
+                    (int32_t)(surface->height -
+                              1u),
 
-            .width =
-                surface->width,
+                .width =
+                    surface->width,
 
-            .height = 1u
-        };
+                .height = 1u};
 
         gui_surface_fill_rect(
             surface,
             border,
             theme->topbar_border);
     }
-
 
     /*
      * Meaty OS + Power.
@@ -1471,7 +1395,6 @@ bool gui_topbar_refresh(void)
         return false;
     }
 
-
     /*
      * --------------------------------------------------------
      * Clock
@@ -1480,8 +1403,7 @@ bool gui_topbar_refresh(void)
 
     rtc_datetime_t datetime;
 
-    char datetime_text[
-        GUI_TOPBAR_CLOCK_BUFFER_SIZE];
+    char datetime_text[GUI_TOPBAR_CLOCK_BUFFER_SIZE];
 
     const char *display_text =
         "RTC unavailable";
@@ -1542,40 +1464,44 @@ bool gui_topbar_refresh(void)
              GUI_TOPBAR_FONT_PIXEL_HEIGHT) /
         2;
 
-    return
-        gui_font_draw_text(
-            surface,
-            font,
-            text_x,
-            text_y,
-            GUI_TOPBAR_FONT_PIXEL_HEIGHT,
-            display_text,
-            text_color);
+    return gui_font_draw_text(
+        surface,
+        font,
+        text_x,
+        text_y,
+        GUI_TOPBAR_FONT_PIXEL_HEIGHT,
+        display_text,
+        text_color);
 }
-
 
 static bool gui_topbar_render_widgets(void)
 {
     if (!gui_topbar_refresh())
         return false;
 
-    if (!gui_topbar_render_widget_window(
-            &start_menu_window,
-            &start_menu_root))
+    /*
+     * Only rebuild the popup that can actually be displayed.
+     *
+     * At most one popup is visible at a time.
+     */
+    if (active_popup ==
+        GUI_TOPBAR_POPUP_START)
     {
-        return false;
+        return gui_topbar_render_widget_window(
+            &start_menu_window,
+            &start_menu_root);
     }
 
-    if (!gui_topbar_render_widget_window(
-            &power_menu_window,
-            &power_menu_root))
+    if (active_popup ==
+        GUI_TOPBAR_POPUP_POWER)
     {
-        return false;
+        return gui_topbar_render_widget_window(
+            &power_menu_window,
+            &power_menu_root);
     }
 
     return true;
 }
-
 
 /*
  * ============================================================
@@ -1586,6 +1512,30 @@ static bool gui_topbar_render_widgets(void)
 static void gui_topbar_set_popup(
     gui_topbar_popup_t popup)
 {
+    /*
+     * Do not allow stale hover/pressed appearance to survive
+     * between popup transitions.
+     */
+    if (hovered_button != NULL)
+    {
+        gui_button_set_hovered(
+            hovered_button,
+            false);
+
+        hovered_button =
+            NULL;
+    }
+
+    if (pressed_button != NULL)
+    {
+        gui_button_set_pressed(
+            pressed_button,
+            false);
+
+        pressed_button =
+            NULL;
+    }
+
     active_popup =
         popup;
 
@@ -1600,13 +1550,11 @@ static void gui_topbar_set_popup(
             GUI_TOPBAR_POPUP_POWER);
 }
 
-
 static void gui_topbar_close_popup(void)
 {
     gui_topbar_set_popup(
         GUI_TOPBAR_POPUP_NONE);
 }
-
 
 /*
  * ============================================================
@@ -1633,7 +1581,6 @@ static void gui_topbar_meaty_clicked(
     }
 }
 
-
 static void gui_topbar_power_clicked(
     gui_button_t *button,
     void *context)
@@ -1653,7 +1600,6 @@ static void gui_topbar_power_clicked(
     }
 }
 
-
 static void gui_topbar_start_item_clicked(
     gui_button_t *button,
     void *context)
@@ -1666,7 +1612,6 @@ static void gui_topbar_start_item_clicked(
      */
     gui_topbar_close_popup();
 }
-
 
 /*
  * ============================================================
@@ -1695,7 +1640,6 @@ static void gui_topbar_clock_thread(
             1000u);
     }
 }
-
 
 /*
  * ============================================================
@@ -1729,12 +1673,10 @@ bool gui_topbar_initialize(void)
         return false;
     }
 
-
     /*
      * Filesystem assets are optional.
      */
     gui_topbar_load_icons();
-
 
     /*
      * Main topbar.
@@ -1750,7 +1692,6 @@ bool gui_topbar_initialize(void)
         return false;
     }
 
-
     /*
      * Popups open below the topbar.
      */
@@ -1758,7 +1699,6 @@ bool gui_topbar_initialize(void)
         (int32_t)
             theme->topbar_height +
         GUI_TOPBAR_POPUP_GAP;
-
 
     /*
      * Start menu.
@@ -1776,7 +1716,6 @@ bool gui_topbar_initialize(void)
 
         return false;
     }
-
 
     /*
      * Power menu.
@@ -1804,7 +1743,6 @@ bool gui_topbar_initialize(void)
         return false;
     }
 
-
     gui_window_set_visible(
         &start_menu_window,
         false);
@@ -1812,7 +1750,6 @@ bool gui_topbar_initialize(void)
     gui_window_set_visible(
         &power_menu_window,
         false);
-
 
     /*
      * Build all widget trees before allowing refresh.
@@ -1835,7 +1772,6 @@ bool gui_topbar_initialize(void)
         return false;
     }
 
-
     active_popup =
         GUI_TOPBAR_POPUP_NONE;
 
@@ -1845,13 +1781,11 @@ bool gui_topbar_initialize(void)
     pressed_button =
         NULL;
 
-
     /*
      * refresh() validates this flag.
      */
     topbar_initialized =
         true;
-
 
     /*
      * Render everything once.
@@ -1872,7 +1806,6 @@ bool gui_topbar_initialize(void)
 
         return false;
     }
-
 
     /*
      * NORMAL kernel task.
@@ -1902,7 +1835,6 @@ bool gui_topbar_initialize(void)
     return true;
 }
 
-
 /*
  * ============================================================
  * Composition
@@ -1930,7 +1862,6 @@ void gui_topbar_composite(void)
             &power_menu_window);
     }
 }
-
 
 /*
  * ============================================================
@@ -1965,19 +1896,17 @@ static bool gui_topbar_point_in_window(
         (int64_t)
             bounds.height;
 
-    return
-        (int64_t)x >=
-            (int64_t)
-                bounds.x &&
-        (int64_t)y >=
-            (int64_t)
-                bounds.y &&
-        (int64_t)x <
-            right &&
-        (int64_t)y <
-            bottom;
+    return (int64_t)x >=
+               (int64_t)
+                   bounds.x &&
+           (int64_t)y >=
+               (int64_t)
+                   bounds.y &&
+           (int64_t)x <
+               right &&
+           (int64_t)y <
+               bottom;
 }
-
 
 static gui_widget_t *gui_topbar_hit_window(
     gui_window_t *window,
@@ -2008,13 +1937,11 @@ static gui_widget_t *gui_topbar_hit_window(
         screen_y -
         window->y;
 
-    return
-        gui_widget_hit_test(
-            root,
-            local_x,
-            local_y);
+    return gui_widget_hit_test(
+        root,
+        local_x,
+        local_y);
 }
-
 
 /*
  * ============================================================
@@ -2032,61 +1959,53 @@ static gui_button_t *gui_topbar_button_from_widget(
         gui_button_widget(
             &meaty_button))
     {
-        return
-            &meaty_button;
+        return &meaty_button;
     }
 
     if (widget ==
         gui_button_widget(
             &power_button))
     {
-        return
-            &power_button;
+        return &power_button;
     }
 
     if (widget ==
         gui_button_widget(
             &explorer_button))
     {
-        return
-            &explorer_button;
+        return &explorer_button;
     }
 
     if (widget ==
         gui_button_widget(
             &terminal_button))
     {
-        return
-            &terminal_button;
+        return &terminal_button;
     }
 
     if (widget ==
         gui_button_widget(
             &settings_button))
     {
-        return
-            &settings_button;
+        return &settings_button;
     }
 
     if (widget ==
         gui_button_widget(
             &restart_button))
     {
-        return
-            &restart_button;
+        return &restart_button;
     }
 
     if (widget ==
         gui_button_widget(
             &shutdown_button))
     {
-        return
-            &shutdown_button;
+        return &shutdown_button;
     }
 
     return NULL;
 }
-
 
 /*
  * ============================================================
@@ -2131,14 +2050,12 @@ static gui_widget_t *gui_topbar_hit_test(
             return hit;
     }
 
-    return
-        gui_topbar_hit_window(
-            &topbar_window,
-            &topbar_root,
-            x,
-            y);
+    return gui_topbar_hit_window(
+        &topbar_window,
+        &topbar_root,
+        x,
+        y);
 }
-
 
 /*
  * ============================================================
@@ -2169,14 +2086,78 @@ bool gui_topbar_handle_pointer(
 
 
     /*
-     * --------------------------------------------------------
-     * Outside click closes popup.
-     * --------------------------------------------------------
+     * ========================================================
+     * POINTER MOVE
+     * ========================================================
+     *
+     * Do NOT repaint merely because the mouse crossed a button.
+     *
+     * The current compositor can safely rebuild the complete
+     * desktop, but doing that for every hover transition is far
+     * too expensive.
+     *
+     * Popup/topbar hover animation will return after localized
+     * scene reconstruction exists.
+     */
+    if (type ==
+        GUI_INPUT_EVENT_MOUSE_MOVE)
+    {
+        /*
+         * Keep only logical pointer tracking.
+         *
+         * Explicitly keep button hover rendering disabled so a
+         * later click-triggered repaint cannot accidentally expose
+         * stale hover state.
+         */
+        if (hovered_button !=
+            button_hit)
+        {
+            if (hovered_button != NULL)
+            {
+                gui_button_set_hovered(
+                    hovered_button,
+                    false);
+            }
+
+            hovered_button =
+                button_hit;
+
+            if (hovered_button != NULL)
+            {
+                gui_button_set_hovered(
+                    hovered_button,
+                    false);
+            }
+        }
+
+        return over_shell;
+    }
+
+
+    /*
+     * ========================================================
+     * NON-LEFT BUTTONS
+     * ========================================================
+     */
+    if (button !=
+        MOUSE_BUTTON_LEFT)
+    {
+        return over_shell;
+    }
+
+
+    /*
+     * ========================================================
+     * OUTSIDE CLICK
+     * ========================================================
+     *
+     * Clicking outside an open popup closes it.
+     *
+     * This genuinely changes the visible scene, therefore one
+     * desktop reconstruction is required.
      */
     if (type ==
             GUI_INPUT_EVENT_MOUSE_BUTTON_DOWN &&
-        button ==
-            MOUSE_BUTTON_LEFT &&
         active_popup !=
             GUI_TOPBAR_POPUP_NONE &&
         hit == NULL)
@@ -2209,61 +2190,22 @@ bool gui_topbar_handle_pointer(
         gui_desktop_render();
 
         /*
-         * Let this same click continue to normal-window focusing.
+         * Preserve existing behavior:
+         *
+         * the same click may continue through input.c and focus
+         * the normal window underneath the dismissed popup.
          */
         return false;
     }
 
 
     /*
-     * --------------------------------------------------------
-     * Hover
-     * --------------------------------------------------------
-     */
-    if (type ==
-        GUI_INPUT_EVENT_MOUSE_MOVE)
-    {
-        if (hovered_button !=
-            button_hit)
-        {
-            if (hovered_button != NULL)
-            {
-                gui_button_set_hovered(
-                    hovered_button,
-                    false);
-            }
-
-            hovered_button =
-                button_hit;
-
-            if (hovered_button != NULL)
-            {
-                gui_button_set_hovered(
-                    hovered_button,
-                    true);
-            }
-
-            (void)
-                gui_topbar_render_widgets();
-
-            gui_desktop_render();
-        }
-
-        return over_shell;
-    }
-
-
-    if (button !=
-        MOUSE_BUTTON_LEFT)
-    {
-        return over_shell;
-    }
-
-
-    /*
-     * --------------------------------------------------------
-     * Press
-     * --------------------------------------------------------
+     * ========================================================
+     * BUTTON DOWN
+     * ========================================================
+     *
+     * Capture the button, but do not repaint the whole desktop
+     * just to display a transient pressed color.
      */
     if (type ==
         GUI_INPUT_EVENT_MOUSE_BUTTON_DOWN)
@@ -2277,11 +2219,6 @@ bool gui_topbar_handle_pointer(
                 pressed_button,
                 true);
 
-            (void)
-                gui_topbar_render_widgets();
-
-            gui_desktop_render();
-
             return true;
         }
 
@@ -2290,9 +2227,9 @@ bool gui_topbar_handle_pointer(
 
 
     /*
-     * --------------------------------------------------------
-     * Release / click
-     * --------------------------------------------------------
+     * ========================================================
+     * BUTTON UP / CLICK
+     * ========================================================
      */
     if (type ==
         GUI_INPUT_EVENT_MOUSE_BUTTON_UP)
@@ -2312,6 +2249,23 @@ bool gui_topbar_handle_pointer(
         pressed_button =
             NULL;
 
+        /*
+         * Hover rendering is intentionally disabled during this
+         * milestone.
+         */
+        if (hovered_button != NULL)
+        {
+            gui_button_set_hovered(
+                hovered_button,
+                false);
+        }
+
+        /*
+         * Normal captured-click semantics:
+         *
+         * press and release must occur over the same enabled
+         * button.
+         */
         if (released ==
                 button_hit &&
             released->widget.enabled)
@@ -2320,6 +2274,10 @@ bool gui_topbar_handle_pointer(
                 released);
         }
 
+        /*
+         * One completed click receives exactly one shell-surface
+         * regeneration and one complete scene reconstruction.
+         */
         (void)
             gui_topbar_render_widgets();
 
@@ -2330,3 +2288,4 @@ bool gui_topbar_handle_pointer(
 
     return over_shell;
 }
+
