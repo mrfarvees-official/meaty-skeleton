@@ -9,7 +9,7 @@ typedef struct vnode vnode_t;
 typedef struct file file_t;
 
 #define DOUBLE_READ_BUFFER_SIZE (64u * 1024u)
-#define VFS_DIRENT_NAME_MAX     256u
+#define VFS_DIRENT_NAME_MAX 256u
 
 typedef enum vnode_type
 {
@@ -52,6 +52,11 @@ typedef struct vnode_ops
         size_t *next_offset);
 
     int (*create)(
+        vnode_t *directory,
+        const char *name,
+        vnode_t **result);
+
+    int (*mkdir)(
         vnode_t *directory,
         const char *name,
         vnode_t **result);
@@ -150,6 +155,9 @@ int vfs_open(
     const char *path,
     uint32_t flags,
     file_t **result);
+
+int vfs_mkdir(
+    const char *path);
 
 int vfs_read(
     file_t *file,

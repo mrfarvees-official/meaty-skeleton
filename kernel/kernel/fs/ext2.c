@@ -114,27 +114,34 @@ static int ext2_vnode_readdir(
     vfs_dirent_t *entry,
     size_t *next_offset);
 
+static int ext2_vnode_mkdir(
+    vnode_t *directory,
+    const char *name,
+    vnode_t **result);
+
 static const vnode_ops_t ext2_directory_ops;
 static const vnode_ops_t ext2_file_ops;
 
 static const vnode_ops_t ext2_directory_ops =
-{
-    .lookup = ext2_vnode_lookup,
-    .readdir = ext2_vnode_readdir,
-    .create = ext2_vnode_create,
-    .write = NULL,
-    .read = NULL,
-    .truncate = NULL,
+    {
+        .lookup = ext2_vnode_lookup,
+        .readdir = ext2_vnode_readdir,
+        .create = ext2_vnode_create,
+        .mkdir = ext2_vnode_mkdir,
+        .read = NULL,
+        .write = NULL,
+        .truncate = NULL,
 };
 
 static const vnode_ops_t ext2_file_ops =
-{
-    .lookup = NULL,
-    .readdir = NULL,
-    .create = NULL,
-    .read = ext2_vnode_read,
-    .write = ext2_vnode_write,
-    .truncate = ext2_vnode_truncate,
+    {
+        .lookup = NULL,
+        .readdir = NULL,
+        .create = NULL,
+        .mkdir = NULL,
+        .read = ext2_vnode_read,
+        .write = ext2_vnode_write,
+        .truncate = ext2_vnode_truncate,
 };
 
 static bool ext2_flush_allocation_context(
@@ -1341,7 +1348,8 @@ static bool ext2_write_inode(
 
 static bool ext2_initialize_new_inode(
     ext2_fs_t *fs,
-    uint32_t inode_number)
+    uint32_t inode_number,
+    uint16_t mode)
 {
     if (fs == NULL ||
         fs->device == NULL)
@@ -1456,7 +1464,7 @@ static bool ext2_initialize_new_inode(
      * zero. C2 will establish the directory link.
      */
     inode->mode =
-        EXT2_S_IFREG | 0644u;
+        mode;
 
     inode->uid = 0;
     inode->gid = 0;
@@ -1474,8 +1482,9 @@ static bool ext2_initialize_new_inode(
         block);
 }
 
-bool ext2_allocate_inode(
+static bool ext2_allocate_inode_with_mode(
     ext2_fs_t *fs,
+    uint16_t mode,
     uint32_t *inode_number)
 {
     if (fs == NULL ||
@@ -1504,10 +1513,6 @@ bool ext2_allocate_inode(
         return false;
     }
 
-    /*
-     * Inode groups are determined from inode_count, not
-     * block_count.
-     */
     uint32_t group_count =
         (superblock->inode_count +
          superblock->inodes_per_group -
@@ -1568,13 +1573,6 @@ bool ext2_allocate_inode(
                 bit +
                 1u;
 
-            /*
-             * Never hand out reserved inodes.
-             *
-             * Revision-0 filesystems do not have a meaningful
-             * first_non_reserved_inode field; inode 11 is the
-             * traditional first normal inode.
-             */
             uint32_t first_usable_inode =
                 superblock->revision_level == 0
                     ? 11u
@@ -1599,12 +1597,13 @@ bool ext2_allocate_inode(
             }
 
             /*
-             * Initialize the inode itself before publishing its
-             * allocation through the bitmap.
+             * Initialize the inode before publishing its
+             * allocation in the inode bitmap.
              */
             if (!ext2_initialize_new_inode(
                     fs,
-                    candidate))
+                    candidate,
+                    mode))
             {
                 return false;
             }
@@ -1651,6 +1650,16 @@ bool ext2_allocate_inode(
     return false;
 }
 
+bool ext2_allocate_inode(
+    ext2_fs_t *fs,
+    uint32_t *inode_number)
+{
+    return ext2_allocate_inode_with_mode(
+        fs,
+        EXT2_S_IFREG | 0644u,
+        inode_number);
+}
+
 static uint16_t ext2_directory_entry_size(
     uint8_t name_length)
 {
@@ -1660,15 +1669,25 @@ static uint16_t ext2_directory_entry_size(
     return (uint16_t)((size + 3u) & ~3u);
 }
 
-bool ext2_link_new_regular_file(
+static bool ext2_link_new_child(
     ext2_fs_t *fs,
     uint32_t directory_inode_number,
     const char *name,
-    uint32_t inode_number)
+    uint32_t inode_number,
+    uint8_t file_type,
+    uint16_t child_link_count)
 {
     if (fs == NULL ||
         fs->device == NULL ||
         name == NULL)
+    {
+        return false;
+    }
+
+    if (file_type !=
+            EXT2_FT_REG_FILE &&
+        file_type !=
+            EXT2_FT_DIR)
     {
         return false;
     }
@@ -1693,7 +1712,8 @@ bool ext2_link_new_regular_file(
         return false;
     }
 
-    if ((directory.mode & EXT2_S_IFMT) !=
+    if ((directory.mode &
+         EXT2_S_IFMT) !=
         EXT2_S_IFDIR)
     {
         return false;
@@ -1710,15 +1730,29 @@ bool ext2_link_new_regular_file(
         return false;
     }
 
-    if ((child.mode & EXT2_S_IFMT) !=
-        EXT2_S_IFREG)
+    if (file_type ==
+        EXT2_FT_REG_FILE)
     {
-        return false;
+        if ((child.mode &
+             EXT2_S_IFMT) !=
+            EXT2_S_IFREG)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if ((child.mode &
+             EXT2_S_IFMT) !=
+            EXT2_S_IFDIR)
+        {
+            return false;
+        }
     }
 
     /*
-     * This helper is specifically for establishing the first
-     * directory link of a newly allocated regular inode.
+     * This helper only establishes the first published
+     * parent-directory entry for a freshly allocated inode.
      */
     if (child.link_count != 0)
         return false;
@@ -1738,15 +1772,9 @@ bool ext2_link_new_regular_file(
 
     uint8_t block[4096];
 
-    /*
-     * For this phase, use free space in an already allocated
-     * direct directory block.
-     *
-     * Allocating a brand-new directory data block is a later
-     * extension. Failure because the directory is full is real
-     * failure, not fake creation semantics.
-     */
-    for (unsigned i = 0; i < 12; i++)
+    for (unsigned i = 0;
+         i < 12;
+         i++)
     {
         uint32_t block_number =
             directory.block[i];
@@ -1763,15 +1791,20 @@ bool ext2_link_new_regular_file(
             return false;
         }
 
-        size_t offset = 0;
+        size_t offset =
+            0;
 
-        while (offset < block_size)
+        while (offset <
+               block_size)
         {
             ext2_directory_entry_t *entry =
                 (ext2_directory_entry_t *)(block + offset);
 
-            if (entry->record_length < 8)
+            if (entry->record_length <
+                8u)
+            {
                 return false;
+            }
 
             if (offset +
                     entry->record_length >
@@ -1781,14 +1814,12 @@ bool ext2_link_new_regular_file(
             }
 
             if (entry->name_length >
-                entry->record_length - 8)
+                entry->record_length -
+                    8u)
             {
                 return false;
             }
 
-            /*
-             * Reject an existing name.
-             */
             if (entry->inode != 0 &&
                 entry->name_length ==
                     name_length &&
@@ -1801,12 +1832,11 @@ bool ext2_link_new_regular_file(
             }
 
             /*
-             * Case 1:
-             *
-             * Entire directory record is unused.
+             * Entire record is unused.
              */
             if (entry->inode == 0 &&
-                entry->record_length >= needed)
+                entry->record_length >=
+                    needed)
             {
                 uint16_t record_length =
                     entry->record_length;
@@ -1821,7 +1851,7 @@ bool ext2_link_new_regular_file(
                     (uint8_t)name_length;
 
                 entry->file_type =
-                    EXT2_FT_REG_FILE;
+                    file_type;
 
                 memcpy(
                     entry->name,
@@ -1829,10 +1859,11 @@ bool ext2_link_new_regular_file(
                     name_length);
 
                 /*
-                 * Establish link count before publishing the
-                 * directory entry.
+                 * Complete the child inode before making the
+                 * parent directory entry visible.
                  */
-                child.link_count = 1;
+                child.link_count =
+                    child_link_count;
 
                 if (!ext2_write_inode(
                         fs->device,
@@ -1843,16 +1874,74 @@ bool ext2_link_new_regular_file(
                     return false;
                 }
 
+                bool parent_link_changed =
+                    false;
+
+                /*
+                 * A child directory's ".." entry references
+                 * its parent, so the parent gains one link.
+                 */
+                if (file_type ==
+                    EXT2_FT_DIR)
+                {
+                    if (directory.link_count ==
+                        UINT16_MAX)
+                    {
+                        child.link_count =
+                            0;
+
+                        ext2_write_inode(
+                            fs->device,
+                            &fs->superblock,
+                            inode_number,
+                            &child);
+
+                        return false;
+                    }
+
+                    directory.link_count++;
+
+                    if (!ext2_write_inode(
+                            fs->device,
+                            &fs->superblock,
+                            directory_inode_number,
+                            &directory))
+                    {
+                        child.link_count =
+                            0;
+
+                        ext2_write_inode(
+                            fs->device,
+                            &fs->superblock,
+                            inode_number,
+                            &child);
+
+                        return false;
+                    }
+
+                    parent_link_changed =
+                        true;
+                }
+
                 if (!ext2_write_block(
                         fs->device,
                         block_size,
                         block_number,
                         block))
                 {
-                    /*
-                     * Best-effort rollback.
-                     */
-                    child.link_count = 0;
+                    if (parent_link_changed)
+                    {
+                        directory.link_count--;
+
+                        ext2_write_inode(
+                            fs->device,
+                            &fs->superblock,
+                            directory_inode_number,
+                            &directory);
+                    }
+
+                    child.link_count =
+                        0;
 
                     ext2_write_inode(
                         fs->device,
@@ -1867,11 +1956,7 @@ bool ext2_link_new_regular_file(
             }
 
             /*
-             * Case 2:
-             *
-             * A live entry owns more record space than its
-             * name actually requires. Split that record and
-             * place the new entry in the slack.
+             * Split slack from a live entry.
              */
             if (entry->inode != 0)
             {
@@ -1897,20 +1982,22 @@ bool ext2_link_new_regular_file(
                         inode_number;
 
                     new_entry->record_length =
-                        old_length - actual;
+                        old_length -
+                        actual;
 
                     new_entry->name_length =
                         (uint8_t)name_length;
 
                     new_entry->file_type =
-                        EXT2_FT_REG_FILE;
+                        file_type;
 
                     memcpy(
                         new_entry->name,
                         name,
                         name_length);
 
-                    child.link_count = 1;
+                    child.link_count =
+                        child_link_count;
 
                     if (!ext2_write_inode(
                             fs->device,
@@ -1921,13 +2008,70 @@ bool ext2_link_new_regular_file(
                         return false;
                     }
 
+                    bool parent_link_changed =
+                        false;
+
+                    if (file_type ==
+                        EXT2_FT_DIR)
+                    {
+                        if (directory.link_count ==
+                            UINT16_MAX)
+                        {
+                            child.link_count =
+                                0;
+
+                            ext2_write_inode(
+                                fs->device,
+                                &fs->superblock,
+                                inode_number,
+                                &child);
+
+                            return false;
+                        }
+
+                        directory.link_count++;
+
+                        if (!ext2_write_inode(
+                                fs->device,
+                                &fs->superblock,
+                                directory_inode_number,
+                                &directory))
+                        {
+                            child.link_count =
+                                0;
+
+                            ext2_write_inode(
+                                fs->device,
+                                &fs->superblock,
+                                inode_number,
+                                &child);
+
+                            return false;
+                        }
+
+                        parent_link_changed =
+                            true;
+                    }
+
                     if (!ext2_write_block(
                             fs->device,
                             block_size,
                             block_number,
                             block))
                     {
-                        child.link_count = 0;
+                        if (parent_link_changed)
+                        {
+                            directory.link_count--;
+
+                            ext2_write_inode(
+                                fs->device,
+                                &fs->superblock,
+                                directory_inode_number,
+                                &directory);
+                        }
+
+                        child.link_count =
+                            0;
 
                         ext2_write_inode(
                             fs->device,
@@ -1942,11 +2086,27 @@ bool ext2_link_new_regular_file(
                 }
             }
 
-            offset += entry->record_length;
+            offset +=
+                entry->record_length;
         }
     }
 
     return false;
+}
+
+bool ext2_link_new_regular_file(
+    ext2_fs_t *fs,
+    uint32_t directory_inode_number,
+    const char *name,
+    uint32_t inode_number)
+{
+    return ext2_link_new_child(
+        fs,
+        directory_inode_number,
+        name,
+        inode_number,
+        EXT2_FT_REG_FILE,
+        1u);
 }
 
 bool ext2_list_directory(
@@ -2337,8 +2497,7 @@ static int ext2_vnode_readdir(
     }
 
     uint32_t block_size =
-        1024u <<
-        fs->superblock.log_block_size;
+        1024u << fs->superblock.log_block_size;
 
     if (block_size == 0u ||
         block_size > 4096u)
@@ -2368,8 +2527,7 @@ static int ext2_vnode_readdir(
             block_size;
 
         uint32_t block_number =
-            inode->block[
-                logical_block];
+            inode->block[logical_block];
 
         /*
          * A sparse directory block is unusual, but skipping it is
@@ -2406,9 +2564,8 @@ static int ext2_vnode_readdir(
         }
 
         ext2_directory_entry_t *disk_entry =
-            (ext2_directory_entry_t *)
-                (block +
-                 offset_in_block);
+            (ext2_directory_entry_t *)(block +
+                                       offset_in_block);
 
         if (disk_entry->record_length <
             8u)
@@ -3561,3 +3718,351 @@ static int ext2_vnode_truncate(
 
     return 0;
 }
+
+static int ext2_vnode_mkdir(
+    vnode_t *directory,
+    const char *name,
+    vnode_t **result)
+{
+    if (directory == NULL ||
+        name == NULL ||
+        result == NULL)
+    {
+        return -1;
+    }
+
+    if (directory->type !=
+        VNODE_DIRECTORY)
+    {
+        return -1;
+    }
+
+    size_t name_length =
+        strlen(name);
+
+    if (name_length == 0 ||
+        name_length > 255)
+    {
+        return -1;
+    }
+
+    /*
+     * "." and ".." are structural directory entries and may
+     * never be created through mkdir.
+     */
+    if ((name_length == 1 &&
+         name[0] == '.') ||
+        (name_length == 2 &&
+         name[0] == '.' &&
+         name[1] == '.'))
+    {
+        return -1;
+    }
+
+    ext2_vnode_data_t *parent_data =
+        (ext2_vnode_data_t *)
+            directory->private_data;
+
+    if (parent_data == NULL ||
+        parent_data->fs == NULL)
+    {
+        return -1;
+    }
+
+    ext2_fs_t *fs =
+        parent_data->fs;
+
+    /*
+     * Never create over an existing entry.
+     */
+    vnode_t *existing =
+        NULL;
+
+    if (ext2_vnode_lookup(
+            directory,
+            name,
+            &existing) == 0)
+    {
+        vnode_unref(
+            existing);
+
+        return -1;
+    }
+
+    uint32_t inode_number =
+        0;
+
+    if (!ext2_allocate_inode_with_mode(
+            fs,
+            EXT2_S_IFDIR | 0755u,
+            &inode_number))
+    {
+        return -1;
+    }
+
+    ext2_inode_t child;
+
+    if (!ext2_read_inode(
+            fs->device,
+            &fs->superblock,
+            inode_number,
+            &child))
+    {
+        return -1;
+    }
+
+    uint32_t block_size =
+        1024u <<
+        fs->superblock.log_block_size;
+
+    if (block_size == 0 ||
+        block_size > 4096 ||
+        fs->device->sector_size == 0 ||
+        block_size %
+                fs->device->sector_size !=
+            0)
+    {
+        return -1;
+    }
+
+    /*
+     * Allocate exactly one initial directory data block.
+     */
+    ext2_allocation_context_t allocation;
+
+    memset(
+        &allocation,
+        0,
+        sizeof(allocation));
+
+    allocation.fs =
+        fs;
+
+    uint32_t directory_block =
+        0;
+
+    if (!ext2_allocate_block(
+            &allocation,
+            &directory_block))
+    {
+        return -1;
+    }
+
+    if (directory_block == 0)
+        return -1;
+
+    /*
+     * Persist the allocation before exposing the block through
+     * the inode.
+     */
+    if (!ext2_flush_allocation_context(
+            &allocation))
+    {
+        return -1;
+    }
+
+    if (allocation.allocated_blocks >
+        0u)
+    {
+        if (!ext2_write_superblock(
+                fs->device,
+                &fs->superblock))
+        {
+            return -1;
+        }
+    }
+
+    uint8_t block[4096];
+
+    memset(
+        block,
+        0,
+        block_size);
+
+    /*
+     * "." entry.
+     */
+    ext2_directory_entry_t *dot =
+        (ext2_directory_entry_t *)
+            block;
+
+    uint16_t dot_size =
+        ext2_directory_entry_size(
+            1u);
+
+    dot->inode =
+        inode_number;
+
+    dot->record_length =
+        dot_size;
+
+    dot->name_length =
+        1u;
+
+    dot->file_type =
+        EXT2_FT_DIR;
+
+    dot->name[0] =
+        '.';
+
+    /*
+     * ".." owns the remainder of the block.
+     */
+    ext2_directory_entry_t *dotdot =
+        (ext2_directory_entry_t *)
+            (block +
+             dot_size);
+
+    dotdot->inode =
+        parent_data->inode_number;
+
+    dotdot->record_length =
+        (uint16_t)(
+            block_size -
+            dot_size);
+
+    dotdot->name_length =
+        2u;
+
+    dotdot->file_type =
+        EXT2_FT_DIR;
+
+    dotdot->name[0] =
+        '.';
+
+    dotdot->name[1] =
+        '.';
+
+    if (!ext2_write_block(
+            fs->device,
+            block_size,
+            directory_block,
+            block))
+    {
+        /*
+         * Allocation is already published. Free it again if
+         * initialization of the data block fails.
+         */
+        ext2_free_block(
+            fs,
+            directory_block);
+
+        return -1;
+    }
+
+    child.mode =
+        EXT2_S_IFDIR |
+        0755u;
+
+    child.size_low =
+        block_size;
+
+    child.size_high =
+        0u;
+
+    /*
+     * ext2_link_new_child() establishes the final link count
+     * immediately before publishing the parent's directory entry.
+     */
+    child.link_count =
+        0u;
+
+    child.block[0] =
+        directory_block;
+
+    child.sector_count =
+        block_size /
+        fs->device->sector_size;
+
+    if (!ext2_write_inode(
+            fs->device,
+            &fs->superblock,
+            inode_number,
+            &child))
+    {
+        ext2_free_block(
+            fs,
+            directory_block);
+
+        return -1;
+    }
+
+    /*
+     * Account for this directory in its inode block group.
+     */
+    uint32_t inode_index =
+        inode_number -
+        1u;
+
+    uint32_t inode_group =
+        inode_index /
+        fs->superblock.inodes_per_group;
+
+    ext2_block_group_descriptor_t descriptor;
+
+    if (!ext2_read_group_descriptor(
+            fs->device,
+            &fs->superblock,
+            inode_group,
+            &descriptor))
+    {
+        return -1;
+    }
+
+    if (descriptor.used_dirs_count ==
+        UINT16_MAX)
+    {
+        return -1;
+    }
+
+    descriptor.used_dirs_count++;
+
+    if (!ext2_write_group_descriptor(
+            fs->device,
+            &fs->superblock,
+            inode_group,
+            &descriptor))
+    {
+        return -1;
+    }
+
+    /*
+     * Publish the new directory into its parent only after its
+     * inode and "."/".." block are valid.
+     */
+    if (!ext2_link_new_child(
+            fs,
+            parent_data->inode_number,
+            name,
+            inode_number,
+            EXT2_FT_DIR,
+            2u))
+    {
+        /*
+         * Best-effort accounting rollback.
+         */
+        if (descriptor.used_dirs_count >
+            0u)
+        {
+            descriptor.used_dirs_count--;
+
+            ext2_write_group_descriptor(
+                fs->device,
+                &fs->superblock,
+                inode_group,
+                &descriptor);
+        }
+
+        return -1;
+    }
+
+    /*
+     * Reuse normal lookup so vnode construction remains in
+     * one place.
+     */
+    return ext2_vnode_lookup(
+        directory,
+        name,
+        result);
+}
+

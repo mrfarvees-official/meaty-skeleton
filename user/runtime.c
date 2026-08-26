@@ -15,6 +15,7 @@
 #define SYS_CHDIR           15u
 #define SYS_GETCWD          16u
 #define SYS_READDIR         17u
+#define SYS_MKDIR           18u
 
 #define USER_STDIO_CHUNK    128u
 
@@ -292,3 +293,14 @@ int32_t user_readdir(
         (uint32_t)(uintptr_t)entry);
 }
 
+int32_t user_mkdir(
+    const char *path)
+{
+    if (path == NULL)
+        return -1;
+
+    return syscall1(
+        SYS_MKDIR,
+        (uint32_t)(uintptr_t)
+            path);
+}

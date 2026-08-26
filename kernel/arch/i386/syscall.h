@@ -19,6 +19,7 @@
 #define I386_SYSCALL_OPEN                   12u
 #define I386_SYSCALL_CLOSE                  13u
 #define I386_SYSCALL_READDIR                17u
+#define I386_SYSCALL_MKDIR                  18u
 
 #define I386_DIRENT_TYPE_REGULAR            1u
 #define I386_DIRENT_TYPE_DIRECTORY          2u

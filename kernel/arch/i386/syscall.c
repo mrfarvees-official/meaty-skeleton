@@ -672,6 +672,57 @@ static int32_t syscall_readdir_file(
     return 1;
 }
 
+static int32_t syscall_mkdir(
+    uint32_t user_path_address)
+{
+    task_t *task =
+        task_current();
+
+    if (task == NULL ||
+        task->process == NULL)
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    const char *user_path =
+        (const char *)(uintptr_t)
+            user_path_address;
+
+    if (user_path == NULL)
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    char supplied_path[PROCESS_PATH_MAX];
+
+    if (!syscall_copy_user_string(
+            supplied_path,
+            sizeof(supplied_path),
+            user_path))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    char absolute_path[PROCESS_PATH_MAX];
+
+    if (!process_resolve_path(
+            task->process,
+            supplied_path,
+            absolute_path,
+            sizeof(absolute_path)))
+    {
+        return I386_SYSCALL_ERROR_INVALID_LENGTH;
+    }
+
+    if (vfs_mkdir(
+            absolute_path) != 0)
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    return 0;
+}
+
 static int32_t syscall_dispatch(
     uint32_t number,
     uint32_t arg0,
@@ -1294,6 +1345,12 @@ static int32_t syscall_dispatch(
         return syscall_readdir_file(
             arg0,
             arg1);
+    }
+
+    case I386_SYSCALL_MKDIR:
+    {
+        return syscall_mkdir(
+            arg0);
     }
 
     default:

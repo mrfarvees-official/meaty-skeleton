@@ -418,6 +418,86 @@ int vfs_open(
     return 0;
 }
 
+int vfs_mkdir(
+    const char *path)
+{
+    if (path == NULL ||
+        path[0] != '/')
+    {
+        return -1;
+    }
+
+    vnode_t *existing =
+        NULL;
+
+    if (vfs_lookup(
+            path,
+            &existing) == 0)
+    {
+        vnode_unref(
+            existing);
+
+        return -1;
+    }
+
+    vnode_t *parent =
+        NULL;
+
+    char name[256];
+
+    if (vfs_lookup_parent(
+            path,
+            &parent,
+            name,
+            sizeof(name)) != 0)
+    {
+        return -1;
+    }
+
+    if (parent == NULL ||
+        parent->type !=
+            VNODE_DIRECTORY ||
+        parent->ops == NULL ||
+        parent->ops->mkdir == NULL)
+    {
+        vnode_unref(
+            parent);
+
+        return -1;
+    }
+
+    if (name[0] == '\0')
+    {
+        vnode_unref(
+            parent);
+
+        return -1;
+    }
+
+    vnode_t *created =
+        NULL;
+
+    int result =
+        parent->ops->mkdir(
+            parent,
+            name,
+            &created);
+
+    vnode_unref(
+        parent);
+
+    if (result != 0 ||
+        created == NULL)
+    {
+        return -1;
+    }
+
+    vnode_unref(
+        created);
+
+    return 0;
+}
+
 int vfs_read(
     file_t *file,
     void *buffer,

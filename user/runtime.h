@@ -98,4 +98,7 @@ int32_t user_getcwd(
     char *buffer,
     size_t capacity);
 
+int32_t user_mkdir(
+    const char *path);
+
 #endif
