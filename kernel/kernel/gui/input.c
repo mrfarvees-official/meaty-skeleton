@@ -11,20 +11,16 @@
 #include <kernel/spinlock.h>
 #include <kernel/task.h>
 
-
 #define GUI_INPUT_EVENT_BUFFER_SIZE \
     128u
-
 
 _Static_assert(
     (GUI_INPUT_EVENT_BUFFER_SIZE &
      (GUI_INPUT_EVENT_BUFFER_SIZE - 1u)) == 0u,
     "GUI input buffer size must be a power of two");
 
-
 static gui_input_event_t
-    gui_input_events[
-        GUI_INPUT_EVENT_BUFFER_SIZE];
+    gui_input_events[GUI_INPUT_EVENT_BUFFER_SIZE];
 
 static size_t
     gui_input_read_index;
@@ -35,20 +31,17 @@ static size_t
 static uint32_t
     gui_input_dropped_events;
 
-
 static spinlock_t gui_input_lock =
     SPINLOCK_INITIALIZER;
 
 static semaphore_t
     gui_input_available;
 
-
 static bool
     gui_input_initialized;
 
 static task_t *
     gui_input_task;
-
 
 /*
  * ------------------------------------------------------------
@@ -59,11 +52,9 @@ static task_t *
 static size_t gui_input_next_index(
     size_t index)
 {
-    return
-        (index + 1u) &
-        (GUI_INPUT_EVENT_BUFFER_SIZE - 1u);
+    return (index + 1u) &
+           (GUI_INPUT_EVENT_BUFFER_SIZE - 1u);
 }
-
 
 static bool gui_input_push(
     const gui_input_event_t *event)
@@ -110,13 +101,11 @@ static bool gui_input_push(
             (gui_input_write_index - 1u) &
             (GUI_INPUT_EVENT_BUFFER_SIZE - 1u);
 
-        if (gui_input_events[
-                previous_index].type ==
+        if (gui_input_events[previous_index].type ==
             GUI_INPUT_EVENT_MOUSE_MOVE)
         {
-            gui_input_events[
-                previous_index] =
-                    *event;
+            gui_input_events[previous_index] =
+                *event;
 
             spin_unlock_irqrestore(
                 &gui_input_lock,
@@ -149,9 +138,8 @@ static bool gui_input_push(
         return false;
     }
 
-    gui_input_events[
-        gui_input_write_index] =
-            *event;
+    gui_input_events[gui_input_write_index] =
+        *event;
 
     gui_input_write_index =
         next;
@@ -169,7 +157,6 @@ static bool gui_input_push(
 
     return true;
 }
-
 
 static bool gui_input_pop(
     gui_input_event_t *event)
@@ -192,8 +179,7 @@ static bool gui_input_pop(
     }
 
     *event =
-        gui_input_events[
-            gui_input_read_index];
+        gui_input_events[gui_input_read_index];
 
     gui_input_read_index =
         gui_input_next_index(
@@ -205,7 +191,6 @@ static bool gui_input_pop(
 
     return true;
 }
-
 
 /*
  * ------------------------------------------------------------
@@ -219,11 +204,9 @@ static bool gui_input_alt_active(
     if (modifiers == NULL)
         return false;
 
-    return
-        modifiers->left_alt ||
-        modifiers->right_alt;
+    return modifiers->left_alt ||
+           modifiers->right_alt;
 }
-
 
 static bool gui_input_shift_active(
     const keyboard_modifiers_t *modifiers)
@@ -231,11 +214,9 @@ static bool gui_input_shift_active(
     if (modifiers == NULL)
         return false;
 
-    return
-        modifiers->left_shift ||
-        modifiers->right_shift;
+    return modifiers->left_shift ||
+           modifiers->right_shift;
 }
-
 
 static bool gui_input_is_global_shortcut(
     const keyboard_event_t *event)
@@ -269,7 +250,6 @@ static bool gui_input_is_global_shortcut(
 
     return false;
 }
-
 
 /*
  * ------------------------------------------------------------
@@ -316,7 +296,6 @@ bool gui_input_filter_keyboard_event(
 
     return consumed;
 }
-
 
 void gui_input_publish_mouse(
     gui_input_event_type_t type,
@@ -367,7 +346,6 @@ void gui_input_publish_mouse(
     (void)gui_input_push(
         &event);
 }
-
 
 /*
  * ------------------------------------------------------------
@@ -423,7 +401,6 @@ static void gui_input_dispatch_keyboard(
      */
 }
 
-
 static void gui_input_dispatch_mouse(
     const gui_input_event_t *event)
 {
@@ -431,13 +408,10 @@ static void gui_input_dispatch_mouse(
         return;
 
     /*
-     * System chrome receives input before application windows.
+     * System chrome receives input before normal application
+     * windows.
      *
-     * The topbar owns:
-     *
-     *     - Meaty OS / Start
-     *     - system menus
-     *     - power controls
+     * Topbar owns Start/system controls and its popup menus.
      */
     if (gui_topbar_handle_pointer(
             event->type,
@@ -449,12 +423,22 @@ static void gui_input_dispatch_mouse(
     }
 
     /*
-     * The bottom dock is intentionally application-only.
-     *
-     * It has no controls yet, therefore it needs no pointer
-     * dispatcher at this milestone.
+     * The bottom taskbar owns pinned/running application
+     * controls.
      */
+    if (gui_taskbar_handle_pointer(
+            event->type,
+            event->mouse_x,
+            event->mouse_y,
+            event->mouse_button))
+    {
+        return;
+    }
 
+    /*
+     * Normal-window focusing currently happens on left-button
+     * press only.
+     */
     if (event->type !=
             GUI_INPUT_EVENT_MOUSE_BUTTON_DOWN ||
         event->mouse_button !=
@@ -470,7 +454,6 @@ static void gui_input_dispatch_mouse(
         gui_desktop_render();
     }
 }
-
 
 static void gui_input_dispatch(
     const gui_input_event_t *event)
@@ -501,7 +484,6 @@ static void gui_input_dispatch(
         break;
     }
 }
-
 
 /*
  * ------------------------------------------------------------
@@ -535,7 +517,6 @@ static void gui_input_thread(
             &event);
     }
 }
-
 
 /*
  * ------------------------------------------------------------
@@ -575,4 +556,3 @@ bool gui_input_initialize(void)
 
     return true;
 }
-

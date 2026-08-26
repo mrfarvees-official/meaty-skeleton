@@ -11,7 +11,7 @@
 #include <kernel/gui/window.h>
 
 #include <kernel/vfs.h>
-
+#include <kernel/spawn.h>
 
 #define GUI_TASKBAR_WIDTH_PERCENT \
     75u
@@ -29,7 +29,7 @@
     12u
 
 #define GUI_TASKBAR_PANEL_HEIGHT \
-    (GUI_TASKBAR_ICON_SIZE + \
+    (GUI_TASKBAR_ICON_SIZE +     \
      GUI_TASKBAR_ICON_PADDING_Y * 2u)
 
 #define GUI_TASKBAR_BOTTOM_MARGIN \
@@ -56,22 +56,19 @@
 #define GUI_TASKBAR_DESCRIPTOR_MAX \
     1024u
 
-
 typedef struct gui_taskbar_pinned_app
 {
-    char link_name[
-        GUI_TASKBAR_PATH_MAX];
+    char link_name[GUI_TASKBAR_PATH_MAX];
 
-    char application_path[
-        GUI_TASKBAR_PATH_MAX];
+    char application_path[GUI_TASKBAR_PATH_MAX];
 
-    char icon_path[
-        GUI_TASKBAR_PATH_MAX];
+    char executable_path[GUI_TASKBAR_PATH_MAX];
+
+    char icon_path[GUI_TASKBAR_PATH_MAX];
 
     const gui_image_t *icon;
 
 } gui_taskbar_pinned_app_t;
-
 
 static bool
     taskbar_initialized;
@@ -80,12 +77,10 @@ static gui_window_t
     taskbar_window;
 
 static gui_taskbar_pinned_app_t
-    pinned_apps[
-        GUI_TASKBAR_MAX_PINNED];
+    pinned_apps[GUI_TASKBAR_MAX_PINNED];
 
 static size_t
     pinned_app_count;
-
 
 /*
  * ------------------------------------------------------------
@@ -107,7 +102,6 @@ static size_t gui_taskbar_string_length(
 
     return length;
 }
-
 
 static int gui_taskbar_string_compare(
     const char *left,
@@ -150,23 +144,19 @@ static int gui_taskbar_string_compare(
         return 0;
     }
 
-    return
-        *left == '\0'
-            ? -1
-            : 1;
+    return *left == '\0'
+               ? -1
+               : 1;
 }
-
 
 static bool gui_taskbar_string_equals(
     const char *left,
     const char *right)
 {
-    return
-        gui_taskbar_string_compare(
-            left,
-            right) == 0;
+    return gui_taskbar_string_compare(
+               left,
+               right) == 0;
 }
-
 
 static bool gui_taskbar_copy_string(
     char *destination,
@@ -201,16 +191,13 @@ static bool gui_taskbar_copy_string(
     return true;
 }
 
-
 static bool gui_taskbar_is_space(
     char character)
 {
-    return
-        character == ' ' ||
-        character == '\t' ||
-        character == '\r';
+    return character == ' ' ||
+           character == '\t' ||
+           character == '\r';
 }
-
 
 static char *gui_taskbar_trim_left(
     char *text)
@@ -226,7 +213,6 @@ static char *gui_taskbar_trim_left(
 
     return text;
 }
-
 
 static void gui_taskbar_trim_right(
     char *text)
@@ -249,7 +235,6 @@ static void gui_taskbar_trim_right(
         '\0';
 }
 
-
 static char *gui_taskbar_find_character(
     char *text,
     char wanted)
@@ -267,7 +252,6 @@ static char *gui_taskbar_find_character(
 
     return NULL;
 }
-
 
 static bool gui_taskbar_has_suffix(
     const char *text,
@@ -311,7 +295,6 @@ static bool gui_taskbar_has_suffix(
     return true;
 }
 
-
 /*
  * ------------------------------------------------------------
  * Filesystem helpers
@@ -347,8 +330,7 @@ static bool gui_taskbar_build_child_path(
     }
 
     bool needs_slash =
-        directory[
-            directory_length - 1u] != '/';
+        directory[directory_length - 1u] != '/';
 
     size_t required =
         directory_length +
@@ -392,7 +374,6 @@ static bool gui_taskbar_build_child_path(
 
     return true;
 }
-
 
 static bool gui_taskbar_read_file(
     const char *path,
@@ -507,7 +488,6 @@ static bool gui_taskbar_read_file(
     return true;
 }
 
-
 /*
  * ------------------------------------------------------------
  * Descriptor parser
@@ -546,9 +526,8 @@ static bool gui_taskbar_read_ini_value(
         return false;
     }
 
-    char contents[
-        GUI_TASKBAR_DESCRIPTOR_MAX +
-        1u];
+    char contents[GUI_TASKBAR_DESCRIPTOR_MAX +
+                  1u];
 
     if (!gui_taskbar_read_file(
             path,
@@ -707,7 +686,6 @@ static bool gui_taskbar_read_ini_value(
     return false;
 }
 
-
 /*
  * ------------------------------------------------------------
  * Pinned application discovery
@@ -731,8 +709,7 @@ static bool gui_taskbar_load_one_link(
         return false;
     }
 
-    char link_path[
-        GUI_TASKBAR_PATH_MAX];
+    char link_path[GUI_TASKBAR_PATH_MAX];
 
     if (!gui_taskbar_build_child_path(
             GUI_TASKBAR_DIRECTORY,
@@ -743,8 +720,7 @@ static bool gui_taskbar_load_one_link(
         return false;
     }
 
-    char application_path[
-        GUI_TASKBAR_PATH_MAX];
+    char application_path[GUI_TASKBAR_PATH_MAX];
 
     if (!gui_taskbar_read_ini_value(
             link_path,
@@ -763,8 +739,19 @@ static bool gui_taskbar_load_one_link(
         return false;
     }
 
-    char icon_path[
-        GUI_TASKBAR_PATH_MAX];
+    char executable_path[GUI_TASKBAR_PATH_MAX];
+
+    if (!gui_taskbar_read_ini_value(
+            application_path,
+            "Application",
+            "Exec",
+            executable_path,
+            sizeof(executable_path)))
+    {
+        return false;
+    }
+
+    char icon_path[GUI_TASKBAR_PATH_MAX];
 
     if (!gui_taskbar_read_ini_value(
             application_path,
@@ -807,6 +794,15 @@ static bool gui_taskbar_load_one_link(
     }
 
     if (!gui_taskbar_copy_string(
+            result->executable_path,
+            sizeof(
+                result->executable_path),
+            executable_path))
+    {
+        return false;
+    }
+
+    if (!gui_taskbar_copy_string(
             result->icon_path,
             sizeof(result->icon_path),
             icon_path))
@@ -819,7 +815,6 @@ static bool gui_taskbar_load_one_link(
 
     return true;
 }
-
 
 static void gui_taskbar_sort_pinned_apps(void)
 {
@@ -838,8 +833,7 @@ static void gui_taskbar_sort_pinned_apps(void)
 
         while (j > 0u &&
                gui_taskbar_string_compare(
-                   pinned_apps[j - 1u].
-                       link_name,
+                   pinned_apps[j - 1u].link_name,
                    current.link_name) > 0)
         {
             pinned_apps[j] =
@@ -852,7 +846,6 @@ static void gui_taskbar_sort_pinned_apps(void)
             current;
     }
 }
-
 
 static void gui_taskbar_discover_pinned_apps(void)
 {
@@ -916,6 +909,9 @@ static void gui_taskbar_discover_pinned_apps(void)
         app.application_path[0] =
             '\0';
 
+        app.executable_path[0] =
+            '\0';
+
         app.icon_path[0] =
             '\0';
 
@@ -933,9 +929,8 @@ static void gui_taskbar_discover_pinned_apps(void)
             continue;
         }
 
-        pinned_apps[
-            pinned_app_count] =
-                app;
+        pinned_apps[pinned_app_count] =
+            app;
 
         pinned_app_count++;
     }
@@ -956,6 +951,112 @@ static void gui_taskbar_discover_pinned_apps(void)
     gui_taskbar_sort_pinned_apps();
 }
 
+static bool gui_taskbar_panel_rect(
+    gui_rect_t *result)
+{
+    if (result == NULL)
+        return false;
+
+    gui_surface_t *surface =
+        gui_window_surface(
+            &taskbar_window);
+
+    if (surface == NULL ||
+        surface->pixels == NULL)
+    {
+        return false;
+    }
+
+    result->x =
+        GUI_TASKBAR_SHADOW_PADDING_X;
+
+    result->y =
+        GUI_TASKBAR_SHADOW_PADDING_TOP;
+
+    result->width =
+        surface->width -
+        GUI_TASKBAR_SHADOW_PADDING_X *
+            2u;
+
+    result->height =
+        GUI_TASKBAR_PANEL_HEIGHT;
+
+    return true;
+}
+
+static bool gui_taskbar_icon_rect(
+    size_t index,
+    gui_rect_t *result)
+{
+    if (result == NULL ||
+        index >= pinned_app_count ||
+        pinned_app_count == 0u)
+    {
+        return false;
+    }
+
+    gui_rect_t panel;
+
+    if (!gui_taskbar_panel_rect(
+            &panel))
+    {
+        return false;
+    }
+
+    uint64_t icons_width =
+        (uint64_t)pinned_app_count *
+        GUI_TASKBAR_ICON_SIZE;
+
+    uint64_t gaps_width =
+        pinned_app_count > 1u
+            ? (uint64_t)(pinned_app_count - 1u) *
+                  GUI_TASKBAR_ICON_GAP
+            : 0u;
+
+    uint64_t content_width =
+        icons_width +
+        gaps_width;
+
+    uint32_t usable_width =
+        panel.width >
+                GUI_TASKBAR_PANEL_PADDING_X *
+                    2u
+            ? panel.width -
+                  GUI_TASKBAR_PANEL_PADDING_X *
+                      2u
+            : 0u;
+
+    if (content_width >
+        usable_width)
+    {
+        return false;
+    }
+
+    int32_t first_x =
+        panel.x +
+        (int32_t)((panel.width -
+                   (uint32_t)content_width) /
+                  2u);
+
+    result->x =
+        first_x +
+        (int32_t)(index *
+                  (GUI_TASKBAR_ICON_SIZE +
+                   GUI_TASKBAR_ICON_GAP));
+
+    result->y =
+        panel.y +
+        (int32_t)
+            GUI_TASKBAR_ICON_PADDING_Y;
+
+    result->width =
+        GUI_TASKBAR_ICON_SIZE;
+
+    result->height =
+        GUI_TASKBAR_ICON_SIZE;
+
+    return true;
+}
 
 /*
  * ------------------------------------------------------------
@@ -987,19 +1088,11 @@ static bool gui_taskbar_render_surface(void)
 
     gui_rect_t panel;
 
-    panel.x =
-        GUI_TASKBAR_SHADOW_PADDING_X;
-
-    panel.y =
-        GUI_TASKBAR_SHADOW_PADDING_TOP;
-
-    panel.width =
-        surface->width -
-        GUI_TASKBAR_SHADOW_PADDING_X *
-            2u;
-
-    panel.height =
-        GUI_TASKBAR_PANEL_HEIGHT;
+    if (!gui_taskbar_panel_rect(
+            &panel))
+    {
+        return false;
+    }
 
     gui_painter_draw_rounded_shadow(
         surface,
@@ -1025,92 +1118,63 @@ static bool gui_taskbar_render_surface(void)
         theme->taskbar_border_thickness,
         theme->taskbar_border);
 
-    if (pinned_app_count == 0u)
-        return true;
-
-    uint64_t icons_width =
-        (uint64_t)pinned_app_count *
-        GUI_TASKBAR_ICON_SIZE;
-
-    uint64_t gaps_width =
-        pinned_app_count > 1u
-            ? (uint64_t)
-              (pinned_app_count - 1u) *
-              GUI_TASKBAR_ICON_GAP
-            : 0u;
-
-    uint64_t content_width =
-        icons_width +
-        gaps_width;
-
-    uint32_t usable_width =
-        panel.width >
-                GUI_TASKBAR_PANEL_PADDING_X *
-                    2u
-            ? panel.width -
-              GUI_TASKBAR_PANEL_PADDING_X *
-                  2u
-            : 0u;
-
-    if (content_width >
-        usable_width)
+    for (size_t index = 0u;
+         index < pinned_app_count;
+         ++index)
     {
-        /*
-         * GUI_TASKBAR_MAX_PINNED is deliberately conservative,
-         * but never draw outside the usable panel if the screen
-         * is unusually narrow.
-         */
-        return true;
-    }
-
-    int32_t icon_x =
-        panel.x +
-        (int32_t)(
-            (panel.width -
-             (uint32_t)content_width) /
-            2u);
-
-    int32_t icon_y =
-        panel.y +
-        (int32_t)
-            GUI_TASKBAR_ICON_PADDING_Y;
-
-    for (size_t i = 0u;
-         i < pinned_app_count;
-         ++i)
-    {
-        if (pinned_apps[i].icon !=
+        if (pinned_apps[index].icon ==
             NULL)
         {
-            gui_rect_t icon_rect;
-
-            icon_rect.x =
-                icon_x;
-
-            icon_rect.y =
-                icon_y;
-
-            icon_rect.width =
-                GUI_TASKBAR_ICON_SIZE;
-
-            icon_rect.height =
-                GUI_TASKBAR_ICON_SIZE;
-
-            gui_image_draw_scaled(
-                surface,
-                pinned_apps[i].icon,
-                icon_rect);
+            continue;
         }
 
-        icon_x +=
-            (int32_t)(
-                GUI_TASKBAR_ICON_SIZE +
-                GUI_TASKBAR_ICON_GAP);
+        gui_rect_t icon_rect;
+
+        if (!gui_taskbar_icon_rect(
+                index,
+                &icon_rect))
+        {
+            continue;
+        }
+
+        gui_image_draw_scaled(
+            surface,
+            pinned_apps[index].icon,
+            icon_rect);
     }
 
     return true;
 }
 
+static bool gui_taskbar_launch(
+    size_t index)
+{
+    if (index >=
+        pinned_app_count)
+    {
+        return false;
+    }
+
+    gui_taskbar_pinned_app_t *app =
+        &pinned_apps[index];
+
+    if (app->executable_path[0] != '/')
+        return false;
+
+    const char *argv[1];
+
+    argv[0] =
+        app->executable_path;
+
+    process_id_t pid =
+        process_spawn_user(
+            app->executable_path,
+            1u,
+            argv);
+
+    return pid !=
+           PROCESS_ID_INVALID;
+}
 
 /*
  * ------------------------------------------------------------
@@ -1146,10 +1210,9 @@ bool gui_taskbar_initialize(void)
     gui_taskbar_discover_pinned_apps();
 
     uint32_t panel_width =
-        (uint32_t)
-        (((uint64_t)screen->width *
-          GUI_TASKBAR_WIDTH_PERCENT) /
-         100u);
+        (uint32_t)(((uint64_t)screen->width *
+                    GUI_TASKBAR_WIDTH_PERCENT) /
+                   100u);
 
     if (panel_width == 0u ||
         panel_width > screen->width)
@@ -1186,9 +1249,8 @@ bool gui_taskbar_initialize(void)
     }
 
     int32_t window_x =
-        (int32_t)
-        (panel_x -
-         GUI_TASKBAR_SHADOW_PADDING_X);
+        (int32_t)(panel_x -
+                  GUI_TASKBAR_SHADOW_PADDING_X);
 
     uint32_t visible_panel_y =
         screen->height -
@@ -1202,9 +1264,8 @@ bool gui_taskbar_initialize(void)
     }
 
     int32_t window_y =
-        (int32_t)
-        (visible_panel_y -
-         GUI_TASKBAR_SHADOW_PADDING_TOP);
+        (int32_t)(visible_panel_y -
+                  GUI_TASKBAR_SHADOW_PADDING_TOP);
 
     if (!gui_window_create(
             &taskbar_window,
@@ -1231,7 +1292,6 @@ bool gui_taskbar_initialize(void)
     return true;
 }
 
-
 /*
  * ------------------------------------------------------------
  * Composition
@@ -1245,4 +1305,94 @@ void gui_taskbar_composite(void)
 
     gui_window_composite(
         &taskbar_window);
+}
+
+bool gui_taskbar_handle_pointer(
+    gui_input_event_type_t type,
+    int32_t x,
+    int32_t y,
+    mouse_button_t button)
+{
+    if (!taskbar_initialized)
+        return false;
+
+    int32_t local_x =
+        x -
+        taskbar_window.x;
+
+    int32_t local_y =
+        y -
+        taskbar_window.y;
+
+    gui_rect_t panel;
+
+    if (!gui_taskbar_panel_rect(
+            &panel))
+    {
+        return false;
+    }
+
+    bool inside_panel =
+        local_x >= panel.x &&
+        local_y >= panel.y &&
+        local_x <
+            panel.x +
+            (int32_t)panel.width &&
+        local_y <
+            panel.y +
+            (int32_t)panel.height;
+
+    if (!inside_panel)
+        return false;
+
+    /*
+     * The dock owns pointer events anywhere inside its visible
+     * panel so clicks never fall through into application
+     * windows behind it.
+     */
+    if (type !=
+            GUI_INPUT_EVENT_MOUSE_BUTTON_DOWN ||
+        button !=
+            MOUSE_BUTTON_LEFT)
+    {
+        return true;
+    }
+
+    for (size_t index = 0u;
+         index < pinned_app_count;
+         ++index)
+    {
+        gui_rect_t icon_rect;
+
+        if (!gui_taskbar_icon_rect(
+                index,
+                &icon_rect))
+        {
+            continue;
+        }
+
+        bool inside_icon =
+            local_x >=
+                icon_rect.x &&
+            local_y >=
+                icon_rect.y &&
+            local_x <
+                icon_rect.x +
+                (int32_t)
+                    icon_rect.width &&
+            local_y <
+                icon_rect.y +
+                (int32_t)
+                    icon_rect.height;
+
+        if (!inside_icon)
+            continue;
+
+        (void)gui_taskbar_launch(
+            index);
+
+        return true;
+    }
+
+    return true;
 }
