@@ -29,16 +29,16 @@ USER_LDFLAGS = \
 #
 # Shared userspace support sources.
 #
-# These produce .o files but must NOT become standalone .nex programs.
-#
 SUPPORT_SOURCES := \
 	runtime.c \
-	app_descriptor.c
+	app_descriptor.c \
+	link_descriptor.c
 
-SUPPORT_OBJS := $(SUPPORT_SOURCES:.c=.o)
+SUPPORT_OBJS := \
+	$(SUPPORT_SOURCES:.c=.o)
 
 #
-# Every other .c file becomes a userspace executable.
+# Every other C source becomes a userspace executable.
 #
 PROGRAM_SOURCES := \
 	$(filter-out $(SUPPORT_SOURCES),$(wildcard *.c))
@@ -54,7 +54,7 @@ PROGRAM_OBJS := \
 all: $(PROGRAMS)
 
 #
-# appinfo needs the application-descriptor parser.
+# appinfo uses the application descriptor parser.
 #
 appinfo.nex: appinfo.o app_descriptor.o crt0.o runtime.o linker.ld
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) \
@@ -65,7 +65,19 @@ appinfo.nex: appinfo.o app_descriptor.o crt0.o runtime.o linker.ld
 		appinfo.o
 
 #
-# Ordinary userspace programs currently need only crt0 + runtime.
+# linkinfo resolves both link and application descriptors.
+#
+linkinfo.nex: linkinfo.o link_descriptor.o app_descriptor.o crt0.o runtime.o linker.ld
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) \
+		-o $@ \
+		crt0.o \
+		runtime.o \
+		link_descriptor.o \
+		app_descriptor.o \
+		linkinfo.o
+
+#
+# Ordinary programs need only crt0 + runtime.
 #
 %.nex: %.o crt0.o runtime.o linker.ld
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) \
@@ -75,26 +87,32 @@ appinfo.nex: appinfo.o app_descriptor.o crt0.o runtime.o linker.ld
 		$<
 
 #
-# Generic userspace C compilation.
+# Generic C compilation.
 #
 %.o: %.c runtime.h
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
 		-c $< \
 		-o $@
 
-#
-# Explicit dependency because this source also uses
-# app_descriptor.h.
-#
 app_descriptor.o: app_descriptor.c app_descriptor.h runtime.h
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
 		-c app_descriptor.c \
 		-o app_descriptor.o
 
+link_descriptor.o: link_descriptor.c link_descriptor.h runtime.h
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
+		-c link_descriptor.c \
+		-o link_descriptor.o
+
 appinfo.o: appinfo.c app_descriptor.h runtime.h
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
 		-c appinfo.c \
 		-o appinfo.o
+
+linkinfo.o: linkinfo.c link_descriptor.h app_descriptor.h runtime.h
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
+		-c linkinfo.c \
+		-o linkinfo.o
 
 runtime.o: runtime.c runtime.h
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
