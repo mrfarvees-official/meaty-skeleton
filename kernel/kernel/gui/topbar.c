@@ -1627,13 +1627,25 @@ static void gui_topbar_clock_thread(
     for (;;)
     {
         /*
-         * GUI rendering remains in normal task context,
-         * never IRQ0.
+         * The topbar is now fully opaque.
+         *
+         * That allows the clock to refresh and composite only the
+         * topbar window without reconstructing the wallpaper,
+         * normal windows, popups, or application dock.
+         *
+         * gui_window_composite() marks only the topbar bounds as
+         * damaged, so gui_compositor_present() transfers only that
+         * strip to the framebuffer.
+         *
+         * Rendering remains in NORMAL task context, never IRQ0.
          */
         if (topbar_initialized &&
             gui_topbar_refresh())
         {
-            gui_desktop_render();
+            gui_window_composite(
+                &topbar_window);
+
+            gui_compositor_present();
         }
 
         task_sleep(
@@ -2084,7 +2096,6 @@ bool gui_topbar_handle_pointer(
     bool over_shell =
         hit != NULL;
 
-
     /*
      * ========================================================
      * POINTER MOVE
@@ -2133,7 +2144,6 @@ bool gui_topbar_handle_pointer(
         return over_shell;
     }
 
-
     /*
      * ========================================================
      * NON-LEFT BUTTONS
@@ -2144,7 +2154,6 @@ bool gui_topbar_handle_pointer(
     {
         return over_shell;
     }
-
 
     /*
      * ========================================================
@@ -2198,7 +2207,6 @@ bool gui_topbar_handle_pointer(
         return false;
     }
 
-
     /*
      * ========================================================
      * BUTTON DOWN
@@ -2224,7 +2232,6 @@ bool gui_topbar_handle_pointer(
 
         return over_shell;
     }
-
 
     /*
      * ========================================================
@@ -2288,4 +2295,3 @@ bool gui_topbar_handle_pointer(
 
     return over_shell;
 }
-
