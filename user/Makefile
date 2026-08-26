@@ -26,32 +26,85 @@ USER_LDFLAGS = \
 	-Wl,-z,max-page-size=0x1000 \
 	-Wl,-T,linker.ld
 
-# C files which are libraries/support files, not executables.
-SUPPORT_SOURCES := runtime.c
+#
+# Shared userspace support sources.
+#
+# These produce .o files but must NOT become standalone .nex programs.
+#
+SUPPORT_SOURCES := \
+	runtime.c \
+	app_descriptor.c
 
-# Every other .c file in this directory becomes a .nex executable.
-PROGRAM_SOURCES := $(filter-out $(SUPPORT_SOURCES),$(wildcard *.c))
-PROGRAMS := $(PROGRAM_SOURCES:.c=.nex)
-PROGRAM_OBJS := $(PROGRAM_SOURCES:.c=.o)
+SUPPORT_OBJS := $(SUPPORT_SOURCES:.c=.o)
+
+#
+# Every other .c file becomes a userspace executable.
+#
+PROGRAM_SOURCES := \
+	$(filter-out $(SUPPORT_SOURCES),$(wildcard *.c))
+
+PROGRAMS := \
+	$(PROGRAM_SOURCES:.c=.nex)
+
+PROGRAM_OBJS := \
+	$(PROGRAM_SOURCES:.c=.o)
 
 .PHONY: all clean install
 
 all: $(PROGRAMS)
 
-# Build every userspace executable.
+#
+# appinfo needs the application-descriptor parser.
+#
+appinfo.nex: appinfo.o app_descriptor.o crt0.o runtime.o linker.ld
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) \
+		-o $@ \
+		crt0.o \
+		runtime.o \
+		app_descriptor.o \
+		appinfo.o
+
+#
+# Ordinary userspace programs currently need only crt0 + runtime.
+#
 %.nex: %.o crt0.o runtime.o linker.ld
 	$(CC) $(CFLAGS) $(USER_CFLAGS) $(LDFLAGS) $(USER_LDFLAGS) \
-		-o $@ crt0.o runtime.o $<
+		-o $@ \
+		crt0.o \
+		runtime.o \
+		$<
 
-# Compile program source files.
+#
+# Generic userspace C compilation.
+#
 %.o: %.c runtime.h
-	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
+		-c $< \
+		-o $@
+
+#
+# Explicit dependency because this source also uses
+# app_descriptor.h.
+#
+app_descriptor.o: app_descriptor.c app_descriptor.h runtime.h
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
+		-c app_descriptor.c \
+		-o app_descriptor.o
+
+appinfo.o: appinfo.c app_descriptor.h runtime.h
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
+		-c appinfo.c \
+		-o appinfo.o
 
 runtime.o: runtime.c runtime.h
-	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
+		-c runtime.c \
+		-o runtime.o
 
 crt0.o: crt0.S
-	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(USER_CFLAGS) $(CPPFLAGS) \
+		-c crt0.S \
+		-o crt0.o
 
 install: $(PROGRAMS)
 	mkdir -p "$(DESTDIR)$(BINDIR)"
@@ -61,4 +114,8 @@ install: $(PROGRAMS)
 	done
 
 clean:
-	rm -f $(PROGRAMS) $(PROGRAM_OBJS) runtime.o crt0.o
+	rm -f \
+		$(PROGRAMS) \
+		$(PROGRAM_OBJS) \
+		$(SUPPORT_OBJS) \
+		crt0.o
