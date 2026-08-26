@@ -9,6 +9,7 @@ typedef struct vnode vnode_t;
 typedef struct file file_t;
 
 #define DOUBLE_READ_BUFFER_SIZE (64u * 1024u)
+#define VFS_DIRENT_NAME_MAX     256u
 
 typedef enum vnode_type
 {
@@ -18,6 +19,14 @@ typedef enum vnode_type
     VNODE_BLOCK_DEVICE,
     VNODE_SYMLINK
 } vnode_type_t;
+
+typedef struct vfs_dirent
+{
+    uint64_t inode;
+    vnode_type_t type;
+
+    char name[VFS_DIRENT_NAME_MAX];
+} vfs_dirent_t;
 
 typedef struct vnode_ops
 {
@@ -102,16 +111,6 @@ struct file
     size_t offset;
     uint32_t flags;
 };
-
-#define VFS_DIRENT_NAME_MAX 256u
-
-typedef struct vfs_dirent
-{
-    uint64_t inode;
-    vnode_type_t type;
-
-    char name[VFS_DIRENT_NAME_MAX];
-} vfs_dirent_t;
 
 /*
  * Initial VFS setup
