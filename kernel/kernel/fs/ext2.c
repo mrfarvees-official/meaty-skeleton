@@ -108,25 +108,33 @@ static bool ext2_write_superblock(
     block_device_t *device,
     const ext2_superblock_t *superblock);
 
+static int ext2_vnode_readdir(
+    vnode_t *directory,
+    size_t offset,
+    vfs_dirent_t *entry,
+    size_t *next_offset);
+
 static const vnode_ops_t ext2_directory_ops;
 static const vnode_ops_t ext2_file_ops;
 
 static const vnode_ops_t ext2_directory_ops =
-    {
-        .lookup = ext2_vnode_lookup,
-        .create = ext2_vnode_create,
-        .write = NULL,
-        .read = NULL,
-        .truncate = NULL,
+{
+    .lookup = ext2_vnode_lookup,
+    .readdir = ext2_vnode_readdir,
+    .create = ext2_vnode_create,
+    .write = NULL,
+    .read = NULL,
+    .truncate = NULL,
 };
 
 static const vnode_ops_t ext2_file_ops =
-    {
-        .lookup = NULL,
-        .create = NULL,
-        .read = ext2_vnode_read,
-        .write = ext2_vnode_write,
-        .truncate = ext2_vnode_truncate,
+{
+    .lookup = NULL,
+    .readdir = NULL,
+    .create = NULL,
+    .read = ext2_vnode_read,
+    .write = ext2_vnode_write,
+    .truncate = ext2_vnode_truncate,
 };
 
 static bool ext2_flush_allocation_context(
@@ -2283,6 +2291,253 @@ static bool ext2_read_file_cached(
     *bytes_read = total;
 
     return true;
+}
+
+static int ext2_vnode_readdir(
+    vnode_t *directory,
+    size_t offset,
+    vfs_dirent_t *result,
+    size_t *next_offset)
+{
+    if (directory == NULL ||
+        result == NULL ||
+        next_offset == NULL)
+    {
+        return -1;
+    }
+
+    if (directory->type !=
+        VNODE_DIRECTORY)
+    {
+        return -1;
+    }
+
+    ext2_vnode_data_t *data =
+        (ext2_vnode_data_t *)
+            directory->private_data;
+
+    if (data == NULL ||
+        data->fs == NULL ||
+        data->fs->device == NULL)
+    {
+        return -1;
+    }
+
+    ext2_fs_t *fs =
+        data->fs;
+
+    ext2_inode_t *inode =
+        &data->inode;
+
+    if ((inode->mode &
+         EXT2_S_IFMT) !=
+        EXT2_S_IFDIR)
+    {
+        return -1;
+    }
+
+    uint32_t block_size =
+        1024u <<
+        fs->superblock.log_block_size;
+
+    if (block_size == 0u ||
+        block_size > 4096u)
+    {
+        return -1;
+    }
+
+    size_t directory_size =
+        (size_t)inode->size_low;
+
+    while (offset <
+           directory_size)
+    {
+        size_t logical_block =
+            offset /
+            block_size;
+
+        /*
+         * Directory lookup currently supports the twelve direct
+         * blocks, so readdir deliberately follows the same limit.
+         */
+        if (logical_block >= 12u)
+            return -1;
+
+        size_t offset_in_block =
+            offset %
+            block_size;
+
+        uint32_t block_number =
+            inode->block[
+                logical_block];
+
+        /*
+         * A sparse directory block is unusual, but skipping it is
+         * safer than interpreting zero as a real disk block.
+         */
+        if (block_number == 0u)
+        {
+            size_t next =
+                (logical_block + 1u) *
+                block_size;
+
+            if (next <= offset)
+                return -1;
+
+            offset = next;
+            continue;
+        }
+
+        uint8_t block[4096];
+
+        if (!ext2_read_block(
+                fs->device,
+                block_size,
+                block_number,
+                block))
+        {
+            return -1;
+        }
+
+        if (offset_in_block + 8u >
+            block_size)
+        {
+            return -1;
+        }
+
+        ext2_directory_entry_t *disk_entry =
+            (ext2_directory_entry_t *)
+                (block +
+                 offset_in_block);
+
+        if (disk_entry->record_length <
+            8u)
+        {
+            return -1;
+        }
+
+        if (offset_in_block +
+                disk_entry->record_length >
+            block_size)
+        {
+            return -1;
+        }
+
+        if (disk_entry->name_length >
+            disk_entry->record_length -
+                8u)
+        {
+            return -1;
+        }
+
+        size_t following_offset =
+            offset +
+            disk_entry->record_length;
+
+        if (following_offset <=
+            offset)
+        {
+            return -1;
+        }
+
+        if (following_offset >
+            directory_size)
+        {
+            return -1;
+        }
+
+        /*
+         * inode == 0 is an unused directory slot.
+         */
+        if (disk_entry->inode == 0u)
+        {
+            offset =
+                following_offset;
+
+            continue;
+        }
+
+        result->inode =
+            disk_entry->inode;
+
+        size_t name_length =
+            disk_entry->name_length;
+
+        if (name_length >=
+            sizeof(result->name))
+        {
+            return -1;
+        }
+
+        memcpy(
+            result->name,
+            disk_entry->name,
+            name_length);
+
+        result->name[name_length] =
+            '\0';
+
+        /*
+         * ext2 revision >= 1 normally gives us file_type directly.
+         *
+         * Fall back to the inode mode when the directory entry does
+         * not contain a useful type.
+         */
+        if (disk_entry->file_type ==
+            EXT2_FT_DIR)
+        {
+            result->type =
+                VNODE_DIRECTORY;
+        }
+        else if (disk_entry->file_type ==
+                 EXT2_FT_REG_FILE)
+        {
+            result->type =
+                VNODE_REGULAR;
+        }
+        else
+        {
+            ext2_inode_t child;
+
+            if (!ext2_read_inode(
+                    fs->device,
+                    &fs->superblock,
+                    disk_entry->inode,
+                    &child))
+            {
+                return -1;
+            }
+
+            if ((child.mode &
+                 EXT2_S_IFMT) ==
+                EXT2_S_IFDIR)
+            {
+                result->type =
+                    VNODE_DIRECTORY;
+            }
+            else if ((child.mode &
+                      EXT2_S_IFMT) ==
+                     EXT2_S_IFREG)
+            {
+                result->type =
+                    VNODE_REGULAR;
+            }
+            else
+            {
+                return -1;
+            }
+        }
+
+        *next_offset =
+            following_offset;
+
+        return 1;
+    }
+
+    *next_offset =
+        directory_size;
+
+    return 0;
 }
 
 static int ext2_vnode_lookup(vnode_t *directory, const char *name, vnode_t **result)

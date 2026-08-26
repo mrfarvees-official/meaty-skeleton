@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <kernel/vfs.h>
 
 #define KERNEL_FD_FIRST    3
 #define KERNEL_FD_MAX      64
@@ -40,6 +41,10 @@ int kernel_fd_read(
     void *buffer,
     size_t size,
     size_t *bytes_read);
+
+int kernel_fd_readdir(
+    int fd,
+    vfs_dirent_t *entry);
 
 /**
  * Write to an open descriptor

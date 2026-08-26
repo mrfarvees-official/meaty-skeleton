@@ -23,8 +23,8 @@ static vnode_t *vfs_root = NULL;
  *      test
  */
 static const char *vfs_next_component(
-    const char *path, 
-    char *component, 
+    const char *path,
+    char *component,
     size_t component_size)
 {
     size_t length = 0;
@@ -222,7 +222,7 @@ static int vfs_lookup_parent(
 }
 
 int vfs_lookup(
-    const char *path, 
+    const char *path,
     vnode_t **result)
 {
     if (path == NULL || result == NULL)
@@ -301,8 +301,8 @@ int vfs_lookup(
 }
 
 int vfs_open(
-    const char *path, 
-    uint32_t flags, 
+    const char *path,
+    uint32_t flags,
     file_t **result)
 {
     if (path == NULL || result == NULL)
@@ -351,9 +351,24 @@ int vfs_open(
     }
 
     /*
-     * For now don't allow opening directories as files.
+     * Regular files and directories may both have descriptors.
+     *
+     * Directories are read-only at this layer. Their descriptor
+     * offset becomes the readdir cursor.
      */
-    if (node->type != VNODE_REGULAR)
+    if (node->type == VNODE_DIRECTORY)
+    {
+        if ((flags & VFS_OPEN_READ) == 0 ||
+            (flags & (VFS_OPEN_WRITE |
+                      VFS_OPEN_APPEND |
+                      VFS_OPEN_CREATE |
+                      VFS_OPEN_TRUNC)) != 0)
+        {
+            vnode_unref(node);
+            return -1;
+        }
+    }
+    else if (node->type != VNODE_REGULAR)
     {
         vnode_unref(node);
         return -1;
@@ -404,9 +419,9 @@ int vfs_open(
 }
 
 int vfs_read(
-    file_t *file, 
-    void *buffer, 
-    size_t size, 
+    file_t *file,
+    void *buffer,
+    size_t size,
     size_t *bytes_read)
 {
     if (file == NULL || buffer == NULL || bytes_read == NULL)
@@ -442,9 +457,9 @@ int vfs_read(
 }
 
 int vfs_write(
-    file_t *file, 
-    const void *buffer, 
-    size_t size, 
+    file_t *file,
+    const void *buffer,
+    size_t size,
     size_t *bytes_written)
 {
     if (file == NULL || buffer == NULL || bytes_written == NULL)
@@ -481,6 +496,58 @@ int vfs_write(
     *bytes_written = count;
 
     return 0;
+}
+
+int vfs_readdir(
+    file_t *file,
+    vfs_dirent_t *entry)
+{
+    if (file == NULL ||
+        entry == NULL)
+    {
+        return -1;
+    }
+
+    if ((file->flags &
+         VFS_OPEN_READ) == 0)
+    {
+        return -1;
+    }
+
+    vnode_t *node =
+        file->vnode;
+
+    if (node == NULL ||
+        node->type != VNODE_DIRECTORY ||
+        node->ops == NULL ||
+        node->ops->readdir == NULL)
+    {
+        return -1;
+    }
+
+    size_t next_offset =
+        file->offset;
+
+    int result =
+        node->ops->readdir(
+            node,
+            file->offset,
+            entry,
+            &next_offset);
+
+    if (result < 0)
+        return -1;
+
+    if (next_offset <
+        file->offset)
+    {
+        return -1;
+    }
+
+    file->offset =
+        next_offset;
+
+    return result;
 }
 
 void vfs_close(file_t *file)

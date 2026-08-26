@@ -3,19 +3,20 @@
 
 #include "runtime.h"
 
-#define SYS_EXIT        5u
-#define SYS_YIELD       7u
-#define SYS_WAITPID     8u
-#define SYS_SPAWN       9u
-#define SYS_READ        10u
-#define SYS_WRITE       11u
-#define SYS_OPEN        12u
-#define SYS_CLOSE       13u
-#define SYS_KEY_EVENT   14u
-#define SYS_CHDIR       15u
-#define SYS_GETCWD      16u
+#define SYS_EXIT            5u
+#define SYS_YIELD           7u
+#define SYS_WAITPID         8u
+#define SYS_SPAWN           9u
+#define SYS_READ            10u
+#define SYS_WRITE           11u
+#define SYS_OPEN            12u
+#define SYS_CLOSE           13u
+#define SYS_KEY_EVENT       14u
+#define SYS_CHDIR           15u
+#define SYS_GETCWD          16u
+#define SYS_READDIR         17u
 
-#define USER_STDIO_CHUNK 128u
+#define USER_STDIO_CHUNK    128u
 
 
 static int32_t syscall0(
@@ -281,4 +282,13 @@ int32_t user_getcwd(
         (uint32_t)capacity);
 }
 
+int32_t user_readdir(
+    int fd,
+    user_dirent_t *entry)
+{
+    return syscall2(
+        SYS_READDIR,
+        (uint32_t)fd,
+        (uint32_t)(uintptr_t)entry);
+}
 

@@ -32,9 +32,15 @@ typedef struct vnode_ops
      * Returns the vnode for /etc/config.
      */
     int (*lookup)(
-        vnode_t *directory, 
-        const char *name, 
+        vnode_t *directory,
+        const char *name,
         vnode_t **result);
+
+    int (*readdir)(
+        vnode_t *directory,
+        size_t offset,
+        vfs_dirent_t *entry,
+        size_t *next_offset);
 
     int (*create)(
         vnode_t *directory,
@@ -45,10 +51,10 @@ typedef struct vnode_ops
      * Read bytes from a regular file.
      */
     int (*read)(
-        vnode_t *node, 
-        size_t offset, 
-        void *buffer, 
-        size_t size, 
+        vnode_t *node,
+        size_t offset,
+        void *buffer,
+        size_t size,
         size_t *bytes_read);
 
     /*
@@ -58,10 +64,10 @@ typedef struct vnode_ops
      * but putting it into the interface now is useful.
      */
     int (*write)(
-        vnode_t *node, 
-        size_t offset, 
-        const void *buffer, 
-        size_t size, 
+        vnode_t *node,
+        size_t offset,
+        const void *buffer,
+        size_t size,
         size_t *bytes_written);
 
     int (*truncate)(
@@ -71,9 +77,9 @@ typedef struct vnode_ops
 
 struct vnode
 {
-    vnode_type_t        type;
-    uint64_t            inode;
-    uint64_t            size;
+    vnode_type_t type;
+    uint64_t inode;
+    uint64_t size;
 
     /*
      * Filesystem-specific information.
@@ -81,21 +87,31 @@ struct vnode
      * ext2 can eventually store an ext2 inode reference here.
      * ramfs can store a ramfs node pointer here.
      */
-    void                *private_data;
-    const vnode_ops_t   *ops;
+    void *private_data;
+    const vnode_ops_t *ops;
 
     /*
      * VFS reference count
      */
-    volatile uint32_t   ref_count;
+    volatile uint32_t ref_count;
 };
 
 struct file
 {
-    vnode_t     *vnode;
-    size_t      offset;
-    uint32_t    flags;
+    vnode_t *vnode;
+    size_t offset;
+    uint32_t flags;
 };
+
+#define VFS_DIRENT_NAME_MAX 256u
+
+typedef struct vfs_dirent
+{
+    uint64_t inode;
+    vnode_type_t type;
+
+    char name[VFS_DIRENT_NAME_MAX];
+} vfs_dirent_t;
 
 /*
  * Initial VFS setup
@@ -104,7 +120,7 @@ void vfs_initialize(void);
 
 /*
  * Install the root vnode.
- * 
+ *
  * Initially RAMFS will call this
  * Later ext2_mount() can call this instead.
  */
@@ -132,20 +148,32 @@ void vnode_unref(vnode_t *node);
  * File API
  */
 int vfs_open(
-    const char *path, 
-    uint32_t flags, 
+    const char *path,
+    uint32_t flags,
     file_t **result);
 
 int vfs_read(
-    file_t *file, 
-    void *buffer, 
-    size_t size, 
+    file_t *file,
+    void *buffer,
+    size_t size,
     size_t *bytes_read);
 
+/*
+ * Read the next entry from an open directory.
+ *
+ * Returns:
+ *     1  entry returned
+ *     0  end of directory
+ *    -1  error
+ */
+int vfs_readdir(
+    file_t *file,
+    vfs_dirent_t *entry);
+
 int vfs_write(
-    file_t *file, 
-    const void *buffer, 
-    size_t size, 
+    file_t *file,
+    const void *buffer,
+    size_t size,
     size_t *bytes_written);
 
 void vfs_close(file_t *file);
@@ -160,14 +188,14 @@ int vfs_seek(
  * vnode reference management
  */
 
-#define VFS_OPEN_READ   0x0001u
-#define VFS_OPEN_WRITE  0x0002u
+#define VFS_OPEN_READ 0x0001u
+#define VFS_OPEN_WRITE 0x0002u
 #define VFS_OPEN_APPEND 0x0004u
 #define VFS_OPEN_CREATE 0x0008u
-#define VFS_OPEN_TRUNC  0x0010u
+#define VFS_OPEN_TRUNC 0x0010u
 
-#define VFS_SEEK_SET    0
-#define VFS_SEEK_CUR    1
-#define VFS_SEEK_END    2
+#define VFS_SEEK_SET 0
+#define VFS_SEEK_CUR 1
+#define VFS_SEEK_END 2
 
 #endif

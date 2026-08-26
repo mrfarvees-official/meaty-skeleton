@@ -559,6 +559,119 @@ static int32_t syscall_read_key_event(void)
     return 0;
 }
 
+static int32_t syscall_readdir_file(
+    uint32_t fd,
+    uint32_t user_entry_address)
+{
+    if (fd <
+        KERNEL_FD_FIRST)
+    {
+        return I386_SYSCALL_ERROR_BAD_FD;
+    }
+
+    i386_syscall_dirent_t *user_entry =
+        (i386_syscall_dirent_t *)(uintptr_t)
+            user_entry_address;
+
+    if (user_entry == NULL)
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    /*
+     * Validate the complete destination before advancing the
+     * directory descriptor's cursor.
+     */
+    i386_syscall_dirent_t probe;
+
+    if (!copy_from_user(
+            &probe,
+            user_entry,
+            sizeof(probe)))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    if (!copy_to_user(
+            user_entry,
+            &probe,
+            sizeof(probe)))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    vfs_dirent_t entry;
+
+    int result =
+        kernel_fd_readdir(
+            (int)fd,
+            &entry);
+
+    if (result < 0)
+    {
+        return I386_SYSCALL_ERROR_BAD_FD;
+    }
+
+    if (result == 0)
+        return 0;
+
+    if (entry.inode >
+        UINT32_MAX)
+    {
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    i386_syscall_dirent_t output;
+
+    memset(
+        &output,
+        0,
+        sizeof(output));
+
+    output.inode =
+        (uint32_t)entry.inode;
+
+    switch (entry.type)
+    {
+    case VNODE_REGULAR:
+        output.type =
+            I386_DIRENT_TYPE_REGULAR;
+        break;
+
+    case VNODE_DIRECTORY:
+        output.type =
+            I386_DIRENT_TYPE_DIRECTORY;
+        break;
+
+    default:
+        return I386_SYSCALL_ERROR_INVALID_STATE;
+    }
+
+    size_t name_length =
+        strlen(entry.name);
+
+    if (name_length >=
+        sizeof(output.name))
+    {
+        return I386_SYSCALL_ERROR_INVALID_LENGTH;
+    }
+
+    memcpy(
+        output.name,
+        entry.name,
+        name_length + 1u);
+
+    if (!copy_to_user(
+            user_entry,
+            &output,
+            sizeof(output)))
+    {
+        return I386_SYSCALL_ERROR_BAD_ADDRESS;
+    }
+
+    return 1;
+}
+
 static int32_t syscall_dispatch(
     uint32_t number,
     uint32_t arg0,
@@ -1172,6 +1285,13 @@ static int32_t syscall_dispatch(
     case I386_SYSCALL_GETCWD:
     {
         return syscall_getcwd(
+            arg0,
+            arg1);
+    }
+
+    case I386_SYSCALL_READDIR:
+    {
+        return syscall_readdir_file(
             arg0,
             arg1);
     }

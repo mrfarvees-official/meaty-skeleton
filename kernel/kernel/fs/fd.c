@@ -107,6 +107,35 @@ int kernel_fd_read(
         bytes_read);
 }
 
+int kernel_fd_readdir(
+    int fd,
+    vfs_dirent_t *entry)
+{
+    if (!kernel_fd_valid(fd) ||
+        entry == NULL)
+    {
+        return -1;
+    }
+
+    uint32_t irq_flags =
+        spin_lock_irqsave(
+            &fd_lock);
+
+    file_t *file =
+        fd_table[fd].file;
+
+    spin_unlock_irqrestore(
+        &fd_lock,
+        irq_flags);
+
+    if (file == NULL)
+        return -1;
+
+    return vfs_readdir(
+        file,
+        entry);
+}
+
 int kernel_fd_write(
     int fd,
     const void *buffer,
