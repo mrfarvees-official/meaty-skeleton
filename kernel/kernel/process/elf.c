@@ -421,10 +421,10 @@ static bool map_user_stack(
         return false;
     }
 
-    printf(
-        "ELF: allocating user stack: %lu bytes, %lu pages\n",
-        (unsigned long)stack_size,
-        (unsigned long)stack_page_count);
+    // printf(
+    //     "ELF: allocating user stack: %lu bytes, %lu pages\n",
+    //     (unsigned long)stack_size,
+    //     (unsigned long)stack_page_count);
 
     /*
      * Validate argc/argv before allocating anything.
@@ -759,12 +759,12 @@ static bool map_user_stack(
     *initial_stack_pointer =
         stack_pointer;
 
-    printf(
-        "ELF: stack ready bottom=0x%lx top=0x%lx esp=0x%lx pages=%lu\n",
-        (unsigned long)stack_address,
-        (unsigned long)stack_top,
-        (unsigned long)stack_pointer,
-        (unsigned long)stack_page_count);
+    // printf(
+    //     "ELF: stack ready bottom=0x%lx top=0x%lx esp=0x%lx pages=%lu\n",
+    //     (unsigned long)stack_address,
+    //     (unsigned long)stack_top,
+    //     (unsigned long)stack_pointer,
+    //     (unsigned long)stack_page_count);
 
     return true;
 }

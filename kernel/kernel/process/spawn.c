@@ -216,16 +216,16 @@ static void process_user_task_entry(
         task_exit();
     }
 
-    log_success(
-        "spawn: entering userspace "
-        "pid=%u tid=%u "
-        "entry=0x%lx esp=0x%lx\n",
-        (unsigned)process_id(
-            task->process),
-        (unsigned)task->id,
-        (unsigned long)entry,
-        (unsigned long)
-            stack_pointer);
+    // log_success(
+    //     "spawn: entering userspace "
+    //     "pid=%u tid=%u "
+    //     "entry=0x%lx esp=0x%lx\n",
+    //     (unsigned)process_id(
+    //         task->process),
+    //     (unsigned)task->id,
+    //     (unsigned long)entry,
+    //     (unsigned long)
+    //         stack_pointer);
 
     arch_enter_user(
         entry,
@@ -497,11 +497,11 @@ process_id_t process_spawn_user(
         return 0;
     }
 
-    log_success(
-        "spawn: loaded %s (%lu bytes)\n",
-        path,
-        (unsigned long)
-            executable_size);
+    // log_success(
+    //     "spawn: loaded %s (%lu bytes)\n",
+    //     path,
+    //     (unsigned long)
+    //         executable_size);
 
     /*
      * ----------------------------------------------------------
@@ -832,23 +832,23 @@ process_id_t process_spawn_user(
     uintptr_t user_esp =
         launch->stack_pointer;
 
-    log_success(
-        "spawn: prepared %s "
-        "pid=%u parent=%u tid=%u "
-        "CR3=0x%lx entry=0x%lx "
-        "ESP=0x%lx stack=%lu KiB\n",
-        path,
-        (unsigned)pid,
-        (unsigned)parent_pid,
-        (unsigned)tid,
-        (unsigned long)
-            task_directory,
-        (unsigned long)
-            user_entry,
-        (unsigned long)
-            user_esp,
-        (unsigned long)(PROCESS_USER_STACK_SIZE /
-                        1024u));
+    // log_success(
+    //     "spawn: prepared %s "
+    //     "pid=%u parent=%u tid=%u "
+    //     "CR3=0x%lx entry=0x%lx "
+    //     "ESP=0x%lx stack=%lu KiB\n",
+    //     path,
+    //     (unsigned)pid,
+    //     (unsigned)parent_pid,
+    //     (unsigned)tid,
+    //     (unsigned long)
+    //         task_directory,
+    //     (unsigned long)
+    //         user_entry,
+    //     (unsigned long)
+    //         user_esp,
+    //     (unsigned long)(PROCESS_USER_STACK_SIZE /
+    //                     1024u));
 
     /*
      * ----------------------------------------------------------
@@ -892,13 +892,13 @@ process_id_t process_spawn_user(
     task_publish(
         task);
 
-    log_success(
-        "spawn: published %s "
-        "pid=%u parent=%u tid=%u\n",
-        path,
-        (unsigned)pid,
-        (unsigned)parent_pid,
-        (unsigned)tid);
+    // log_success(
+    //     "spawn: published %s "
+    //     "pid=%u parent=%u tid=%u\n",
+    //     path,
+    //     (unsigned)pid,
+    //     (unsigned)parent_pid,
+    //     (unsigned)tid);
 
     /*
      * Userspace process creation returns PID.

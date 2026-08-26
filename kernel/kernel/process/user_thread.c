@@ -244,19 +244,19 @@ static void user_thread_kernel_entry(
     /*
      * This is now a real thread inside a real process.
      */
-    log_success(
-        "U12.4: worker entering userspace "
-        "pid=%u tid=%u CR3=0x%lx "
-        "slot=%lu ESP=0x%lx\n",
-        (unsigned)process_id(
-            process),
-        (unsigned)task->id,
-        (unsigned long)
-            current_directory,
-        (unsigned long)
-            stack_slot,
-        (unsigned long)
-            stack_pointer);
+    // log_success(
+    //     "U12.4: worker entering userspace "
+    //     "pid=%u tid=%u CR3=0x%lx "
+    //     "slot=%lu ESP=0x%lx\n",
+    //     (unsigned)process_id(
+    //         process),
+    //     (unsigned)task->id,
+    //     (unsigned long)
+    //         current_directory,
+    //     (unsigned long)
+    //         stack_slot,
+    //     (unsigned long)
+    //         stack_pointer);
 
     arch_enter_user(
         entry,
@@ -645,24 +645,24 @@ task_id_t user_thread_create_current(
     task_id_t worker_tid =
         worker->id;
 
-    log_success(
-        "U12.4: thread prepared "
-        "pid=%u parent=%u worker=%u "
-        "threads=%lu CR3=0x%lx "
-        "slot=%lu stack=[0x%lx,0x%lx)\n",
-        (unsigned)pid,
-        (unsigned)parent_tid,
-        (unsigned)worker_tid,
-        (unsigned long)
-            process_threads,
-        (unsigned long)
-            worker_directory,
-        (unsigned long)
-            stack.slot_index,
-        (unsigned long)
-            stack.stack_bottom,
-        (unsigned long)
-            stack.stack_top);
+    // log_success(
+    //     "U12.4: thread prepared "
+    //     "pid=%u parent=%u worker=%u "
+    //     "threads=%lu CR3=0x%lx "
+    //     "slot=%lu stack=[0x%lx,0x%lx)\n",
+    //     (unsigned)pid,
+    //     (unsigned)parent_tid,
+    //     (unsigned)worker_tid,
+    //     (unsigned long)
+    //         process_threads,
+    //     (unsigned long)
+    //         worker_directory,
+    //     (unsigned long)
+    //         stack.slot_index,
+    //     (unsigned long)
+    //         stack.stack_bottom,
+    //     (unsigned long)
+    //         stack.stack_top);
 
     /*
      * ----------------------------------------------------------

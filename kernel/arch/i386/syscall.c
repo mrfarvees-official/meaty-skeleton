@@ -13,6 +13,8 @@
 #include <kernel/fd.h>
 #include <kernel/vfs.h>
 
+#include <kernel/gui/terminal_session.h>
+
 #include "interrupts.h"
 #include "syscall.h"
 
@@ -81,9 +83,7 @@ static int32_t syscall_read_stdio(
         (size_t)requested_length;
 
     if (length == 0u)
-    {
         return 0;
-    }
 
     if (length >
         SYSCALL_STDIO_MAX)
@@ -92,7 +92,8 @@ static int32_t syscall_read_stdio(
     }
 
     void *user_buffer =
-        (void *)(uintptr_t)user_buffer_address;
+        (void *)(uintptr_t)
+            user_buffer_address;
 
     if (user_buffer == NULL)
     {
@@ -102,18 +103,13 @@ static int32_t syscall_read_stdio(
     char buffer[SYSCALL_STDIO_MAX];
 
     /*
-     * Validate the entire userspace destination before consuming
-     * either keyboard or file input.
+     * Validate userspace destination before consuming input.
      */
     if (!copy_from_user(
             buffer,
             user_buffer,
-            length))
-    {
-        return I386_SYSCALL_ERROR_BAD_ADDRESS;
-    }
-
-    if (!copy_to_user(
+            length) ||
+        !copy_to_user(
             user_buffer,
             buffer,
             length))
@@ -121,38 +117,58 @@ static int32_t syscall_read_stdio(
         return I386_SYSCALL_ERROR_BAD_ADDRESS;
     }
 
-    /*
-     * ----------------------------------------------------------
-     * fd 0: non-blocking keyboard input
-     * ----------------------------------------------------------
-     */
     if (fd == 0u)
     {
+        task_t *task =
+            task_current();
+
+        gui_terminal_session_t *session =
+            NULL;
+
+        if (task != NULL &&
+            task->process != NULL)
+        {
+            session =
+                gui_terminal_session_for_process(
+                    task->process);
+        }
+
         size_t received =
             0u;
 
-        while (received <
-               length)
+        if (session != NULL)
         {
-            char character =
-                '\0';
-
-            if (!keyboard_read_character(
-                    &character))
+            received =
+                gui_terminal_session_read(
+                    session,
+                    buffer,
+                    length);
+        }
+        else
+        {
+            /*
+             * Preserve legacy console behavior for programs not
+             * attached to a GUI Terminal.
+             */
+            while (received <
+                   length)
             {
-                break;
+                char character =
+                    '\0';
+
+                if (!keyboard_read_character(
+                        &character))
+                {
+                    break;
+                }
+
+                buffer[received++] =
+                    character;
             }
-
-            buffer[received] =
-                character;
-
-            ++received;
         }
 
         if (received == 0u)
-        {
             return 0;
-        }
 
         if (!copy_to_user(
                 user_buffer,
@@ -165,11 +181,6 @@ static int32_t syscall_read_stdio(
         return (int32_t)received;
     }
 
-    /*
-     * ----------------------------------------------------------
-     * fd >= 3: VFS-backed file input
-     * ----------------------------------------------------------
-     */
     if (fd >=
         KERNEL_FD_FIRST)
     {
@@ -186,9 +197,7 @@ static int32_t syscall_read_stdio(
         }
 
         if (bytes_read == 0u)
-        {
             return 0;
-        }
 
         if (bytes_read >
             length)
@@ -219,9 +228,7 @@ static int32_t syscall_write_stdio(
         (size_t)requested_length;
 
     if (length == 0u)
-    {
         return 0;
-    }
 
     if (length >
         SYSCALL_STDIO_MAX)
@@ -230,7 +237,8 @@ static int32_t syscall_write_stdio(
     }
 
     const void *user_buffer =
-        (const void *)(uintptr_t)user_buffer_address;
+        (const void *)(uintptr_t)
+            user_buffer_address;
 
     if (user_buffer == NULL)
     {
@@ -247,22 +255,43 @@ static int32_t syscall_write_stdio(
         return I386_SYSCALL_ERROR_BAD_ADDRESS;
     }
 
-    /*
-     * Terminal stdout/stderr.
-     */
     if (fd == 1u ||
         fd == 2u)
     {
-        terminal_write(
-            buffer,
-            length);
+        task_t *task =
+            task_current();
+
+        gui_terminal_session_t *session =
+            NULL;
+
+        if (task != NULL &&
+            task->process != NULL)
+        {
+            session =
+                gui_terminal_session_for_process(
+                    task->process);
+        }
+
+        if (session != NULL)
+        {
+            gui_terminal_session_write(
+                session,
+                buffer,
+                length);
+        }
+        else
+        {
+            /*
+             * Kernel/legacy console endpoint remains available.
+             */
+            terminal_write(
+                buffer,
+                length);
+        }
 
         return (int32_t)length;
     }
 
-    /*
-     * VFS-backed file.
-     */
     if (fd >=
         KERNEL_FD_FIRST)
     {
@@ -870,15 +899,15 @@ static int32_t syscall_dispatch(
         int status =
             (int)(int32_t)arg0;
 
-        printf(
-            "[EXIT] tid=%u pid=%u state=%u "
-            "status=%d CR3=0x%lx\n",
-            (unsigned)task->id,
-            (unsigned)pid,
-            (unsigned)state,
-            status,
-            (unsigned long)
-                paging_current_directory());
+        // printf(
+        //     "[EXIT] tid=%u pid=%u state=%u "
+        //     "status=%d CR3=0x%lx\n",
+        //     (unsigned)task->id,
+        //     (unsigned)pid,
+        //     (unsigned)state,
+        //     status,
+        //     (unsigned long)
+        //         paging_current_directory());
 
         if (!process_set_exit_status(
                 process,
@@ -894,10 +923,10 @@ static int32_t syscall_dispatch(
             return I386_SYSCALL_ERROR_INVALID_STATE;
         }
 
-        printf(
-            "[EXIT] tid=%u pid=%u calling task_exit()\n",
-            (unsigned)task->id,
-            (unsigned)pid);
+        // printf(
+        //     "[EXIT] tid=%u pid=%u calling task_exit()\n",
+        //     (unsigned)task->id,
+        //     (unsigned)pid);
 
         task_exit();
 

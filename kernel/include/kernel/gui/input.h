@@ -34,41 +34,23 @@ typedef struct gui_input_event
     keyboard_key_t key;
     keyboard_modifiers_t modifiers;
 
+    /*
+     * Already translated by the keyboard driver.
+     *
+     * '\0' means the key does not directly represent text.
+     */
+    char character;
+
 } gui_input_event_t;
 
 
-/*
- * Initialize the GUI input dispatcher and its NORMAL kernel task.
- *
- * The task may be created before scheduling begins. It will not run
- * until the scheduler is enabled.
- */
 bool gui_input_initialize(void);
 
 
-/*
- * Keyboard event arbitration.
- *
- * Called from IRQ1 context.
- *
- * Every keyboard event needed by the GUI is copied into the GUI
- * event queue.
- *
- * Returns true when the event is a global GUI shortcut and therefore
- * must NOT also be published into the existing terminal/shell input
- * streams.
- *
- * Must never allocate, block, render, or perform filesystem work.
- */
 bool gui_input_filter_keyboard_event(
     const keyboard_event_t *event);
 
 
-/*
- * Publish an already-positioned mouse event.
- *
- * Called from normal mouse-cursor task context, not IRQ12.
- */
 void gui_input_publish_mouse(
     gui_input_event_type_t type,
     int32_t x,

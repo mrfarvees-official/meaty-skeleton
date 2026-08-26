@@ -7,6 +7,8 @@
 #include <kernel/gui/window.h>
 #include <kernel/gui/topbar.h>
 #include <kernel/gui/taskbar.h>
+#include <kernel/gui/terminal_session.h>
+
 #include <kernel/semaphore.h>
 #include <kernel/spinlock.h>
 #include <kernel/task.h>
@@ -277,19 +279,26 @@ bool gui_input_filter_keyboard_event(
             ? GUI_INPUT_EVENT_KEY_DOWN
             : GUI_INPUT_EVENT_KEY_UP;
 
-    gui_event.mouse_x = 0;
-    gui_event.mouse_y = 0;
+    gui_event.mouse_x =
+        0;
+
+    gui_event.mouse_y =
+        0;
 
     gui_event.mouse_button =
         MOUSE_BUTTON_LEFT;
 
-    gui_event.mouse_buttons = 0u;
+    gui_event.mouse_buttons =
+        0u;
 
     gui_event.key =
         event->key;
 
     gui_event.modifiers =
         event->modifiers;
+
+    gui_event.character =
+        event->character;
 
     (void)gui_input_push(
         &gui_event);
@@ -343,6 +352,9 @@ void gui_input_publish_mouse(
     event.modifiers =
         modifiers;
 
+    event.character =
+        '\0';
+
     (void)gui_input_push(
         &event);
 }
@@ -367,38 +379,64 @@ static void gui_input_dispatch_keyboard(
         gui_input_alt_active(
             &event->modifiers);
 
-    if (!alt)
-        return;
-
-    if (event->key ==
-        KEY_TAB)
+    if (alt)
     {
-        bool changed;
-
-        if (gui_input_shift_active(
-                &event->modifiers))
+        if (event->key ==
+            KEY_TAB)
         {
-            changed =
-                gui_window_focus_previous();
+            bool changed;
+
+            if (gui_input_shift_active(
+                    &event->modifiers))
+            {
+                changed =
+                    gui_window_focus_previous();
+            }
+            else
+            {
+                changed =
+                    gui_window_focus_next();
+            }
+
+            if (changed)
+                gui_desktop_render();
+
+            return;
         }
-        else
+
+        /*
+         * Alt+F4 remains reserved.
+         */
+        if (event->key ==
+            KEY_F4)
         {
-            changed =
-                gui_window_focus_next();
+            return;
         }
-
-        if (changed)
-            gui_desktop_render();
-
-        return;
     }
 
-    /*
-     * Alt+F4 is intentionally reserved but does not destroy a
-     * window yet.
-     *
-     * Application/window lifetime needs its own focused milestone.
-     */
+    keyboard_event_t keyboard_event;
+
+    keyboard_event.key =
+        event->key;
+
+    keyboard_event.pressed =
+        true;
+
+    keyboard_event.extended =
+        false;
+
+    keyboard_event.raw_scancode =
+        0u;
+
+    keyboard_event.modifiers =
+        event->modifiers;
+
+    keyboard_event.character =
+        event->character;
+
+    (void)
+        gui_terminal_session_handle_keyboard(
+            &keyboard_event);
 }
 
 static void gui_input_dispatch_mouse(

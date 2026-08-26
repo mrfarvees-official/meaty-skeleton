@@ -9,6 +9,7 @@
 #include <kernel/gui/taskbar.h>
 #include <kernel/gui/theme.h>
 #include <kernel/gui/window.h>
+#include <kernel/gui/terminal_session.h>
 
 #include <kernel/vfs.h>
 #include <kernel/spawn.h>
@@ -1161,19 +1162,13 @@ static bool gui_taskbar_launch(
     if (app->executable_path[0] != '/')
         return false;
 
-    const char *argv[1];
-
-    argv[0] =
-        app->executable_path;
-
-    process_id_t pid =
-        process_spawn_user(
-            app->executable_path,
-            1u,
-            argv);
-
-    return pid !=
-           PROCESS_ID_INVALID;
+    /*
+     * Current pinned-app milestone contains Terminal only.
+     *
+     * Generic GUI application launch modes come later.
+     */
+    return gui_terminal_session_launch(
+        app->executable_path);
 }
 
 /*

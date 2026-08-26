@@ -10,8 +10,6 @@
 
 #define SHELL_HISTORY_CAPACITY 16u
 
-#define SHELL_PROMPT "meaty> "
-
 static char shell_history[SHELL_HISTORY_CAPACITY]
                          [SHELL_LINE_CAPACITY];
 
@@ -43,6 +41,38 @@ static int shell_write_character(
                1u) == 1
                ? 0
                : -1;
+}
+
+static int shell_write_prompt(void)
+{
+    char cwd[SHELL_PATH_CAPACITY];
+
+    if (user_getcwd(
+            cwd,
+            sizeof(cwd)) < 0)
+    {
+        /*
+         * The shell should remain usable even if cwd retrieval
+         * unexpectedly fails.
+         */
+        return shell_write(
+            "meaty:?> ");
+    }
+
+    if (shell_write(
+            "meaty:") != 0)
+    {
+        return -1;
+    }
+
+    if (shell_write(
+            cwd) != 0)
+    {
+        return -1;
+    }
+
+    return shell_write(
+        "> ");
 }
 
 static size_t shell_string_length(
@@ -376,6 +406,7 @@ static int shell_write_integer(
  *
  * terminal '\r' moves to column zero without destroying contents.
  */
+
 static int shell_redraw_line(
     const char *buffer,
     size_t length,
@@ -388,8 +419,7 @@ static int shell_redraw_line(
         return -1;
     }
 
-    if (shell_write(
-            SHELL_PROMPT) != 0)
+    if (shell_write_prompt() != 0)
     {
         return -1;
     }
@@ -410,7 +440,8 @@ static int shell_redraw_line(
     }
 
     /*
-     * Erase characters left over from a previously longer line.
+     * Erase characters left over from a previously longer
+     * editable line.
      */
     for (size_t index = length;
          index < old_rendered_length;
@@ -424,8 +455,8 @@ static int shell_redraw_line(
     }
 
     /*
-     * Return to the beginning and walk forward to the desired
-     * insertion point.
+     * Return to the beginning, redraw the current cwd prompt,
+     * then walk forward to the logical insertion position.
      */
     if (shell_write_character(
             '\r') != 0)
@@ -433,8 +464,7 @@ static int shell_redraw_line(
         return -1;
     }
 
-    if (shell_write(
-            SHELL_PROMPT) != 0)
+    if (shell_write_prompt() != 0)
     {
         return -1;
     }
@@ -515,8 +545,7 @@ static int shell_read_line(
     buffer[0] =
         '\0';
 
-    if (shell_write(
-            SHELL_PROMPT) != 0)
+    if (shell_write_prompt() != 0)
     {
         return -1;
     }
