@@ -24,7 +24,16 @@ typedef struct gui_theme
     gui_color_t window_shadow;
 
     /*
-     * Taskbar shell material.
+     * Top system bar.
+     */
+    gui_color_t topbar_background;
+    gui_color_t topbar_border;
+
+    gui_color_t topbar_text;
+    gui_color_t topbar_text_secondary;
+
+    /*
+     * Floating bottom dock.
      */
     gui_color_t taskbar_gradient_top;
     gui_color_t taskbar_gradient_bottom;
@@ -58,7 +67,12 @@ typedef struct gui_theme
     uint32_t window_shadow_blur;
 
     /*
-     * Taskbar geometry.
+     * Top system bar geometry.
+     */
+    uint32_t topbar_height;
+
+    /*
+     * Floating dock geometry.
      */
     uint32_t taskbar_corner_radius;
     uint32_t taskbar_border_thickness;
@@ -68,15 +82,10 @@ typedef struct gui_theme
 
     uint32_t taskbar_shadow_spread;
     uint32_t taskbar_shadow_blur;
+
 } gui_theme_t;
 
 
-/*
- * Built-in system theme.
- *
- * Future desktop-shell elements and widgets consume semantic
- * theme values rather than hard-coded colors.
- */
 const gui_theme_t *gui_theme_default(void);
 
 

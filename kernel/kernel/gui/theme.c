@@ -35,11 +35,26 @@ static const gui_theme_t default_theme =
 
     /*
      * --------------------------------------------------------
-     * Taskbar material
+     * Top system bar
      * --------------------------------------------------------
-     *
-     * Slightly darker and more translucent than a normal window,
-     * giving the desktop shell its own visual identity.
+     */
+
+    .topbar_background =
+        GUI_RGBA(16u, 23u, 34u, 220u),
+
+    .topbar_border =
+        GUI_RGBA(255u, 255u, 255u, 32u),
+
+    .topbar_text =
+        GUI_RGB(245u, 247u, 250u),
+
+    .topbar_text_secondary =
+        GUI_RGB(216u, 222u, 231u),
+
+    /*
+     * --------------------------------------------------------
+     * Floating dock
+     * --------------------------------------------------------
      */
 
     .taskbar_gradient_top =
@@ -104,7 +119,16 @@ static const gui_theme_t default_theme =
 
     /*
      * --------------------------------------------------------
-     * Taskbar geometry
+     * Top system bar geometry
+     * --------------------------------------------------------
+     */
+
+    .topbar_height =
+        32u,
+
+    /*
+     * --------------------------------------------------------
+     * Floating dock geometry
      * --------------------------------------------------------
      */
 

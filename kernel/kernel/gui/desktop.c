@@ -12,6 +12,7 @@
 #include <kernel/gui/taskbar.h>
 #include <kernel/gui/theme.h>
 #include <kernel/gui/window.h>
+#include <kernel/gui/topbar.h>
 
 
 /*
@@ -21,7 +22,7 @@
  */
 
 #define GUI_DESKTOP_DEFAULT_WALLPAPER_PATH \
-    "/wallpapers/darksiders.png"
+    "/wallpapers/default.png"
 
 #define GUI_DESKTOP_VALIDATION_ICON_PATH \
     "/icons/apps/terminal.png"
@@ -603,10 +604,7 @@ bool gui_desktop_initialize(void)
         return false;
 
     /*
-     * The default wallpaper is an optional presentation asset.
-     *
-     * Failure does not prevent desktop bootstrap. The gradient
-     * remains the permanent fallback.
+     * Default wallpaper remains optional.
      */
     if (desktop_wallpaper == NULL)
     {
@@ -618,6 +616,12 @@ bool gui_desktop_initialize(void)
     gui_desktop_load_validation_icon();
 
     if (!gui_desktop_create_test_window())
+        return false;
+
+    /*
+     * Desktop shell chrome.
+     */
+    if (!gui_topbar_initialize())
         return false;
 
     if (!gui_taskbar_initialize())
@@ -673,11 +677,6 @@ void gui_desktop_render(void)
      * --------------------------------------------------------
      * GUI_Z_DESKTOP
      * --------------------------------------------------------
-     *
-     * Always establish a completely opaque background first.
-     *
-     * FIT/CENTER modes can intentionally leave uncovered areas,
-     * and transparent PNG pixels also need a defined background.
      */
     gui_surface_fill_vertical_gradient(
         surface,
@@ -709,17 +708,19 @@ void gui_desktop_render(void)
 
     /*
      * --------------------------------------------------------
-     * GUI_Z_TASKBAR
+     * Desktop shell chrome
      * --------------------------------------------------------
+     *
+     * Ordering remains explicit until the window manager owns
+     * z-sorted windows.
      */
-    gui_taskbar_composite();
+    gui_topbar_composite();
 
-    /*
-     * Cursor remains above compositor presentation through the
-     * existing cursor/framebuffer coordination.
-     */
+    gui_taskbar_composite();
 
     gui_compositor_damage_all();
 
     gui_compositor_present();
 }
+
+

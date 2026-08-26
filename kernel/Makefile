@@ -65,6 +65,7 @@ kernel/gui/painter.o 			\
 kernel/gui/compositor.o 		\
 kernel/gui/window.o 			\
 kernel/gui/taskbar.o 			\
+kernel/gui/topbar.o 			\
 kernel/gui/desktop.o 			\
 kernel/input/keyboard_line.o 	\
 kernel/input/mouse_cursor.o 	\
@@ -78,6 +79,7 @@ kernel/fs/block_device.o 		\
 kernel/fs/partition.o 			\
 kernel/fs/ext2.o 				\
 kernel/fs/fd.o 					\
+kernel/system/time.o 			\
 kernel/system/system_info.o 	\
 kernel/timer/timer.o
 
