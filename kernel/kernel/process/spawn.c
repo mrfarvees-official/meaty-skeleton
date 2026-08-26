@@ -237,10 +237,12 @@ static void process_user_task_entry(
  * PROCESS SPAWN
  * -----------------------------------------------------------------------------
  */
-process_id_t process_spawn_user(
+static process_id_t process_spawn_user_internal(
     const char *path,
     size_t argc,
-    const char *const argv[])
+    const char *const argv[],
+    process_spawn_prepare_t prepare,
+    void *prepare_context)
 {
     if (path == NULL ||
         argc == 0 ||
@@ -853,6 +855,26 @@ process_id_t process_spawn_user(
     /*
      * ----------------------------------------------------------
      * STEP 13
+     * Perform caller-specific preparation before publication.
+     *
+     * IMPORTANT:
+     *
+     * The userspace task is still unpublished here and therefore
+     * cannot execute.
+     *
+     * This is where GUI Terminal ownership is established.
+     * ----------------------------------------------------------
+     */
+    if (prepare != NULL)
+    {
+        prepare(
+            pid,
+            prepare_context);
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * STEP 14
      * Drop creator process reference.
      * ----------------------------------------------------------
      */
@@ -864,7 +886,7 @@ process_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 14
+     * STEP 15
      * Drop creator address-space reference.
      * ----------------------------------------------------------
      */
@@ -876,8 +898,10 @@ process_id_t process_spawn_user(
             "creator address-space reference\n");
 
         for (;;)
+        {
             __asm__ volatile(
                 "cli; hlt");
+        }
     }
 
     user_space =
@@ -885,26 +909,56 @@ process_id_t process_spawn_user(
 
     /*
      * ----------------------------------------------------------
-     * STEP 15
+     * STEP 16
      * Publish task.
+     *
+     * From this point onward the scheduler may execute userspace.
+     *
+     * Any process/session association therefore MUST already have
+     * been established by prepare().
      * ----------------------------------------------------------
      */
     task_publish(
         task);
 
-    // log_success(
-    //     "spawn: published %s "
-    //     "pid=%u parent=%u tid=%u\n",
-    //     path,
-    //     (unsigned)pid,
-    //     (unsigned)parent_pid,
-    //     (unsigned)tid);
-
     /*
      * Userspace process creation returns PID.
      *
      * TID remains an internal scheduler/thread identity.
-     * Process-control APIs such as waitpid() operate on PID.
      */
     return pid;
+}
+
+/*
+ * --------------------------------------------------------------------------
+ * PUBLIC SPAWN API
+ * --------------------------------------------------------------------------
+ */
+
+process_id_t process_spawn_user(
+    const char *path,
+    size_t argc,
+    const char *const argv[])
+{
+    return process_spawn_user_internal(
+        path,
+        argc,
+        argv,
+        NULL,
+        NULL);
+}
+
+process_id_t process_spawn_user_prepared(
+    const char *path,
+    size_t argc,
+    const char *const argv[],
+    process_spawn_prepare_t prepare,
+    void *prepare_context)
+{
+    return process_spawn_user_internal(
+        path,
+        argc,
+        argv,
+        prepare,
+        prepare_context);
 }

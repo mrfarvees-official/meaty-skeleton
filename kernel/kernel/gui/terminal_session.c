@@ -23,6 +23,17 @@
 #define GUI_TERMINAL_ROWS \
     24u
 
+/*
+ * Complete terminal history retained per session.
+ *
+ * 1024 x 80 = 81920 characters per session.
+ *
+ * This is deliberately fixed-size and allocation-free after
+ * session creation.
+ */
+#define GUI_TERMINAL_HISTORY_LINES \
+    1024u
+
 #define GUI_TERMINAL_INPUT_CAPACITY \
     256u
 
@@ -56,6 +67,12 @@
 #define GUI_TERMINAL_CASCADE \
     28
 
+/*
+ * Keyboard PageUp/PageDown moves almost one complete viewport.
+ */
+#define GUI_TERMINAL_PAGE_SCROLL \
+    (GUI_TERMINAL_ROWS - 2u)
+
 typedef struct gui_terminal_cell
 {
     char character;
@@ -70,12 +87,38 @@ struct gui_terminal_session
 
     gui_window_t window;
 
+    /*
+     * Scrollback ring.
+     *
+     * history_start:
+     *     physical index of oldest logical line.
+     *
+     * history_count:
+     *     number of valid logical lines.
+     *
+     * The newest logical line is always the active output line.
+     */
     gui_terminal_cell_t
-        cells[GUI_TERMINAL_ROWS]
-             [GUI_TERMINAL_COLUMNS];
+        history[GUI_TERMINAL_HISTORY_LINES]
+               [GUI_TERMINAL_COLUMNS];
 
-    size_t row;
+    size_t history_start;
+    size_t history_count;
+
+    /*
+     * Current output position inside the newest history line.
+     */
     size_t column;
+
+    /*
+     * Number of lines viewport is displaced upward from newest
+     * possible position.
+     *
+     *     0 = follow bottom
+     *     1 = one line older
+     *     ...
+     */
+    size_t scroll_offset;
 
     char input[GUI_TERMINAL_INPUT_CAPACITY];
 
@@ -204,16 +247,48 @@ size_t gui_terminal_session_read(
 
 /*
  * ------------------------------------------------------------
- * Terminal grid
+ * Scrollback/history helpers
  * ------------------------------------------------------------
  */
 
-static void gui_terminal_clear_row(
-    gui_terminal_session_t *session,
-    size_t row)
+static size_t gui_terminal_logical_to_physical(
+    const gui_terminal_session_t *session,
+    size_t logical_line)
 {
     if (session == NULL ||
-        row >= GUI_TERMINAL_ROWS)
+        logical_line >=
+            session->history_count)
+    {
+        return 0u;
+    }
+
+    return (session->history_start +
+            logical_line) %
+           GUI_TERMINAL_HISTORY_LINES;
+}
+
+static size_t gui_terminal_active_line(
+    const gui_terminal_session_t *session)
+{
+    if (session == NULL ||
+        session->history_count == 0u)
+    {
+        return 0u;
+    }
+
+    return gui_terminal_logical_to_physical(
+        session,
+        session->history_count -
+            1u);
+}
+
+static void gui_terminal_clear_physical_line(
+    gui_terminal_session_t *session,
+    size_t physical_line)
+{
+    if (session == NULL ||
+        physical_line >=
+            GUI_TERMINAL_HISTORY_LINES)
     {
         return;
     }
@@ -223,79 +298,292 @@ static void gui_terminal_clear_row(
          GUI_TERMINAL_COLUMNS;
          ++column)
     {
-        session->cells[row][column].character =
+        session->history[physical_line]
+                        [column]
+                            .character =
             ' ';
     }
 }
 
-static void gui_terminal_scroll(
+static size_t gui_terminal_max_scroll_offset(
+    const gui_terminal_session_t *session)
+{
+    if (session == NULL ||
+        session->history_count <=
+            GUI_TERMINAL_ROWS)
+    {
+        return 0u;
+    }
+
+    return session->history_count -
+           GUI_TERMINAL_ROWS;
+}
+
+static void gui_terminal_clamp_scroll_offset(
     gui_terminal_session_t *session)
 {
     if (session == NULL)
         return;
 
-    for (size_t row = 1u;
-         row < GUI_TERMINAL_ROWS;
-         ++row)
+    size_t maximum =
+        gui_terminal_max_scroll_offset(
+            session);
+
+    if (session->scroll_offset >
+        maximum)
     {
-        memcpy(
-            session->cells[row - 1u],
-            session->cells[row],
-            sizeof(
-                session->cells[row]));
+        session->scroll_offset =
+            maximum;
     }
-
-    gui_terminal_clear_row(
-        session,
-        GUI_TERMINAL_ROWS - 1u);
-
-    session->row =
-        GUI_TERMINAL_ROWS - 1u;
 }
 
-static void gui_terminal_newline(
+static void gui_terminal_reset_history_locked(
     gui_terminal_session_t *session)
 {
+    if (session == NULL)
+        return;
+
+    session->history_start =
+        0u;
+
+    session->history_count =
+        1u;
+
     session->column =
         0u;
 
-    ++session->row;
+    session->scroll_offset =
+        0u;
 
-    if (session->row >=
-        GUI_TERMINAL_ROWS)
-    {
-        gui_terminal_scroll(
-            session);
-    }
+    /*
+     * Old ring contents become unreachable immediately.
+     *
+     * Only clear the one newly visible active line rather than
+     * performing an 80 KiB clear while the spinlock is held.
+     */
+    gui_terminal_clear_physical_line(
+        session,
+        0u);
 }
+
+/*
+ * Append one empty logical line.
+ *
+ * The newest line is always the active line.
+ */
+static void gui_terminal_append_line_locked(
+    gui_terminal_session_t *session)
+{
+    if (session == NULL)
+        return;
+
+    bool was_scrolled =
+        session->scroll_offset != 0u;
+
+    if (session->history_count <
+        GUI_TERMINAL_HISTORY_LINES)
+    {
+        size_t physical =
+            (session->history_start +
+             session->history_count) %
+            GUI_TERMINAL_HISTORY_LINES;
+
+        ++session->history_count;
+
+        gui_terminal_clear_physical_line(
+            session,
+            physical);
+    }
+    else
+    {
+        /*
+         * Ring is full.
+         *
+         * Discard the oldest line and reuse its physical slot as
+         * the new newest line.
+         */
+        session->history_start =
+            (session->history_start +
+             1u) %
+            GUI_TERMINAL_HISTORY_LINES;
+
+        size_t physical =
+            gui_terminal_active_line(
+                session);
+
+        gui_terminal_clear_physical_line(
+            session,
+            physical);
+    }
+
+    /*
+     * If the user is reading historical output, new output must
+     * not snap their viewport back to the bottom.
+     *
+     * Moving the bottom one line downward means the offset must
+     * also move one line upward to keep roughly the same content
+     * visible.
+     */
+    if (was_scrolled &&
+        session->scroll_offset <
+            GUI_TERMINAL_HISTORY_LINES)
+    {
+        ++session->scroll_offset;
+    }
+
+    gui_terminal_clamp_scroll_offset(
+        session);
+}
+
+static void gui_terminal_newline_locked(
+    gui_terminal_session_t *session)
+{
+    if (session == NULL)
+        return;
+
+    session->column =
+        0u;
+
+    gui_terminal_append_line_locked(
+        session);
+}
+
+/*
+ * ------------------------------------------------------------
+ * Viewport scrolling
+ * ------------------------------------------------------------
+ */
+
+static bool gui_terminal_scroll_view_up(
+    gui_terminal_session_t *session,
+    size_t lines)
+{
+    if (session == NULL ||
+        lines == 0u)
+    {
+        return false;
+    }
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &session->lock);
+
+    size_t maximum =
+        gui_terminal_max_scroll_offset(
+            session);
+
+    size_t old_offset =
+        session->scroll_offset;
+
+    if (session->scroll_offset <
+        maximum)
+    {
+        size_t remaining =
+            maximum -
+            session->scroll_offset;
+
+        size_t movement =
+            lines < remaining
+                ? lines
+                : remaining;
+
+        session->scroll_offset +=
+            movement;
+    }
+
+    bool changed =
+        session->scroll_offset !=
+        old_offset;
+
+    spin_unlock_irqrestore(
+        &session->lock,
+        flags);
+
+    return changed;
+}
+
+static bool gui_terminal_scroll_view_down(
+    gui_terminal_session_t *session,
+    size_t lines)
+{
+    if (session == NULL ||
+        lines == 0u)
+    {
+        return false;
+    }
+
+    uint32_t flags =
+        spin_lock_irqsave(
+            &session->lock);
+
+    size_t old_offset =
+        session->scroll_offset;
+
+    if (lines >=
+        session->scroll_offset)
+    {
+        session->scroll_offset =
+            0u;
+    }
+    else
+    {
+        session->scroll_offset -=
+            lines;
+    }
+
+    bool changed =
+        session->scroll_offset !=
+        old_offset;
+
+    spin_unlock_irqrestore(
+        &session->lock,
+        flags);
+
+    return changed;
+}
+
+/*
+ * ------------------------------------------------------------
+ * Terminal character parser
+ * ------------------------------------------------------------
+ */
 
 static void gui_terminal_putchar_locked(
     gui_terminal_session_t *session,
     char character)
 {
-    if (session == NULL)
+    if (session == NULL ||
+        session->history_count == 0u)
+    {
         return;
+    }
 
     switch (character)
     {
     case '\a':
         /*
-         * Bell is intentionally silent for now.
+         * Bell intentionally remains silent.
          */
         return;
 
     case '\b':
-        if (session->column != 0u)
-        {
-            --session->column;
+    {
+        if (session->column == 0u)
+            return;
 
-            session->cells[session->row]
-                          [session->column]
-                              .character =
-                ' ';
-        }
+        --session->column;
+
+        size_t line =
+            gui_terminal_active_line(
+                session);
+
+        session->history[line]
+                        [session->column]
+                            .character =
+            ' ';
 
         return;
+    }
 
     case '\t':
         do
@@ -309,48 +597,39 @@ static void gui_terminal_putchar_locked(
         return;
 
     case '\n':
-        gui_terminal_newline(
+        gui_terminal_newline_locked(
             session);
 
         return;
 
     case '\v':
+    {
         /*
-         * Vertical tab:
-         * advance one row while preserving the current column.
+         * Vertical tab moves to a fresh line but preserves
+         * horizontal position.
          */
-        ++session->row;
+        size_t preserved_column =
+            session->column;
 
-        if (session->row >=
-            GUI_TERMINAL_ROWS)
-        {
-            gui_terminal_scroll(
-                session);
-        }
+        gui_terminal_append_line_locked(
+            session);
+
+        session->column =
+            preserved_column;
 
         return;
+    }
 
     case '\f':
         /*
-         * Form feed is Meaty OS's existing terminal-clear
-         * operation.
+         * Meaty OS clear protocol.
          *
-         * clear.nex intentionally writes exactly this byte.
+         * clear.nex emits exactly this form-feed byte.
+         *
+         * Clear scrollback as well as visible output.
          */
-        for (size_t row = 0u;
-             row < GUI_TERMINAL_ROWS;
-             ++row)
-        {
-            gui_terminal_clear_row(
-                session,
-                row);
-        }
-
-        session->row =
-            0u;
-
-        session->column =
-            0u;
+        gui_terminal_reset_history_locked(
+            session);
 
         return;
 
@@ -365,11 +644,8 @@ static void gui_terminal_putchar_locked(
     }
 
     /*
-     * Ignore unsupported control bytes instead of displaying
-     * them as '?'.
-     *
-     * This prevents future terminal-control bytes from becoming
-     * visible garbage while the parser is still minimal.
+     * Ignore unsupported control bytes instead of turning them
+     * into visible '?' characters.
      */
     if ((unsigned char)character <
         32u)
@@ -384,9 +660,13 @@ static void gui_terminal_putchar_locked(
             '?';
     }
 
-    session->cells[session->row]
-                  [session->column]
-                      .character =
+    size_t line =
+        gui_terminal_active_line(
+            session);
+
+    session->history[line]
+                    [session->column]
+                        .character =
         character;
 
     ++session->column;
@@ -394,7 +674,7 @@ static void gui_terminal_putchar_locked(
     if (session->column >=
         GUI_TERMINAL_COLUMNS)
     {
-        gui_terminal_newline(
+        gui_terminal_newline_locked(
             session);
     }
 }
@@ -431,11 +711,7 @@ static bool gui_terminal_render(
         return false;
 
     /*
-     * The complete window is opaque.
-     *
-     * This matters because terminal output can composite this
-     * window repeatedly without alpha accumulating over the
-     * existing compositor backbuffer.
+     * Complete terminal window remains opaque.
      */
     gui_surface_clear(
         surface,
@@ -474,7 +750,8 @@ static bool gui_terminal_render(
             .width =
                 surface->width,
 
-            .height = 1u};
+            .height =
+                1u};
 
     gui_surface_fill_rect(
         surface,
@@ -499,15 +776,18 @@ static bool gui_terminal_render(
         return false;
     }
 
-    char line[GUI_TERMINAL_COLUMNS +
-              1u];
-
-    uint32_t flags =
-        spin_lock_irqsave(
-            &session->lock);
+    /*
+     * Snapshot the viewport while holding the terminal state lock.
+     *
+     * Glyph rendering is intentionally performed after releasing
+     * the spinlock.
+     */
+    char visible[GUI_TERMINAL_ROWS]
+                [GUI_TERMINAL_COLUMNS + 1u];
 
     for (size_t row = 0u;
-         row < GUI_TERMINAL_ROWS;
+         row <
+         GUI_TERMINAL_ROWS;
          ++row)
     {
         for (size_t column = 0u;
@@ -515,69 +795,112 @@ static bool gui_terminal_render(
              GUI_TERMINAL_COLUMNS;
              ++column)
         {
-            line[column] =
-                session->cells[row][column].character;
+            visible[row][column] =
+                ' ';
         }
 
-        line[GUI_TERMINAL_COLUMNS] =
+        visible[row][GUI_TERMINAL_COLUMNS] =
             '\0';
+    }
 
-        /*
-         * Trim trailing spaces only for rendering.
-         */
-        size_t length =
-            GUI_TERMINAL_COLUMNS;
+    uint32_t flags =
+        spin_lock_irqsave(
+            &session->lock);
 
-        while (length != 0u &&
-               line[length - 1u] ==
-                   ' ')
+    gui_terminal_clamp_scroll_offset(
+        session);
+
+    size_t visible_count =
+        session->history_count <
+                GUI_TERMINAL_ROWS
+            ? session->history_count
+            : GUI_TERMINAL_ROWS;
+
+    size_t first_logical =
+        0u;
+
+    if (session->history_count >
+        GUI_TERMINAL_ROWS)
+    {
+        first_logical =
+            session->history_count -
+            GUI_TERMINAL_ROWS -
+            session->scroll_offset;
+    }
+
+    for (size_t row = 0u;
+         row < visible_count;
+         ++row)
+    {
+        size_t logical =
+            first_logical +
+            row;
+
+        size_t physical =
+            gui_terminal_logical_to_physical(
+                session,
+                logical);
+
+        for (size_t column = 0u;
+             column <
+             GUI_TERMINAL_COLUMNS;
+             ++column)
         {
-            --length;
-        }
-
-        line[length] =
-            '\0';
-
-        if (length != 0u)
-        {
-            int32_t y =
-                GUI_TERMINAL_TITLE_HEIGHT +
-                GUI_TERMINAL_PADDING_Y +
-                (int32_t)row *
-                    GUI_TERMINAL_LINE_HEIGHT;
-
-            /*
-             * We intentionally release the lock before expensive
-             * glyph rendering.
-             */
-            spin_unlock_irqrestore(
-                &session->lock,
-                flags);
-
-            if (!gui_font_draw_text(
-                    surface,
-                    font,
-                    GUI_TERMINAL_PADDING_X,
-                    y,
-                    GUI_TERMINAL_FONT_HEIGHT,
-                    line,
-                    GUI_RGB(
-                        26u,
-                        31u,
-                        39u)))
-            {
-                return false;
-            }
-
-            flags =
-                spin_lock_irqsave(
-                    &session->lock);
+            visible[row][column] =
+                session->history[physical]
+                                [column]
+                                    .character;
         }
     }
 
     spin_unlock_irqrestore(
         &session->lock,
         flags);
+
+    /*
+     * Render the captured viewport.
+     */
+    for (size_t row = 0u;
+         row < visible_count;
+         ++row)
+    {
+        size_t length =
+            GUI_TERMINAL_COLUMNS;
+
+        while (length != 0u &&
+               visible[row][length - 1u] ==
+                   ' ')
+        {
+            --length;
+        }
+
+        visible[row][length] =
+            '\0';
+
+        if (length == 0u)
+            continue;
+
+        int32_t y =
+            GUI_TERMINAL_TITLE_HEIGHT +
+            GUI_TERMINAL_PADDING_Y +
+            (int32_t)row *
+                GUI_TERMINAL_LINE_HEIGHT;
+
+        if (!gui_font_draw_text(
+                surface,
+                font,
+                GUI_TERMINAL_PADDING_X,
+                y,
+                GUI_TERMINAL_FONT_HEIGHT,
+                visible[row],
+                GUI_RGB(
+                    26u,
+                    31u,
+                    39u)))
+        {
+            return false;
+        }
+    }
 
     return true;
 }
@@ -597,11 +920,6 @@ static void gui_terminal_present(
         return;
     }
 
-    /*
-     * The terminal is a GUI_Z_NORMAL window.
-     *
-     * Desktop reconstruction will therefore preserve it.
-     */
     gui_window_composite(
         &session->window);
 
@@ -702,8 +1020,8 @@ gui_terminal_session_for_process(
         return session;
 
     /*
-     * Commands spawned by sh.nex keep walking upward until
-     * the root shell process bound to this Terminal is found.
+     * Commands spawned by sh.nex walk upward until the root shell
+     * process bound to this Terminal is found.
      */
     for (size_t depth = 0u;
          depth < 32u &&
@@ -780,18 +1098,84 @@ bool gui_terminal_session_handle_keyboard(
         return false;
 
     /*
-     * Normal translated text.
+     * PageUp/PageDown belong to the Terminal viewport rather than
+     * the shell.
+     *
+     * This gives us a way to validate scrollback before PS/2 wheel
+     * support is added.
+     */
+    if (event->key ==
+        KEY_PAGE_UP)
+    {
+        if (gui_terminal_scroll_view_up(
+                session,
+                GUI_TERMINAL_PAGE_SCROLL))
+        {
+            gui_terminal_present(
+                session);
+        }
+
+        return true;
+    }
+
+    if (event->key ==
+        KEY_PAGE_DOWN)
+    {
+        if (gui_terminal_scroll_view_down(
+                session,
+                GUI_TERMINAL_PAGE_SCROLL))
+        {
+            gui_terminal_present(
+                session);
+        }
+
+        return true;
+    }
+
+    /*
+     * Any ordinary keyboard input while viewing old history snaps
+     * back to the live bottom.
+     *
+     * This matches normal interactive terminal behavior and avoids
+     * typing commands while unable to see the current prompt.
      */
     if (event->character != '\0')
     {
+        bool viewport_changed =
+            false;
+
+        uint32_t flags =
+            spin_lock_irqsave(
+                &session->lock);
+
+        if (session->scroll_offset !=
+            0u)
+        {
+            session->scroll_offset =
+                0u;
+
+            viewport_changed =
+                true;
+        }
+
+        spin_unlock_irqrestore(
+            &session->lock,
+            flags);
+
+        if (viewport_changed)
+        {
+            gui_terminal_present(
+                session);
+        }
+
         return gui_terminal_input_push(
             session,
             event->character);
     }
 
     /*
-     * Existing sh.nex line editing already understands these
-     * ANSI-style sequences.
+     * Existing sh.nex line editing understands these ANSI-style
+     * sequences.
      */
     switch (event->key)
     {
@@ -872,15 +1256,11 @@ gui_terminal_allocate(void)
         spinlock_initialize(
             &session->lock);
 
-        for (size_t row = 0u;
-             row <
-             GUI_TERMINAL_ROWS;
-             ++row)
-        {
-            gui_terminal_clear_row(
-                session,
-                row);
-        }
+        /*
+         * Start with exactly one empty logical line.
+         */
+        gui_terminal_reset_history_locked(
+            session);
 
         int32_t x =
             GUI_TERMINAL_START_X +
@@ -917,6 +1297,28 @@ gui_terminal_allocate(void)
     return NULL;
 }
 
+static void gui_terminal_prepare_spawn(
+    process_id_t pid,
+    void *context)
+{
+    gui_terminal_session_t *session =
+        (gui_terminal_session_t *)
+            context;
+
+    if (session == NULL)
+        return;
+
+    /*
+     * This callback runs before task_publish().
+     *
+     * Therefore when the process executes its first userspace
+     * instruction, gui_terminal_session_for_process() can already
+     * resolve it.
+     */
+    session->root_pid =
+        pid;
+}
+
 bool gui_terminal_session_launch(
     const char *path)
 {
@@ -947,8 +1349,8 @@ bool gui_terminal_session_launch(
     }
 
     /*
-     * Put the new Terminal in the normal-window focus stack
-     * before its process starts producing output.
+     * Put the Terminal into the normal-window focus stack before
+     * its process begins producing output.
      */
     (void)gui_window_focus(
         &session->window);
@@ -960,15 +1362,26 @@ bool gui_terminal_session_launch(
     argv[0] =
         path;
 
+    /*
+     * Establish session ownership BEFORE the task becomes runnable.
+     *
+     * This removes the race where sh.nex could print its initial
+     * banner/prompt before session->root_pid was known.
+     */
     process_id_t pid =
-        process_spawn_user(
+        process_spawn_user_prepared(
             path,
             1u,
-            argv);
+            argv,
+            gui_terminal_prepare_spawn,
+            session);
 
     if (pid ==
         PROCESS_ID_INVALID)
     {
+        session->root_pid =
+            PROCESS_ID_INVALID;
+
         gui_window_destroy(
             &session->window);
 
@@ -983,13 +1396,18 @@ bool gui_terminal_session_launch(
     }
 
     /*
-     * Root process ownership.
+     * gui_terminal_prepare_spawn() already established root_pid
+     * before publication.
      *
-     * Children are resolved through the process parent chain,
-     * so ls/cat/etc automatically use the same Terminal.
+     * Verify the invariant rather than assigning it here after the
+     * process has potentially begun execution.
      */
-    session->root_pid =
-        pid;
+    if (session->root_pid !=
+        pid)
+    {
+        return false;
+    }
 
     return true;
 }
+

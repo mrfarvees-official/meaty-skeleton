@@ -5,21 +5,41 @@
 
 #include <kernel/process.h>
 
+
 /*
- * Load an ELF executable from VFS and start it as
- * a new userspace process.
+ * Optional callback invoked after the process and its main task are
+ * completely prepared, but BEFORE the task becomes scheduler-visible.
  *
- * Returns:
+ * The callback must be short and must not block.
  *
- *     non-zero process ID    success
- *     PROCESS_ID_INVALID     failure
- *
- * The returned PID is the userspace-visible process identity
- * used by waitpid().
+ * This allows subsystems such as the GUI Terminal to establish process
+ * ownership before userspace can execute its first instruction.
+ */
+typedef void (*process_spawn_prepare_t)(
+    process_id_t pid,
+    void *context);
+
+
+/*
+ * Normal userspace process creation.
  */
 process_id_t process_spawn_user(
     const char *path,
     size_t argc,
     const char *const argv[]);
+
+
+/*
+ * Userspace process creation with a pre-publication preparation hook.
+ *
+ * prepare() runs before task_publish().
+ */
+process_id_t process_spawn_user_prepared(
+    const char *path,
+    size_t argc,
+    const char *const argv[],
+    process_spawn_prepare_t prepare,
+    void *prepare_context);
+
 
 #endif
